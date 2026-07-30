@@ -1,0 +1,9 @@
+{
+  "name": "pgp-app-mini-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cd ../pgp-app && exec npx react-router dev --port 3001 --host 0.0.0.0"
+  }
+}

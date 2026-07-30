@@ -1,0 +1,42 @@
+{
+  "name": "pgp-keybase-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "start": "wrangler dev -c build/server/wrangler.json",
+    "deploy": "wrangler deploy -c build/server/wrangler.json",
+    "typecheck": "react-router typegen && tsc",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@react-router/cloudflare": "^8.3.0",
+    "@react-router/fs-routes": "^8.3.0",
+    "isbot": "^5.2.1",
+    "openpgp": "^6.3.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router": "^8.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.49.0",
+    "@react-router/dev": "^8.3.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^8.2.0",
+    "vite-tsconfig-paths": "^5.1.0",
+    "wrangler": "^4.116.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260730.1": true
+  }
+}

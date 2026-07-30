@@ -5,18 +5,20 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/keybase/login
- * Body: { username, pwhash, csrf_token, login_session }
+ * Body: { username, pdpka4, pdpka5, csrf_token, login_session }
  *
- * Performs the Keybase login flow:
- *  1. POST to https://keybase.io/_/api/1.0/login.json with the credentials.
+ * Performs the Keybase PDPKA login flow:
+ *  1. POST to https://keybase.io/_/api/1.0/login.json with
+ *     { email_or_username, pdpka4, pdpka5 } and the CSRF cookie.
  *  2. If successful, call https://keybase.io/_/api/1.0/me.json with the
  *     session cookie to fetch the user's profile + encrypted private key bundle.
- *  3. Return the bundle to the client, which decrypts it locally with the pwhash.
+ *  3. Return the bundle to the client, which decrypts it locally with the pwh.
  */
 export async function POST(req: NextRequest) {
   let body: {
     username?: string;
-    pwhash?: string;
+    pdpka4?: string;
+    pdpka5?: string;
     csrf_token?: string;
     login_session?: string;
   };
@@ -27,23 +29,26 @@ export async function POST(req: NextRequest) {
   }
 
   const username = (body.username ?? "").trim().toLowerCase();
-  const pwhash = body.pwhash ?? "";
+  const pdpka4 = body.pdpka4 ?? "";
+  const pdpka5 = body.pdpka5 ?? "";
   const csrfToken = body.csrf_token ?? "";
   const loginSession = body.login_session ?? "";
 
-  if (!username || !pwhash || !csrfToken || !loginSession) {
+  if (!username || !pdpka4 || !pdpka5 || !csrfToken || !loginSession) {
     return NextResponse.json(
-      { error: "Missing required fields (username, pwhash, csrf_token, login_session)" },
+      {
+        error:
+          "Missing required fields (username, pdpka4, pdpka5, csrf_token, login_session)",
+      },
       { status: 400 },
     );
   }
 
-  // Step 1: Log in to Keybase.
+  // Step 1: Log in to Keybase with the PDPKA signatures.
   const loginParams = new URLSearchParams();
   loginParams.set("email_or_username", username);
-  loginParams.set("password", pwhash);
-  loginParams.set("csrf_token", csrfToken);
-  loginParams.set("login_session", loginSession);
+  loginParams.set("pdpka4", pdpka4);
+  loginParams.set("pdpka5", pdpka5);
 
   let sessionCookie: string | null = null;
   try {

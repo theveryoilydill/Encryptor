@@ -29,7 +29,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   const url = `https://keybase.io/_/api/1.0/getsalt.json?email_or_username=${encodeURIComponent(
     username,
-  )}`;
+  )}&pdpka_login=true`;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json", "User-Agent": "pgp-keybase-cloudflare/1.0" },

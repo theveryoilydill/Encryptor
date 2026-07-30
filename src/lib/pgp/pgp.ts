@@ -738,4 +738,203 @@ export async function verifyAutoDetect(
   );
 }
 
+/**
+ * Verify any armored PGP block by auto-detecting its format AND auto-fetching
+ * the signers' public keys by key ID via the provided lookup callback.
+ *
+ * - Cleartext-signed: extract signature key IDs, fetch keys, verify.
+ * - Detached signature: needs the original plaintext (opts.plaintext).
+ * - Encrypted message: redirect to decrypt flow.
+ */
+export async function verifyAutoDetectWithKeyFetch(
+  armored: string,
+  plaintext: string | undefined,
+  fetchKeysByKeyID: (
+    keyIDs: string[],
+  ) => Promise<
+    Array<{
+      armored: string;
+      keyID: string;
+      fingerprint: string;
+      username?: string;
+    }>
+  >,
+): Promise<{
+  verified: "valid" | "invalid" | "unknown";
+  signatures: Array<{
+    keyID: string;
+    fingerprint?: string;
+    username?: string;
+    verified: "valid" | "invalid" | "unknown";
+    error?: string;
+  }>;
+}> {
+  const format = detectArmoredFormat(armored);
+
+  if (format === "encrypted-message") {
+    throw new Error(
+      "This looks like an encrypted message. Use the Decrypt tab to decrypt and verify it (the signature is checked automatically).",
+    );
+  }
+  if (format === "public-key" || format === "private-key") {
+    throw new Error(
+      "This looks like a key block, not a signature. Switch to the appropriate tab to load or use keys.",
+    );
+  }
+  if (format === "unknown") {
+    throw new Error(
+      "Could not detect the format of the pasted block. Make sure it is an ASCII-armored PGP signature or cleartext-signed message.",
+    );
+  }
+
+  if (format === "detached-signature" && !plaintext) {
+    throw new Error(
+      "A detached signature was detected. Please paste the original plaintext too.",
+    );
+  }
+
+  // First pass: parse + extract signature key IDs without verification.
+  let initialResult: { signatures: { keyID: openpgp.KeyID; verified: Promise<true>; signature: Promise<openpgp.Signature> }[] };
+  if (format === "detached-signature") {
+    const message = await openpgp.createMessage({ text: plaintext as string });
+    const signature = await openpgp.readSignature({ armoredSignature: armored });
+    // openpgp.verify requires at least one verification key. Use an empty key
+    // set to discover the signature's key IDs without verifying yet.
+    try {
+      const r = await openpgp.verify({
+        message,
+        signature,
+        verificationKeys: [],
+      });
+      initialResult = r;
+    } catch {
+      // If verification throws because no keys were provided, we still have
+      // the signature's keyID from the parsed signature object.
+      initialResult = {
+        signatures: [
+          {
+            keyID: signature.packets[0]?.issuerKeyID as openpgp.KeyID,
+            verified: Promise.reject(new Error("no key")),
+            signature: Promise.resolve(signature),
+          },
+        ],
+      };
+    }
+  } else {
+    // Cleartext-signed message
+    const cleartext = await openpgp.readCleartextMessage({
+      cleartextMessage: armored,
+    });
+    try {
+      const r = await openpgp.verify({
+        message: cleartext,
+        verificationKeys: [],
+      });
+      initialResult = r;
+    } catch {
+      // If verification throws because no keys were provided, fall back to
+      // extracting signature key IDs from the cleartext message's signature
+      // packets directly.
+      const sigs = (cleartext as unknown as { signatures?: Array<{ keyID: openpgp.KeyID; signature: Promise<openpgp.Signature> }> }).signatures ?? [];
+      initialResult = {
+        signatures: sigs.map((s) => ({
+          keyID: s.keyID,
+          verified: Promise.reject(new Error("no key")),
+          signature: s.signature,
+        })),
+      };
+    }
+  }
+
+  const initialSigs = initialResult.signatures ?? [];
+  if (initialSigs.length === 0) {
+    return { verified: "unknown", signatures: [] };
+  }
+
+  // Collect unique key IDs and fetch the corresponding public keys.
+  const keyIDs = Array.from(
+    new Set(initialSigs.map((s) => keyIDToHex(s.keyID)).filter(Boolean)),
+  );
+  const fetched = keyIDs.length > 0 ? await fetchKeysByKeyID(keyIDs) : [];
+
+  if (fetched.length === 0) {
+    // No keys could be fetched — return unknown signatures with key IDs only.
+    return {
+      verified: "unknown",
+      signatures: initialSigs.map((s) => ({
+        keyID: keyIDToHex(s.keyID),
+        verified: "unknown" as const,
+      })),
+    };
+  }
+
+  // Second pass: verify with the fetched keys.
+  const verificationKeys: openpgp.PublicKey[] = [];
+  for (const f of fetched) {
+    try {
+      verificationKeys.push(await readKey(f.armored));
+    } catch {
+      // skip invalid keys
+    }
+  }
+
+  let verifiedResult: { signatures: { keyID: openpgp.KeyID; verified: Promise<true>; signature: Promise<openpgp.Signature> }[] };
+  if (format === "detached-signature") {
+    const message = await openpgp.createMessage({ text: plaintext as string });
+    const signature = await openpgp.readSignature({ armoredSignature: armored });
+    verifiedResult = await openpgp.verify({
+      message,
+      signature,
+      verificationKeys,
+    });
+  } else {
+    const cleartext = await openpgp.readCleartextMessage({
+      cleartextMessage: armored,
+    });
+    verifiedResult = await openpgp.verify({
+      message: cleartext,
+      verificationKeys,
+    });
+  }
+
+  const finalSigs = await Promise.all(
+    (verifiedResult.signatures ?? []).map(async (sig) => {
+      const keyID = keyIDToHex(sig.keyID);
+      let verifiedStatus: "valid" | "invalid" | "unknown" = "unknown";
+      let error: string | undefined;
+      try {
+        await sig.verified;
+        verifiedStatus = "valid";
+      } catch (e) {
+        const msg = (e as Error).message || "";
+        if (/not present|could not verify|no key/i.test(msg)) {
+          verifiedStatus = "unknown";
+        } else {
+          verifiedStatus = "invalid";
+        }
+        error = msg;
+      }
+      const match = fetched.find(
+        (f) => f.keyID.toUpperCase() === keyID.toUpperCase(),
+      );
+      return {
+        keyID,
+        fingerprint: match?.fingerprint,
+        username: match?.username,
+        verified: verifiedStatus,
+        error,
+      };
+    }),
+  );
+
+  const overall =
+    finalSigs.find((s) => s.verified === "valid")
+      ? "valid"
+      : finalSigs.find((s) => s.verified === "invalid")
+        ? "invalid"
+        : "unknown";
+
+  return { verified: overall, signatures: finalSigs };
+}
+
 export { formatDate };

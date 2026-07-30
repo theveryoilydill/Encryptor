@@ -13,4 +13,12 @@ export default defineConfig({
     tailwindcss(),
     tsconfigPaths(),
   ],
+  ssr: {
+    // openpgp + kbpgp + keybase-proofs ship ESM/CJS that needs to be
+    // externalized for the worker bundle so Vite doesn't try to pre-bundle them.
+    noExternal: ["openpgp", "kbpgp", "keybase-proofs", "scrypt-js"],
+  },
+  optimizeDeps: {
+    include: ["kbpgp", "keybase-proofs", "scrypt-js"],
+  },
 });

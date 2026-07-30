@@ -7,8 +7,8 @@ export const dynamic = "force-dynamic";
  * POST /api/keybase/getsalt
  * Body: { username: string }
  *
- * Proxies https://keybase.io/_/api/1.0/getsalt.json because Keybase does not
- * set CORS headers.
+ * Proxies https://keybase.io/_/api/1.0/getsalt.json?email_or_username=<username>&pdpka_login=true
+ * because Keybase does not set CORS headers.
  */
 export async function POST(req: NextRequest) {
   let body: { username?: string };
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
   const url = `https://keybase.io/_/api/1.0/getsalt.json?email_or_username=${encodeURIComponent(
     username,
-  )}`;
+  )}&pdpka_login=true`;
   try {
     const res = await fetch(url, {
       headers: { Accept: "application/json", "User-Agent": "encryptor/1.0" },

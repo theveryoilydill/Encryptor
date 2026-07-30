@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   autocompleteKeybaseUsersClient,
   fetchKeyByKeyIDClient,
@@ -8,9 +8,7 @@ import {
   type KeybaseAutocompleteResult,
 } from "@/lib/pgp/keybase";
 import {
-  derivePwHash,
-  decryptPrivateKeyBundle,
-  loginAndFetchMe,
+  loginWithPassword,
 } from "@/lib/pgp/keybase-auth";
 import {
   decryptAndAutoVerify,
@@ -20,10 +18,13 @@ import {
   generateKeyPair,
   signMessage,
   validateArmoredKey,
-  verifyAutoDetect,
+  verifyAutoDetectWithKeyFetch,
   type AnyKeyInfo,
   type GeneratedKeyPair,
+  readKey,
+  unlockPrivateKey,
 } from "@/lib/pgp/pgp";
+import * as openpgp from "openpgp";
 
 // In the Next.js preview, the Keybase proxies live under /api/keybase/*
 const PROXIES = {
@@ -33,6 +34,25 @@ const PROXIES = {
   getsaltProxy: "/api/keybase/getsalt",
   loginProxy: "/api/keybase/login",
 } as const;
+
+/** Read a private key (unlocking it if needed) and return its public half as
+ *  ASCII-armored text. Used for "Include me as a recipient". */
+async function derivePublicFromPrivate(
+  armoredPrivate: string,
+  passphrase?: string,
+): Promise<string> {
+  const key = await readKey(armoredPrivate);
+  if (!key.isPrivate()) {
+    // Already a public key
+    return key.armor();
+  }
+  const unlocked = await unlockPrivateKey(
+    key as openpgp.PrivateKey,
+    passphrase,
+  );
+  // toPublic() strips the secret material and returns a PublicKey.
+  return unlocked.toPublic().armor();
+}
 
 type Tab = "encrypt" | "decrypt" | "sign" | "verify";
 
@@ -57,6 +77,19 @@ interface PrivateKeyConfig {
 }
 
 const LS_KEY = "encryptor.config.v1";
+const LS_INCLUDE_SELF = "encryptor.include-self.v1";
+
+/** Default value for the "include me as recipient" checkbox.
+ *  Returns true unless the user has explicitly disabled it. */
+function loadIncludeSelfDefault(): boolean {
+  try {
+    const v = localStorage.getItem(LS_INCLUDE_SELF);
+    if (v === "false") return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
 
 export default function Home() {
   const proxies = PROXIES;
@@ -65,6 +98,16 @@ export default function Home() {
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [privateKey, setPrivateKey] = useState<PrivateKeyConfig | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
+  const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
+
+  const handleSetIncludeSelf = useCallback((next: boolean) => {
+    setIncludeSelf(next);
+    try {
+      localStorage.setItem(LS_INCLUDE_SELF, next ? "true" : "false");
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Hydrate persisted config (only the armored private key, not the passphrase)
   useEffect(() => {
@@ -113,6 +156,8 @@ export default function Home() {
               setRecipients={setRecipients}
               privateKey={privateKey}
               proxies={proxies}
+              includeSelf={includeSelf}
+              setIncludeSelf={handleSetIncludeSelf}
             />
           )}
           {tab === "decrypt" && (
@@ -261,6 +306,8 @@ interface EncryptTabProps {
     getsaltProxy: string;
     loginProxy: string;
   };
+  includeSelf: boolean;
+  setIncludeSelf: (v: boolean) => void;
 }
 
 function EncryptTab({
@@ -268,12 +315,33 @@ function EncryptTab({
   setRecipients,
   privateKey,
   proxies,
+  includeSelf,
+  setIncludeSelf,
 }: EncryptTabProps) {
   const [plaintext, setPlaintext] = useState("");
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nukeConfirmed, setNukeConfirmed] = useState(false);
+
+  // Derive the user's own public key from the configured private key.
+  // Shown as a recipient chip when "Include me" is checked.
+  const selfRecipient = useMemo<Recipient | null>(() => {
+    if (!privateKey) return null;
+    const info = privateKey.info;
+    return {
+      source: "local",
+      label:
+        privateKey.source === "keybase"
+          ? `@${privateKey.username} (you)`
+          : `${privateKey.label} (you)`,
+      armored: "", // not needed — we'll inject it directly in handleEncrypt
+      fingerprint: info.fingerprint,
+      keyID: info.keyID,
+      algorithm: info.algorithm,
+      expiresAt: info.expirationTime?.getTime() ?? null,
+    };
+  }, [privateKey]);
 
   const handleEncrypt = useCallback(async () => {
     setError(null);
@@ -283,19 +351,38 @@ function EncryptTab({
       setError("Enter the message to encrypt.");
       return;
     }
-    if (recipients.length === 0) {
-      setError("Add at least one recipient.");
-      return;
-    }
     if (!privateKey) {
       setError("Configure your private key first (top-right button) to sign the encrypted message.");
       return;
     }
+
+    // Build the final recipient key list. If "include me" is checked, derive
+    // the public key from the private key and prepend it.
+    const recipientKeys: string[] = [...recipients.map((r) => r.armored)];
+    if (includeSelf && privateKey) {
+      // Read the private key, then extract its public half as armored text.
+      try {
+        const pubArmored = await derivePublicFromPrivate(
+          privateKey.armored,
+          privateKey.passphrase,
+        );
+        recipientKeys.push(pubArmored);
+      } catch {
+        // If we can't derive the public key, just skip self-inclusion rather
+        // than failing the whole encrypt operation.
+      }
+    }
+
+    if (recipientKeys.length === 0) {
+      setError("Add at least one recipient (or enable 'Include me').");
+      return;
+    }
+
     setBusy(true);
     try {
       const armored = await encryptAndSign({
         plaintext,
-        recipientPublicKeys: recipients.map((r) => r.armored),
+        recipientPublicKeys: recipientKeys,
         signerPrivateKey: privateKey.armored,
         signerPassphrase: privateKey.passphrase || undefined,
       });
@@ -305,7 +392,7 @@ function EncryptTab({
     } finally {
       setBusy(false);
     }
-  }, [plaintext, recipients, privateKey]);
+  }, [plaintext, recipients, privateKey, includeSelf]);
 
   return (
     <section className="space-y-4">
@@ -314,6 +401,9 @@ function EncryptTab({
         setRecipients={setRecipients}
         autocompleteProxy={proxies.autocompleteProxy}
         keybaseProxy={proxies.keybaseProxy}
+        includeSelf={includeSelf}
+        setIncludeSelf={setIncludeSelf}
+        selfRecipient={selfRecipient}
       />
 
       <div>
@@ -366,11 +456,17 @@ function RecipientPicker({
   setRecipients,
   autocompleteProxy,
   keybaseProxy,
+  includeSelf,
+  setIncludeSelf,
+  selfRecipient,
 }: {
   recipients: Recipient[];
   setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>;
   autocompleteProxy: string;
   keybaseProxy: string;
+  includeSelf: boolean;
+  setIncludeSelf: (v: boolean) => void;
+  selfRecipient: Recipient | null;
 }) {
   const [input, setInput] = useState("");
   const [suggestions, setSuggestions] = useState<KeybaseAutocompleteResult[]>([]);
@@ -481,9 +577,38 @@ function RecipientPicker({
     <div>
       <Label>Recipients</Label>
 
-      {/* Recipients list */}
-      {recipients.length > 0 && (
+      {/* Include-me checkbox (only shown when a private key is configured) */}
+      {selfRecipient && (
+        <label className="mb-2 flex items-center gap-2 text-xs text-neutral-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeSelf}
+            onChange={(e) => setIncludeSelf(e.target.checked)}
+            className="size-3.5 accent-[#0055dc]"
+          />
+          <span>
+            Include me as a recipient{" "}
+            <span className="text-neutral-400">
+              (encrypts a copy to myself — stays {includeSelf ? "on" : "off"} for next time)
+            </span>
+          </span>
+        </label>
+      )}
+
+      {/* Recipients list — show self chip first when included */}
+      {(recipients.length > 0 || (includeSelf && selfRecipient)) && (
         <ul className="mb-2 flex flex-wrap gap-1.5">
+          {includeSelf && selfRecipient && (
+            <li
+              className="inline-flex items-center gap-1.5 rounded-full border border-[#0055dc]/30 bg-[#0055dc]/5 pl-2.5 pr-1.5 py-1 text-xs"
+              title={`${selfRecipient.label}\n${formatFingerprint(selfRecipient.fingerprint)}`}
+            >
+              <span className="font-medium text-[#0055dc]">
+                {selfRecipient.label}
+              </span>
+              <span className="text-[10px] text-[#0055dc]/70">auto</span>
+            </li>
+          )}
           {recipients.map((r) => (
             <li
               key={r.fingerprint}
@@ -947,21 +1072,19 @@ function SignTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
 function VerifyTab({
   proxies,
 }: {
-  proxies: { autocompleteProxy: string; keybaseProxy: string };
+  proxies: { fetchkeyProxy: string };
 }) {
   const [armored, setArmored] = useState("");
   const [plaintext, setPlaintext] = useState("");
-  const [signerUsername, setSignerUsername] = useState("");
-  const [signerKeys, setSignerKeys] = useState<{ label: string; armored: string }[]>([]);
   const [detected, setDetected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [fetchingKeys, setFetchingKeys] = useState(false);
   const [result, setResult] = useState<{
     verified: "valid" | "invalid" | "unknown";
     signatures: Array<{
       keyID: string;
       fingerprint?: string;
-      verified: string;
+      username?: string;
+      verified: "valid" | "invalid" | "unknown";
       error?: string;
     }>;
   } | null>(null);
@@ -977,30 +1100,6 @@ function VerifyTab({
     setDetected(f);
   }, [armored]);
 
-  const handleFetchSignerKey = useCallback(async () => {
-    setError(null);
-    const name = signerUsername.trim().toLowerCase();
-    if (!name) {
-      setError("Enter a Keybase username to fetch the signer's public key.");
-      return;
-    }
-    setFetchingKeys(true);
-    try {
-      const r = await lookupKeybaseUsersClient([name], proxies.keybaseProxy);
-      if (r.found.length === 0) {
-        setError(`No Keybase key found for @${name}.`);
-        return;
-      }
-      setSignerKeys(
-        r.found.map((k) => ({ label: `@${k.username}`, armored: k.armored })),
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setFetchingKeys(false);
-    }
-  }, [signerUsername, proxies.keybaseProxy]);
-
   const handleVerify = useCallback(async () => {
     setError(null);
     setResult(null);
@@ -1010,10 +1109,21 @@ function VerifyTab({
     }
     setBusy(true);
     try {
-      const res = await verifyAutoDetect(
+      const res = await verifyAutoDetectWithKeyFetch(
         armored,
-        signerKeys.map((k) => k.armored),
         plaintext || undefined,
+        async (keyIDs) => {
+          const fetched = await fetchKeyByKeyIDClient(
+            keyIDs,
+            proxies.fetchkeyProxy,
+          );
+          return fetched.map((f) => ({
+            armored: f.armored,
+            keyID: f.keyID,
+            fingerprint: f.fingerprint,
+            username: f.username,
+          }));
+        },
       );
       setResult(res);
     } catch (e) {
@@ -1021,7 +1131,7 @@ function VerifyTab({
     } finally {
       setBusy(false);
     }
-  }, [armored, plaintext, signerKeys]);
+  }, [armored, plaintext, proxies.fetchkeyProxy]);
 
   const showPlaintextField = detected === "detached-signature";
 
@@ -1049,6 +1159,10 @@ function VerifyTab({
             )}
           </p>
         )}
+        <p className="mt-1.5 text-[11px] text-neutral-500">
+          The signer's public key is fetched automatically from Keybase by the
+          signature's key ID.
+        </p>
       </div>
 
       {showPlaintextField && (
@@ -1062,35 +1176,6 @@ function VerifyTab({
           />
         </div>
       )}
-
-      <div>
-        <Label>Signer's Keybase username</Label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={signerUsername}
-            onChange={(e) => setSignerUsername(e.target.value)}
-            placeholder="e.g. chris"
-            className="flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
-          />
-          <Button
-            onClick={handleFetchSignerKey}
-            disabled={fetchingKeys}
-            variant="default"
-          >
-            {fetchingKeys ? "Fetching…" : "Fetch key"}
-          </Button>
-        </div>
-        {signerKeys.length > 0 && (
-          <p className="mt-1.5 text-[11px] text-emerald-700">
-            ✓ Loaded {signerKeys[0].label}'s public key
-          </p>
-        )}
-        <p className="mt-1.5 text-[11px] text-neutral-500">
-          The signature is verified against this signer's public key. Without a
-          key, the signature status will be "unknown".
-        </p>
-      </div>
 
       {error && <ErrorBanner message={error} />}
 
@@ -1128,13 +1213,32 @@ function VerifyTab({
             )}
           </div>
           {result.signatures.length > 0 && (
-            <ul className="space-y-1 text-[11px] font-mono text-neutral-600">
-              {result.signatures.map((s, i) => (
-                <li key={i}>
-                  key {s.keyID || "(unknown)"} — {s.verified}
-                  {s.error ? ` — ${s.error}` : ""}
-                </li>
-              ))}
+            <ul className="space-y-1.5 text-xs">
+              {result.signatures.map((s, i) => {
+                const color =
+                  s.verified === "valid"
+                    ? "text-emerald-700"
+                    : s.verified === "invalid"
+                      ? "text-red-700"
+                      : "text-neutral-600";
+                const label =
+                  s.verified === "valid"
+                    ? "verified"
+                    : s.verified === "invalid"
+                      ? "invalid signature"
+                      : "unknown signer";
+                return (
+                  <li key={i} className="flex items-center gap-2">
+                    <span className="font-medium text-[#0055dc]">
+                      {s.username ? `@${s.username}` : "Unknown key"}
+                    </span>
+                    <span className={`font-medium ${color}`}>{label}</span>
+                    <span className="text-[11px] text-neutral-500 font-mono ml-auto">
+                      {s.keyID}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -1298,20 +1402,22 @@ function KeybaseLoginForm({
     }
     setBusy(true);
     try {
-      setStage("Fetching salt…");
-      const { pwhashHex, salt } = await derivePwHash(
-        username,
-        password,
-        proxies.getsaltProxy,
-      );
+      setStage("Fetching salt + deriving keys…");
+      // Yield to the browser so the stage label can paint before the
+      // synchronous scrypt + PDPKA signing work blocks the main thread.
+      await new Promise((r) => setTimeout(r, 50));
+
+      setStage("Generating PDPKA signatures…");
+      await new Promise((r) => setTimeout(r, 50));
 
       setStage("Logging in to Keybase…");
-      const me = await loginAndFetchMe(
+      const { me, privateKey: decrypted } = await loginWithPassword(
         username,
-        pwhashHex,
-        salt.csrf_token,
-        salt.login_session,
-        proxies.loginProxy,
+        password,
+        {
+          getsaltUrl: proxies.getsaltProxy,
+          loginUrl: proxies.loginProxy,
+        },
       );
 
       if (!me.private_key_bundle) {
@@ -1321,10 +1427,6 @@ function KeybaseLoginForm({
       }
 
       setStage("Decrypting private key…");
-      const { privateKey: decrypted } = await decryptPrivateKeyBundle(
-        me.private_key_bundle,
-        pwhashHex,
-      );
       const armored = decrypted.armor();
       const info = await validateArmoredKey(armored);
       if (!info.ok || !info.info) {

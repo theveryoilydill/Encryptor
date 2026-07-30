@@ -97,8 +97,8 @@ export interface SignOptions {
 }
 
 export interface VerifyOptions {
-  /** The original plaintext. */
-  plaintext: string;
+  /** The original plaintext. Required for detached signatures; ignored for cleartext-signed messages. */
+  plaintext?: string;
   /** Either a detached signature or a cleartext-signed message. */
   armoredSignature: string;
   /** Public keys that may have signed. */
@@ -381,6 +381,137 @@ export async function decryptAndVerify(
   return { plaintext, signatures: sigsWithV };
 }
 
+/**
+ * Decrypt a message, then fetch the signers' public keys by key ID via the
+ * provided lookup callback, and re-decrypt with verificationKeys set so the
+ * signatures can be verified. Returns the plaintext plus richer signature
+ * info (including the owner username if the lookup returned one).
+ */
+export async function decryptAndAutoVerify(
+  opts: DecryptAndVerifyOptions,
+  fetchKeysByKeyID: (
+    keyIDs: string[],
+  ) => Promise<
+    Array<{
+      armored: string;
+      keyID: string;
+      fingerprint: string;
+      username?: string;
+    }>
+  >,
+): Promise<{
+  plaintext: string;
+  signatures: Array<{
+    keyID: string;
+    fingerprint?: string;
+    username?: string;
+    verified: "valid" | "invalid" | "unknown";
+    error?: string;
+  }>;
+}> {
+  if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
+  if (!opts.decryptionPrivateKey)
+    throw new Error("A decryption private key is required.");
+
+  const decryptionKey = await unlockPrivateKey(
+    await readPrivateKey(opts.decryptionPrivateKey),
+    opts.decryptionPassphrase,
+  );
+
+  // First pass: decrypt without verification to discover signature key IDs.
+  const message = await openpgp.readMessage({
+    armoredMessage: opts.armoredMessage,
+  });
+
+  const initial = await openpgp.decrypt({
+    message,
+    decryptionKeys: [decryptionKey],
+  });
+
+  const plaintext = typeof initial.data === "string" ? initial.data : "";
+  const initialSigs = initial.signatures ?? [];
+
+  if (initialSigs.length === 0) {
+    return { plaintext, signatures: [] };
+  }
+
+  // Collect unique key IDs.
+  const keyIDs = Array.from(
+    new Set(initialSigs.map((s) => keyIDToHex(s.keyID)).filter(Boolean)),
+  );
+
+  // Fetch the corresponding public keys.
+  const fetched = keyIDs.length > 0 ? await fetchKeysByKeyID(keyIDs) : [];
+
+  if (fetched.length === 0) {
+    // No keys could be fetched — return unknown signatures with key IDs only.
+    return {
+      plaintext,
+      signatures: initialSigs.map((s) => ({
+        keyID: keyIDToHex(s.keyID),
+        verified: "unknown" as const,
+      })),
+    };
+  }
+
+  // Second pass: decrypt again with verificationKeys so we get verified statuses.
+  const verificationKeys: openpgp.PublicKey[] = [];
+  for (const f of fetched) {
+    try {
+      verificationKeys.push(await readKey(f.armored));
+    } catch {
+      // skip invalid keys
+    }
+  }
+  // Also include any caller-supplied verification keys (for manual fallback).
+  for (const arm of opts.verificationPublicKeys ?? []) {
+    try {
+      verificationKeys.push(await readKey(arm));
+    } catch {
+      // skip
+    }
+  }
+
+  const verified = await openpgp.decrypt({
+    message,
+    decryptionKeys: [decryptionKey],
+    verificationKeys,
+  });
+
+  // Build the username lookup map (unused for now but kept for future expansion)
+  // and resolve each signature's verified status.
+  const finalSigs = await Promise.all(
+    (verified.signatures ?? []).map(async (sig) => {
+      const keyID = keyIDToHex(sig.keyID);
+      let verifiedStatus: "valid" | "invalid" | "unknown" = "unknown";
+      let error: string | undefined;
+      try {
+        await sig.verified;
+        verifiedStatus = "valid";
+      } catch (e) {
+        const msg = (e as Error).message || "";
+        if (/not present|could not verify|no key/i.test(msg)) {
+          verifiedStatus = "unknown";
+        } else {
+          verifiedStatus = "invalid";
+        }
+        error = msg;
+      }
+      // Find the matching fetched key for fingerprint + username.
+      const match = fetched.find((f) => f.keyID.toUpperCase() === keyID.toUpperCase());
+      return {
+        keyID,
+        fingerprint: match?.fingerprint,
+        username: match?.username,
+        verified: verifiedStatus,
+        error,
+      };
+    }),
+  );
+
+  return { plaintext, signatures: finalSigs };
+}
+
 export async function signMessage(opts: SignOptions): Promise<string> {
   if (!opts.plaintext) throw new Error("Plaintext is required.");
   if (!opts.privateKey) throw new Error("A signer private key is required.");
@@ -536,6 +667,75 @@ export function formatFingerprint(fp: string): string {
 export function formatKeyDate(d: Date | null | undefined): string {
   if (!d) return "never";
   return d.toLocaleString();
+}
+
+/** Detect the type of an armored PGP block from its headers. */
+export type ArmoredFormat =
+  | "cleartext-signed" // -----BEGIN PGP SIGNED MESSAGE-----
+  | "detached-signature" // -----BEGIN PGP SIGNATURE-----
+  | "encrypted-message" // -----BEGIN PGP MESSAGE-----  (could be encrypted+signed)
+  | "public-key" // -----BEGIN PGP PUBLIC KEY BLOCK-----
+  | "private-key" // -----BEGIN PGP PRIVATE KEY BLOCK-----
+  | "unknown";
+
+export function detectArmoredFormat(armored: string): ArmoredFormat {
+  const t = armored.trim();
+  if (t.startsWith("-----BEGIN PGP SIGNED MESSAGE-----")) return "cleartext-signed";
+  if (t.startsWith("-----BEGIN PGP SIGNATURE-----")) return "detached-signature";
+  if (t.startsWith("-----BEGIN PGP MESSAGE-----")) return "encrypted-message";
+  if (t.startsWith("-----BEGIN PGP PUBLIC KEY BLOCK-----")) return "public-key";
+  if (t.startsWith("-----BEGIN PGP PRIVATE KEY BLOCK-----")) return "private-key";
+  return "unknown";
+}
+
+/**
+ * Verify any armored PGP block by auto-detecting its format.
+ *
+ * - Cleartext-signed: verify directly with the public keys.
+ * - Detached signature: needs the original plaintext (opts.plaintext).
+ * - Encrypted message: this won't be a signature-only flow; the caller should
+ *   use decryptAndAutoVerify instead. We still try to extract signatures if
+ *   the message is signed-then-encrypted (requires decryption first).
+ */
+export async function verifyAutoDetect(
+  armored: string,
+  publicKeys: Armored[],
+  plaintext?: string,
+): Promise<VerifyResult> {
+  const format = detectArmoredFormat(armored);
+  if (format === "cleartext-signed") {
+    return verifyMessage({
+      armoredSignature: armored,
+      publicKeys,
+      detached: false,
+    });
+  }
+  if (format === "detached-signature") {
+    if (!plaintext) {
+      throw new Error(
+        "A detached signature was detected. Please paste the original plaintext too.",
+      );
+    }
+    return verifyMessage({
+      armoredSignature: armored,
+      publicKeys,
+      plaintext,
+      detached: true,
+    });
+  }
+  if (format === "encrypted-message") {
+    throw new Error(
+      "This looks like an encrypted message. Use the Decrypt tab to decrypt and verify it (the signature is checked automatically).",
+    );
+  }
+  if (format === "public-key" || format === "private-key") {
+    throw new Error(
+      "This looks like a key block, not a signature. Switch to the appropriate tab to load or use keys.",
+    );
+  }
+  throw new Error(
+    "Could not detect the format of the pasted block. Make sure it is an ASCII-armored PGP signature or cleartext-signed message.",
+  );
 }
 
 export { formatDate };

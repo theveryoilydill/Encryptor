@@ -27,11 +27,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
           name="description"
           content="Encrypt, sign, decrypt and verify PGP messages using Keybase keys. Deploys to Cloudflare Workers."
         />
-        <title>PGP · Keybase · Cloudflare</title>
+        <title>Encryptor · PGP for Keybase</title>
         <Meta />
         <Links />
       </head>
-      <body className="min-h-screen bg-neutral-950 text-neutral-100 antialiased">
+      <body className="min-h-screen bg-white text-neutral-900 antialiased">
         {children}
         <ScrollRestoration />
         <Scripts />

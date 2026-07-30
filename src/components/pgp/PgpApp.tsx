@@ -1,33 +1,40 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { lookupKeybaseUsersClient, type KeybasePublicKey } from "@/lib/pgp/keybase";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  decryptAndVerify,
+  autocompleteKeybaseUsersClient,
+  fetchKeyByKeyIDClient,
+  lookupKeybaseUsersClient,
+  type KeybaseAutocompleteResult,
+} from "@/lib/pgp/keybase";
+import {
+  derivePwHash,
+  decryptPrivateKeyBundle,
+  loginAndFetchMe,
+} from "@/lib/pgp/keybase-auth";
+import {
+  decryptAndAutoVerify,
+  detectArmoredFormat,
   encryptAndSign,
   formatFingerprint,
   generateKeyPair,
   signMessage,
   validateArmoredKey,
-  verifyMessage,
+  verifyAutoDetect,
   type AnyKeyInfo,
-  type DecryptAndVerifyResult,
   type GeneratedKeyPair,
 } from "@/lib/pgp/pgp";
 
-// In the Next.js preview, the Keybase proxy lives at /api/keybase.
-const KEYBASE_PROXY = "/api/keybase";
+// In the Next.js preview, the Keybase proxies live under /api/keybase/*
+const PROXIES = {
+  keybaseProxy: "/api/keybase",
+  autocompleteProxy: "/api/keybase/autocomplete",
+  fetchkeyProxy: "/api/keybase/fetchkey",
+  getsaltProxy: "/api/keybase/getsalt",
+  loginProxy: "/api/keybase/login",
+} as const;
 
 type Tab = "encrypt" | "decrypt" | "sign" | "verify";
-
-interface LocalKey {
-  id: string;
-  label: string;
-  armored: string;
-  isPrivate: boolean;
-  info?: AnyKeyInfo;
-  createdAt: number;
-}
 
 interface Recipient {
   source: "keybase" | "local";
@@ -40,206 +47,165 @@ interface Recipient {
   expiresAt: number | null;
 }
 
-const LOCAL_STORAGE_KEY = "pgp-app.local-keys.v1";
+interface PrivateKeyConfig {
+  source: "keybase" | "manual" | "generated";
+  label: string;
+  username?: string;
+  armored: string;
+  passphrase?: string;
+  info: AnyKeyInfo;
+}
+
+const LS_KEY = "encryptor.config.v1";
 
 export default function Home() {
-  const keybaseProxy = KEYBASE_PROXY;
+  const proxies = PROXIES;
 
   const [tab, setTab] = useState<Tab>("encrypt");
-
-  // Shared state: list of resolved recipient public keys (used by Encrypt tab)
   const [recipients, setRecipients] = useState<Recipient[]>([]);
+  const [privateKey, setPrivateKey] = useState<PrivateKeyConfig | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
 
-  // Shared state: signer's private key (used by Encrypt + Sign, Sign, and as fallback for Decrypt)
-  const [myPrivateKey, setMyPrivateKey] = useState("");
-  const [myPrivateKeyPass, setMyPrivateKeyPass] = useState("");
-  const [myPrivateKeyInfo, setMyPrivateKeyInfo] = useState<AnyKeyInfo | null>(null);
-  const [myPrivateKeyError, setMyPrivateKeyError] = useState<string | null>(null);
-
-  // Local keys collection
-  const [localKeys, setLocalKeys] = useState<LocalKey[]>([]);
-  const [showLocalKeys, setShowLocalKeys] = useState(false);
-
+  // Hydrate persisted config (only the armored private key, not the passphrase)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+      const raw = localStorage.getItem(LS_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as LocalKey[];
-        if (Array.isArray(parsed)) setLocalKeys(parsed);
+        const parsed = JSON.parse(raw) as PrivateKeyConfig;
+        if (parsed?.armored && parsed?.info) {
+          setPrivateKey(parsed);
+        }
       }
     } catch {
       // ignore
     }
   }, []);
 
-  const persistLocalKeys = useCallback((next: LocalKey[]) => {
-    setLocalKeys(next);
+  const handleSetPrivateKey = useCallback((next: PrivateKeyConfig | null) => {
+    setPrivateKey(next);
     try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(next));
+      if (next) {
+        // Don't persist passphrase
+        const toStore: PrivateKeyConfig = { ...next, passphrase: undefined };
+        localStorage.setItem(LS_KEY, JSON.stringify(toStore));
+      } else {
+        localStorage.removeItem(LS_KEY);
+      }
     } catch {
-      // ignore quota errors
+      // ignore
     }
   }, []);
 
-  const validateMyPrivateKey = useCallback(async () => {
-    setMyPrivateKeyError(null);
-    if (!myPrivateKey.trim()) {
-      setMyPrivateKeyInfo(null);
-      return;
-    }
-    const result = await validateArmoredKey(myPrivateKey.trim());
-    if (!result.ok) {
-      setMyPrivateKeyInfo(null);
-      setMyPrivateKeyError(result.error ?? "Invalid private key.");
-      return;
-    }
-    if (result.info && "isPrivate" in result.info && result.info.isPrivate) {
-      setMyPrivateKeyInfo(result.info);
-    } else {
-      setMyPrivateKeyInfo(null);
-      setMyPrivateKeyError(
-        "The key you pasted is a public key. A private key is required for signing and decryption.",
-      );
-    }
-  }, [myPrivateKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const t = setTimeout(async () => {
-      await validateMyPrivateKey();
-      if (cancelled) return;
-    }, 400);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [myPrivateKey, validateMyPrivateKey]);
-
   return (
-    <div className="min-h-screen flex flex-col bg-neutral-950 text-neutral-100">
-      <Header />
+    <div className="min-h-screen flex flex-col bg-white text-neutral-900">
+      <Header
+        onConfigure={() => setConfigOpen(true)}
+        privateKey={privateKey}
+      />
 
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10 grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 lg:gap-8">
-        <div className="min-w-0 space-y-6">
-          <Tabs value={tab} onChange={setTab} />
+      <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+        <Tabs value={tab} onChange={setTab} />
 
+        <div className="mt-6">
           {tab === "encrypt" && (
-            <EncryptSignPanel
+            <EncryptTab
               recipients={recipients}
               setRecipients={setRecipients}
-              myPrivateKey={myPrivateKey}
-              myPrivateKeyPass={myPrivateKeyPass}
-              myPrivateKeyInfo={myPrivateKeyInfo}
-              myPrivateKeyError={myPrivateKeyError}
-              localKeys={localKeys}
-              keybaseProxy={keybaseProxy}
+              privateKey={privateKey}
+              proxies={proxies}
             />
           )}
           {tab === "decrypt" && (
-            <DecryptVerifyPanel
-              myPrivateKey={myPrivateKey}
-              myPrivateKeyPass={myPrivateKeyPass}
-              myPrivateKeyInfo={myPrivateKeyInfo}
-              myPrivateKeyError={myPrivateKeyError}
-              localKeys={localKeys}
-              keybaseProxy={keybaseProxy}
-            />
+            <DecryptTab privateKey={privateKey} proxies={proxies} />
           )}
-          {tab === "sign" && (
-            <SignPanel
-              myPrivateKey={myPrivateKey}
-              myPrivateKeyPass={myPrivateKeyPass}
-              myPrivateKeyInfo={myPrivateKeyInfo}
-              myPrivateKeyError={myPrivateKeyError}
-              localKeys={localKeys}
-            />
-          )}
-          {tab === "verify" && (
-            <VerifyPanel localKeys={localKeys} keybaseProxy={keybaseProxy} />
-          )}
+          {tab === "sign" && <SignTab privateKey={privateKey} />}
+          {tab === "verify" && <VerifyTab proxies={proxies} />}
         </div>
-
-        <aside className="space-y-6">
-          <KeybaseSidebar
-            keybaseProxy={keybaseProxy}
-            recipients={recipients}
-            setRecipients={setRecipients}
-          />
-
-          <MyPrivateKeyCard
-            myPrivateKey={myPrivateKey}
-            setMyPrivateKey={setMyPrivateKey}
-            myPrivateKeyPass={myPrivateKeyPass}
-            setMyPrivateKeyPass={setMyPrivateKeyPass}
-            myPrivateKeyInfo={myPrivateKeyInfo}
-            myPrivateKeyError={myPrivateKeyError}
-            localKeys={localKeys}
-            onLoadLocalKey={(armored) => setMyPrivateKey(armored)}
-          />
-
-          <LocalKeysCard
-            localKeys={localKeys}
-            setLocalKeys={persistLocalKeys}
-            showLocalKeys={showLocalKeys}
-            setShowLocalKeys={setShowLocalKeys}
-            onLoadAsSigner={(armored) => setMyPrivateKey(armored)}
-            onAddAsRecipient={(r) =>
-              setRecipients((prev) =>
-                prev.some((p) => p.fingerprint === r.fingerprint)
-                  ? prev
-                  : [...prev, r],
-              )
-            }
-          />
-        </aside>
       </main>
 
       <Footer />
+
+      {configOpen && (
+        <ConfigureModal
+          onClose={() => setConfigOpen(false)}
+          privateKey={privateKey}
+          onSave={(next) => {
+            handleSetPrivateKey(next);
+            setConfigOpen(false);
+          }}
+          onClear={() => {
+            handleSetPrivateKey(null);
+            setConfigOpen(false);
+          }}
+          proxies={proxies}
+        />
+      )}
     </div>
   );
 }
 
 /* ---------------------------------- Header --------------------------------- */
 
-function Header() {
+function Header({
+  onConfigure,
+  privateKey,
+}: {
+  onConfigure: () => void;
+  privateKey: PrivateKeyConfig | null;
+}) {
   return (
-    <header className="border-b border-neutral-800 bg-neutral-950/80 backdrop-blur sticky top-0 z-10">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="size-8 rounded-md bg-amber-500 text-neutral-950 font-bold grid place-items-center text-sm">
-            PGP
+    <header className="border-b border-neutral-200 bg-white sticky top-0 z-10">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="size-7 rounded-md bg-[#0055dc] text-white font-bold grid place-items-center text-xs">
+            E
           </div>
-          <div className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold">PGP for Keybase</span>
-            <span className="text-[11px] text-neutral-500">
-              Encrypt · Sign · Decrypt · Verify · Cloudflare Workers
-            </span>
-          </div>
+          <span className="text-base font-semibold tracking-tight">Encryptor</span>
         </div>
-        <a
-          href="https://keybase.io"
-          target="_blank"
-          rel="noreferrer noopener"
-          className="text-xs text-neutral-400 hover:text-amber-400 transition-colors"
+        <button
+          onClick={onConfigure}
+          className="inline-flex items-center gap-2 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700 hover:border-[#0055dc] hover:text-[#0055dc] transition-colors"
         >
-          keybase.io ↗
-        </a>
+          <KeyIcon />
+          {privateKey ? (
+            <span>
+              {privateKey.source === "keybase"
+                ? `@${privateKey.username}`
+                : privateKey.label}
+            </span>
+          ) : (
+            <span>Configure private key</span>
+          )}
+        </button>
       </div>
     </header>
   );
 }
 
+function KeyIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+    </svg>
+  );
+}
+
 function Footer() {
   return (
-    <footer className="mt-auto border-t border-neutral-800 bg-neutral-950">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 text-[11px] text-neutral-500 flex flex-wrap items-center justify-between gap-2">
-        <span>
-          Built with React Router v8 · openpgp.js · deploys to Cloudflare Workers.
-        </span>
-        <span>
-          All crypto runs in your browser. Keys and messages never touch our
-          servers except for Keybase lookups (proxied server-side).
-        </span>
+    <footer className="mt-auto border-t border-neutral-200 bg-white">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-3 text-[11px] text-neutral-500">
+        All crypto runs in your browser. Keys and plaintext never touch our
+        servers — only Keybase username lookups are proxied.
       </div>
     </footer>
   );
@@ -248,16 +214,17 @@ function Footer() {
 /* ----------------------------------- Tabs ---------------------------------- */
 
 function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
-  const tabs: { id: Tab; label: string; hint: string }[] = [
-    { id: "encrypt", label: "Encrypt & Sign", hint: "To multiple recipients" },
-    { id: "decrypt", label: "Decrypt & Verify", hint: "Verify the signer" },
-    { id: "sign", label: "Sign", hint: "Plain-text signature" },
-    { id: "verify", label: "Verify", hint: "Check a signature" },
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "encrypt", label: "Encrypt" },
+    { id: "decrypt", label: "Decrypt" },
+    { id: "sign", label: "Sign" },
+    { id: "verify", label: "Verify" },
   ];
   return (
     <nav
-      className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-1 grid grid-cols-2 sm:grid-cols-4 gap-1"
+      className="flex border-b border-neutral-200"
       role="tablist"
+      aria-label="Mode"
     >
       {tabs.map((t) => {
         const active = t.id === value;
@@ -267,18 +234,13 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
             role="tab"
             aria-selected={active}
             onClick={() => onChange(t.id)}
-            className={`rounded-md px-3 py-2 text-left transition-colors ${
+            className={`px-5 py-2.5 -mb-px border-b-2 text-sm font-medium transition-colors ${
               active
-                ? "bg-amber-500 text-neutral-950"
-                : "text-neutral-300 hover:bg-neutral-800 hover:text-white"
+                ? "border-[#0055dc] text-[#0055dc]"
+                : "border-transparent text-neutral-500 hover:text-neutral-800 hover:border-neutral-300"
             }`}
           >
-            <div className="text-sm font-semibold">{t.label}</div>
-            <div
-              className={`text-[11px] ${active ? "text-neutral-800" : "text-neutral-500"}`}
-            >
-              {t.hint}
-            </div>
+            {t.label}
           </button>
         );
       })}
@@ -286,50 +248,47 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
   );
 }
 
-/* ------------------------------ Encrypt & Sign ----------------------------- */
+/* --------------------------------- Encrypt --------------------------------- */
 
-interface EncryptSignPanelProps {
+interface EncryptTabProps {
   recipients: Recipient[];
   setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>;
-  myPrivateKey: string;
-  myPrivateKeyPass: string;
-  myPrivateKeyInfo: AnyKeyInfo | null;
-  myPrivateKeyError: string | null;
-  localKeys: LocalKey[];
-  keybaseProxy: string;
+  privateKey: PrivateKeyConfig | null;
+  proxies: {
+    keybaseProxy: string;
+    autocompleteProxy: string;
+    fetchkeyProxy: string;
+    getsaltProxy: string;
+    loginProxy: string;
+  };
 }
 
-function EncryptSignPanel({
+function EncryptTab({
   recipients,
   setRecipients,
-  myPrivateKey,
-  myPrivateKeyPass,
-  myPrivateKeyInfo,
-  myPrivateKeyError,
-  localKeys,
-  keybaseProxy,
-}: EncryptSignPanelProps) {
+  privateKey,
+  proxies,
+}: EncryptTabProps) {
   const [plaintext, setPlaintext] = useState("");
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showAddRecipient, setShowAddRecipient] = useState(false);
+  const [nukeConfirmed, setNukeConfirmed] = useState(false);
 
   const handleEncrypt = useCallback(async () => {
     setError(null);
     setOutput("");
+    setNukeConfirmed(false);
     if (!plaintext.trim()) {
-      setError("Please enter the plaintext message to encrypt.");
+      setError("Enter the message to encrypt.");
       return;
     }
     if (recipients.length === 0) {
-      setError("Please add at least one recipient (Keybase username or pasted public key).");
+      setError("Add at least one recipient.");
       return;
     }
-    if (!myPrivateKey.trim()) {
-      setError(
-        "Please provide your private key in the sidebar to sign the encrypted message.",
-      );
+    if (!privateKey) {
+      setError("Configure your private key first (top-right button) to sign the encrypted message.");
       return;
     }
     setBusy(true);
@@ -337,8 +296,8 @@ function EncryptSignPanel({
       const armored = await encryptAndSign({
         plaintext,
         recipientPublicKeys: recipients.map((r) => r.armored),
-        signerPrivateKey: myPrivateKey,
-        signerPassphrase: myPrivateKeyPass || undefined,
+        signerPrivateKey: privateKey.armored,
+        signerPassphrase: privateKey.passphrase || undefined,
       });
       setOutput(armored);
     } catch (e) {
@@ -346,330 +305,567 @@ function EncryptSignPanel({
     } finally {
       setBusy(false);
     }
-  }, [plaintext, recipients, myPrivateKey, myPrivateKeyPass]);
+  }, [plaintext, recipients, privateKey]);
 
   return (
     <section className="space-y-4">
-      <Card>
-        <CardHeader
-          title="Encrypt & sign message"
-          subtitle="The message is encrypted to every recipient AND signed with your private key."
+      <RecipientPicker
+        recipients={recipients}
+        setRecipients={setRecipients}
+        autocompleteProxy={proxies.autocompleteProxy}
+        keybaseProxy={proxies.keybaseProxy}
+      />
+
+      <div>
+        <Label>Message</Label>
+        <Textarea
+          value={plaintext}
+          onChange={setPlaintext}
+          placeholder="Type the message you want to encrypt + sign."
+          rows={8}
+          disabled={!!output}
         />
-        <div className="space-y-4">
-          <Field label="Recipients">
-            <RecipientList
-              recipients={recipients}
-              onRemove={(fp) =>
-                setRecipients((prev) => prev.filter((r) => r.fingerprint !== fp))
-              }
-            />
-            <button
-              onClick={() => setShowAddRecipient((v) => !v)}
-              className="mt-2 text-xs text-amber-400 hover:text-amber-300"
-            >
-              {showAddRecipient ? "Hide manual paste" : "+ Paste a public key manually"}
-            </button>
-            {showAddRecipient && (
-              <ManualRecipientForm
-                onAdd={(r) =>
-                  setRecipients((prev) =>
-                    prev.some((p) => p.fingerprint === r.fingerprint)
-                      ? prev
-                      : [...prev, r],
-                  )
-                }
-              />
-            )}
-            <p className="mt-2 text-[11px] text-neutral-500">
-              Tip: add recipients from the Keybase panel on the right by typing
-              their usernames.
-            </p>
-          </Field>
+      </div>
 
-          <Field label="Plaintext message">
-            <Textarea
-              value={plaintext}
-              onChange={setPlaintext}
-              placeholder="Type the message you want to encrypt + sign."
-              rows={8}
-            />
-          </Field>
+      {error && <ErrorBanner message={error} />}
 
-          <SignerStatus
-            info={myPrivateKeyInfo}
-            error={myPrivateKeyError}
-            hasKey={!!myPrivateKey.trim()}
-            localKeys={localKeys}
-          />
-
-          {error && <ErrorBanner message={error} />}
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              onClick={handleEncrypt}
-              disabled={busy}
-              variant="primary"
-            >
-              {busy ? "Encrypting…" : "Encrypt & sign"}
-            </Button>
-            <Button
-              onClick={() => {
-                setPlaintext("");
-                setOutput("");
-                setError(null);
-              }}
-              variant="ghost"
-            >
-              Clear
-            </Button>
-          </div>
+      {!output && (
+        <div className="flex gap-2">
+          <Button onClick={handleEncrypt} disabled={busy} variant="primary">
+            {busy ? "Encrypting…" : "Encrypt & sign"}
+          </Button>
         </div>
-      </Card>
+      )}
 
       {output && (
-        <Card>
-          <CardHeader
-            title="Encrypted + signed message"
-            subtitle="Send this ASCII-armored block to your recipients."
-          />
-          <Textarea value={output} readOnly rows={14} />
-          <div className="mt-2 flex justify-end">
-            <CopyButton text={output} />
-          </div>
-        </Card>
+        <OutputBlock
+          title="Encrypted + signed message"
+          output={output}
+          nukeLabel="Nuke plaintext"
+          nukeConfirmed={nukeConfirmed}
+          onNuke={() => {
+            setPlaintext("");
+            setNukeConfirmed(true);
+          }}
+          onReset={() => {
+            setOutput("");
+            setPlaintext("");
+            setNukeConfirmed(false);
+            setError(null);
+          }}
+        />
       )}
     </section>
   );
 }
 
-/* ------------------------------ Decrypt & Verify --------------------------- */
+/* ----------------------- Recipient picker w/ autocomplete ------------------- */
 
-interface DecryptVerifyPanelProps {
-  myPrivateKey: string;
-  myPrivateKeyPass: string;
-  myPrivateKeyInfo: AnyKeyInfo | null;
-  myPrivateKeyError: string | null;
-  localKeys: LocalKey[];
-  keybaseProxy: string;
-}
-
-function DecryptVerifyPanel({
-  myPrivateKey,
-  myPrivateKeyPass,
-  myPrivateKeyInfo,
-  myPrivateKeyError,
-  localKeys,
+function RecipientPicker({
+  recipients,
+  setRecipients,
+  autocompleteProxy,
   keybaseProxy,
-}: DecryptVerifyPanelProps) {
-  const [armored, setArmored] = useState("");
-  const [signerUsernames, setSignerUsernames] = useState("");
-  const [signerPubKeys, setSignerPubKeys] = useState<{ label: string; armored: string }[]>([]);
-  const [result, setResult] = useState<DecryptAndVerifyResult | null>(null);
+}: {
+  recipients: Recipient[];
+  setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>;
+  autocompleteProxy: string;
+  keybaseProxy: string;
+}) {
+  const [input, setInput] = useState("");
+  const [suggestions, setSuggestions] = useState<KeybaseAutocompleteResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [fetchingKeys, setFetchingKeys] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const handleFetchSignerKeys = useCallback(async () => {
-    setError(null);
-    const names = signerUsernames
-      .split(/[\s,;]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (names.length === 0) {
-      setError("Enter one or more Keybase usernames for the expected signers.");
+  // Debounced autocomplete
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = input.trim();
+    if (q.length < 1) {
+      setSuggestions([]);
       return;
     }
-    setFetchingKeys(true);
-    try {
-      const r = await lookupKeybaseUsersClient(names, keybaseProxy);
-      if (r.found.length === 0) {
-        setError("No Keybase public keys found for the given usernames.");
-      } else {
-        setSignerPubKeys(
-          r.found.map((k) => ({
+    debounceRef.current = setTimeout(async () => {
+      setBusy(true);
+      try {
+        const results = await autocompleteKeybaseUsersClient(q, autocompleteProxy);
+        setSuggestions(results);
+        setShowSuggestions(true);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setBusy(false);
+      }
+    }, 200);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [input, autocompleteProxy]);
+
+  // Click-outside to close suggestions
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const addRecipientByKeybaseUsername = useCallback(
+    async (username: string) => {
+      setError(null);
+      const name = username.trim().toLowerCase();
+      if (!name) return;
+      setAdding(true);
+      try {
+        const r = await lookupKeybaseUsersClient([name], keybaseProxy);
+        if (r.found.length === 0) {
+          setError(`No Keybase key found for @${name}.`);
+          return;
+        }
+        const k = r.found[0];
+        const fp = k.fingerprint;
+        if (recipients.some((p) => p.fingerprint === fp)) {
+          setInput("");
+          setSuggestions([]);
+          setShowSuggestions(false);
+          return;
+        }
+        setRecipients((prev) => [
+          ...prev,
+          {
+            source: "keybase",
+            username: k.username,
             label: `@${k.username}`,
             armored: k.armored,
-          })),
-        );
+            fingerprint: fp,
+            keyID: k.keyID,
+            algorithm: k.algorithm,
+            expiresAt: k.expiresAt,
+          },
+        ]);
+        setInput("");
+        setSuggestions([]);
+        setShowSuggestions(false);
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setAdding(false);
       }
-      if (r.missing.length > 0) {
-        setError(
-          (prev) =>
-            (prev ? prev + " " : "") +
-            `No key found for: ${r.missing.join(", ")}.`,
-        );
-      }
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setFetchingKeys(false);
-    }
-  }, [signerUsernames, keybaseProxy]);
+    },
+    [recipients, setRecipients, keybaseProxy],
+  );
 
-  const handleDecrypt = useCallback(async () => {
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter" || e.key === ",") {
+        e.preventDefault();
+        addRecipientByKeybaseUsername(input);
+      } else if (e.key === "Escape") {
+        setShowSuggestions(false);
+      }
+    },
+    [input, addRecipientByKeybaseUsername],
+  );
+
+  return (
+    <div>
+      <Label>Recipients</Label>
+
+      {/* Recipients list */}
+      {recipients.length > 0 && (
+        <ul className="mb-2 flex flex-wrap gap-1.5">
+          {recipients.map((r) => (
+            <li
+              key={r.fingerprint}
+              className="inline-flex items-center gap-1.5 rounded-full border border-neutral-300 bg-white pl-2.5 pr-1.5 py-1 text-xs"
+              title={`${r.label}\n${formatFingerprint(r.fingerprint)}`}
+            >
+              <span className="font-medium text-[#0055dc]">{r.label}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setRecipients((prev) =>
+                    prev.filter((p) => p.fingerprint !== r.fingerprint),
+                  )
+                }
+                className="ml-1 rounded-full text-neutral-400 hover:text-neutral-700"
+                aria-label={`Remove ${r.label}`}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Input + autocomplete dropdown */}
+      <div className="relative" ref={containerRef}>
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+          placeholder={
+            recipients.length === 0
+              ? "Type a Keybase username (e.g. chris)"
+              : "Add another recipient…"
+          }
+          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
+          disabled={adding}
+        />
+        {busy && (
+          <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-neutral-400">
+            …
+          </div>
+        )}
+
+        {/* Suggestions dropdown - BELOW the input */}
+        {showSuggestions && suggestions.length > 0 && (
+          <ul className="absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-auto rounded-md border border-neutral-200 bg-white shadow-lg">
+            {suggestions.map((s) => {
+              const alreadyAdded = recipients.some(
+                (p) => p.username === s.username,
+              );
+              return (
+                <li key={s.uid}>
+                  <button
+                    type="button"
+                    onClick={() => addRecipientByKeybaseUsername(s.username)}
+                    disabled={alreadyAdded}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-neutral-50 ${
+                      alreadyAdded ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                  >
+                    {s.picture_url ? (
+                      <img
+                        src={s.picture_url}
+                        alt=""
+                        className="size-6 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="size-6 rounded-full bg-neutral-200 grid place-items-center text-[10px] text-neutral-600 font-medium">
+                        {s.username.slice(0, 2)}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-neutral-900 truncate">
+                        @{s.username}
+                      </div>
+                      {s.full_name && (
+                        <div className="text-[11px] text-neutral-500 truncate">
+                          {s.full_name}
+                        </div>
+                      )}
+                    </div>
+                    {alreadyAdded && (
+                      <span className="text-[10px] text-neutral-400">added</span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {error && <p className="mt-1.5 text-[11px] text-red-600">{error}</p>}
+
+      <p className="mt-1.5 text-[11px] text-neutral-500">
+        Type a Keybase username and press Enter (or pick a suggestion). You can
+        also paste a public key manually below.
+      </p>
+
+      <ManualRecipientAdd
+        onAdd={(r) =>
+          setRecipients((prev) =>
+            prev.some((p) => p.fingerprint === r.fingerprint)
+              ? prev
+              : [...prev, r],
+          )
+        }
+      />
+    </div>
+  );
+}
+
+function ManualRecipientAdd({
+  onAdd,
+}: {
+  onAdd: (r: Recipient) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [armored, setArmored] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAdd = useCallback(async () => {
     setError(null);
-    setResult(null);
     if (!armored.trim()) {
-      setError("Paste the encrypted PGP message first.");
-      return;
-    }
-    if (!myPrivateKey.trim()) {
-      setError("Provide your private key in the sidebar to decrypt.");
-      return;
-    }
-    if (signerPubKeys.length === 0) {
-      setError(
-        "Provide at least one signer public key (Keybase username or paste) to verify the signature.",
-      );
+      setError("Paste an armored public key.");
       return;
     }
     setBusy(true);
     try {
-      const res = await decryptAndVerify({
-        armoredMessage: armored,
-        decryptionPrivateKey: myPrivateKey,
-        decryptionPassphrase: myPrivateKeyPass || undefined,
-        verificationPublicKeys: signerPubKeys.map((k) => k.armored),
+      const v = await validateArmoredKey(armored.trim());
+      if (!v.ok || !v.info) {
+        setError(v.error ?? "Invalid public key.");
+        return;
+      }
+      if ("isPrivate" in v.info && v.info.isPrivate) {
+        setError("That's a private key. Paste a public key for recipients.");
+        return;
+      }
+      onAdd({
+        source: "local",
+        label:
+          v.info.userIDs[0]?.name ||
+          v.info.userIDs[0]?.email ||
+          "Pasted key",
+        armored: armored.trim(),
+        fingerprint: v.info.fingerprint,
+        keyID: v.info.keyID,
+        algorithm: v.info.algorithm,
+        expiresAt: v.info.expirationTime?.getTime() ?? null,
       });
-      setResult(res);
+      setArmored("");
+      setOpen(false);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [armored, myPrivateKey, myPrivateKeyPass, signerPubKeys]);
+  }, [armored, onAdd]);
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-[11px] text-[#0055dc] hover:underline"
+      >
+        {open ? "Hide manual paste" : "+ Paste a public key manually"}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-2">
+          <Textarea
+            value={armored}
+            onChange={setArmored}
+            placeholder={"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"}
+            rows={5}
+          />
+          {error && <ErrorBanner message={error} />}
+          <Button onClick={handleAdd} disabled={busy} variant="default">
+            {busy ? "Validating…" : "Add public key"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------------- Decrypt --------------------------------- */
+
+function DecryptTab({
+  privateKey,
+  proxies,
+}: {
+  privateKey: PrivateKeyConfig | null;
+  proxies: { fetchkeyProxy: string };
+}) {
+  const [armored, setArmored] = useState("");
+  const [output, setOutput] = useState<{
+    plaintext: string;
+    signatures: Array<{
+      keyID: string;
+      fingerprint?: string;
+      username?: string;
+      verified: "valid" | "invalid" | "unknown";
+      error?: string;
+    }>;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [nukeConfirmed, setNukeConfirmed] = useState(false);
+
+  const handleDecrypt = useCallback(async () => {
+    setError(null);
+    setOutput(null);
+    setNukeConfirmed(false);
+    if (!armored.trim()) {
+      setError("Paste the encrypted PGP message.");
+      return;
+    }
+    if (!privateKey) {
+      setError("Configure your private key first (top-right button).");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await decryptAndAutoVerify(
+        {
+          armoredMessage: armored,
+          decryptionPrivateKey: privateKey.armored,
+          decryptionPassphrase: privateKey.passphrase || undefined,
+          verificationPublicKeys: [],
+        },
+        async (keyIDs) => {
+          const fetched = await fetchKeyByKeyIDClient(keyIDs, proxies.fetchkeyProxy);
+          return fetched.map((f) => ({
+            armored: f.armored,
+            keyID: f.keyID,
+            fingerprint: f.fingerprint,
+            username: f.username,
+          }));
+        },
+      );
+      setOutput(result);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [armored, privateKey, proxies.fetchkeyProxy]);
 
   return (
     <section className="space-y-4">
-      <Card>
-        <CardHeader
-          title="Decrypt & verify signature"
-          subtitle="Decrypt the message with your private key and verify the signer's signature."
+      <div>
+        <Label>Encrypted message</Label>
+        <Textarea
+          value={armored}
+          onChange={setArmored}
+          placeholder={"-----BEGIN PGP MESSAGE-----\n...\n-----END PGP MESSAGE-----"}
+          rows={10}
+          disabled={!!output}
         />
-        <div className="space-y-4">
-          <Field label="Encrypted PGP message">
-            <Textarea
-              value={armored}
-              onChange={setArmored}
-              placeholder="-----BEGIN PGP MESSAGE-----&#10;...&#10;-----END PGP MESSAGE-----"
-              rows={10}
-            />
-          </Field>
+      </div>
 
-          <Field label="Expected signer (Keybase usernames)">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={signerUsernames}
-                onChange={(e) => setSignerUsernames(e.target.value)}
-                placeholder="alice, bob, chris"
-                className="flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
-              />
-              <Button
-                onClick={handleFetchSignerKeys}
-                disabled={fetchingKeys}
-                variant="ghost"
-              >
-                {fetchingKeys ? "Fetching…" : "Fetch signer keys"}
-              </Button>
-            </div>
-            {signerPubKeys.length > 0 && (
-              <ul className="mt-2 text-[11px] text-neutral-400 list-disc list-inside">
-                {signerPubKeys.map((k, i) => (
-                  <li key={i}>{k.label} · loaded for verification</li>
-                ))}
-              </ul>
-            )}
-            <p className="mt-1 text-[11px] text-neutral-500">
-              Without the signer's public key, the message can still be
-              decrypted but the signature cannot be verified.
-            </p>
-          </Field>
+      {error && <ErrorBanner message={error} />}
 
-          <SignerStatus
-            info={myPrivateKeyInfo}
-            error={myPrivateKeyError}
-            hasKey={!!myPrivateKey.trim()}
-            localKeys={localKeys}
-            isPrivateForDecryption
-          />
-
-          {error && <ErrorBanner message={error} />}
-
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={handleDecrypt} disabled={busy} variant="primary">
-              {busy ? "Decrypting…" : "Decrypt & verify"}
-            </Button>
-            <Button
-              onClick={() => {
-                setArmored("");
-                setResult(null);
-                setError(null);
-              }}
-              variant="ghost"
-            >
-              Clear
-            </Button>
-          </div>
+      {!output && (
+        <div className="flex gap-2">
+          <Button onClick={handleDecrypt} disabled={busy} variant="primary">
+            {busy ? "Decrypting…" : "Decrypt"}
+          </Button>
         </div>
-      </Card>
+      )}
 
-      {result && (
-        <Card>
-          <CardHeader
+      {output && (
+        <div className="space-y-4">
+          {output.signatures.length > 0 && (
+            <SignerBadges signatures={output.signatures} />
+          )}
+          <OutputBlock
             title="Decrypted message"
-            subtitle="The decrypted plaintext and signature verification result."
+            output={output.plaintext}
+            nukeLabel="Nuke encrypted input"
+            nukeConfirmed={nukeConfirmed}
+            onNuke={() => {
+              setArmored("");
+              setNukeConfirmed(true);
+            }}
+            onReset={() => {
+              setOutput(null);
+              setArmored("");
+              setNukeConfirmed(false);
+              setError(null);
+            }}
           />
-          <Textarea value={result.plaintext} readOnly rows={10} />
-          <div className="mt-3">
-            <SignatureTable signatures={result.signatures} />
-          </div>
-        </Card>
+        </div>
       )}
     </section>
   );
 }
 
-/* ----------------------------------- Sign ---------------------------------- */
-
-interface SignPanelProps {
-  myPrivateKey: string;
-  myPrivateKeyPass: string;
-  myPrivateKeyInfo: AnyKeyInfo | null;
-  myPrivateKeyError: string | null;
-  localKeys: LocalKey[];
+function SignerBadges({
+  signatures,
+}: {
+  signatures: Array<{
+    keyID: string;
+    fingerprint?: string;
+    username?: string;
+    verified: "valid" | "invalid" | "unknown";
+    error?: string;
+  }>;
+}) {
+  return (
+    <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2.5">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-neutral-500 mb-1.5">
+        Signed by
+      </div>
+      <ul className="space-y-1.5">
+        {signatures.map((s, i) => {
+          const color =
+            s.verified === "valid"
+              ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+              : s.verified === "invalid"
+                ? "text-red-700 bg-red-50 border-red-200"
+                : "text-neutral-700 bg-neutral-100 border-neutral-200";
+          const label =
+            s.verified === "valid"
+              ? "verified"
+              : s.verified === "invalid"
+                ? "invalid signature"
+                : "unknown signer";
+          return (
+            <li key={i} className="flex items-center gap-2 text-sm">
+              <span className="font-medium text-[#0055dc]">
+                {s.username ? `@${s.username}` : "Unknown key"}
+              </span>
+              <span
+                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${color}`}
+              >
+                {label}
+              </span>
+              <span className="text-[11px] text-neutral-500 font-mono ml-auto">
+                {s.keyID}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
-function SignPanel({
-  myPrivateKey,
-  myPrivateKeyPass,
-  myPrivateKeyInfo,
-  myPrivateKeyError,
-  localKeys,
-}: SignPanelProps) {
+/* ----------------------------------- Sign ---------------------------------- */
+
+function SignTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
   const [plaintext, setPlaintext] = useState("");
   const [detached, setDetached] = useState(false);
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nukeConfirmed, setNukeConfirmed] = useState(false);
 
   const handleSign = useCallback(async () => {
     setError(null);
     setOutput("");
+    setNukeConfirmed(false);
     if (!plaintext.trim()) {
-      setError("Enter the text you want to sign.");
+      setError("Enter the text to sign.");
       return;
     }
-    if (!myPrivateKey.trim()) {
-      setError("Provide your private key in the sidebar to sign.");
+    if (!privateKey) {
+      setError("Configure your private key first (top-right button).");
       return;
     }
     setBusy(true);
     try {
       const signed = await signMessage({
         plaintext,
-        privateKey: myPrivateKey,
-        passphrase: myPrivateKeyPass || undefined,
+        privateKey: privateKey.armored,
+        passphrase: privateKey.passphrase || undefined,
         detached,
       });
       setOutput(signed);
@@ -678,92 +874,69 @@ function SignPanel({
     } finally {
       setBusy(false);
     }
-  }, [plaintext, myPrivateKey, myPrivateKeyPass, detached]);
+  }, [plaintext, privateKey, detached]);
 
   return (
     <section className="space-y-4">
-      <Card>
-        <CardHeader
-          title="Sign plain text"
-          subtitle="Create a detached PGP signature or a cleartext-signed message."
+      <div>
+        <Label>Plain text to sign</Label>
+        <Textarea
+          value={plaintext}
+          onChange={setPlaintext}
+          placeholder="Paste the text you want to sign."
+          rows={8}
+          disabled={!!output}
         />
-        <div className="space-y-4">
-          <Field label="Plain text to sign">
-            <Textarea
-              value={plaintext}
-              onChange={setPlaintext}
-              placeholder="Paste the text you want to sign."
-              rows={8}
-            />
-          </Field>
+      </div>
 
-          <Field label="Signature format">
-            <div className="flex gap-4 text-sm">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  checked={!detached}
-                  onChange={() => setDetached(false)}
-                  className="accent-amber-500"
-                />
-                <span>
-                  <span className="font-medium">Cleartext signed</span>{" "}
-                  <span className="text-neutral-500">(inline, human-readable)</span>
-                </span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  checked={detached}
-                  onChange={() => setDetached(true)}
-                  className="accent-amber-500"
-                />
-                <span>
-                  <span className="font-medium">Detached</span>{" "}
-                  <span className="text-neutral-500">(separate signature block)</span>
-                </span>
-              </label>
-            </div>
-          </Field>
-
-          <SignerStatus
-            info={myPrivateKeyInfo}
-            error={myPrivateKeyError}
-            hasKey={!!myPrivateKey.trim()}
-            localKeys={localKeys}
+      <div className="flex gap-5 text-sm">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            checked={!detached}
+            onChange={() => setDetached(false)}
+            className="accent-[#0055dc]"
           />
+          <span>Cleartext signed</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="radio"
+            checked={detached}
+            onChange={() => setDetached(true)}
+            className="accent-[#0055dc]"
+          />
+          <span>Detached signature</span>
+        </label>
+      </div>
 
-          {error && <ErrorBanner message={error} />}
+      {error && <ErrorBanner message={error} />}
 
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={handleSign} disabled={busy} variant="primary">
-              {busy ? "Signing…" : "Sign message"}
-            </Button>
-            <Button
-              onClick={() => {
-                setPlaintext("");
-                setOutput("");
-                setError(null);
-              }}
-              variant="ghost"
-            >
-              Clear
-            </Button>
-          </div>
+      {!output && (
+        <div className="flex gap-2">
+          <Button onClick={handleSign} disabled={busy} variant="primary">
+            {busy ? "Signing…" : "Sign message"}
+          </Button>
         </div>
-      </Card>
+      )}
 
       {output && (
-        <Card>
-          <CardHeader
-            title={detached ? "Detached signature" : "Cleartext signed message"}
-            subtitle="Share this with anyone who has your public key."
-          />
-          <Textarea value={output} readOnly rows={12} />
-          <div className="mt-2 flex justify-end">
-            <CopyButton text={output} />
-          </div>
-        </Card>
+        <OutputBlock
+          title={detached ? "Detached signature" : "Cleartext signed message"}
+          output={output}
+          nukeLabel="Nuke plaintext"
+          nukeConfirmed={nukeConfirmed}
+          onNuke={() => {
+            setPlaintext("");
+            setNukeConfirmed(true);
+          }}
+          onReset={() => {
+            setOutput("");
+            setPlaintext("");
+            setNukeConfirmed(false);
+            setError(null);
+          }}
+        />
       )}
     </section>
   );
@@ -771,711 +944,654 @@ function SignPanel({
 
 /* ---------------------------------- Verify --------------------------------- */
 
-interface VerifyPanelProps {
-  localKeys: LocalKey[];
-  keybaseProxy: string;
-}
-
-function VerifyPanel({ localKeys, keybaseProxy }: VerifyPanelProps) {
-  const [signerUsernames, setSignerUsernames] = useState("");
-  const [pubKeys, setPubKeys] = useState<{ label: string; armored: string }[]>([]);
+function VerifyTab({
+  proxies,
+}: {
+  proxies: { autocompleteProxy: string; keybaseProxy: string };
+}) {
   const [armored, setArmored] = useState("");
   const [plaintext, setPlaintext] = useState("");
-  const [detached, setDetached] = useState(false);
-  const [result, setResult] = useState<{
-    verified: "valid" | "invalid" | "unknown";
-    signatures: { keyID: string; fingerprint?: string; verified: string; error?: string }[];
-  } | null>(null);
+  const [signerUsername, setSignerUsername] = useState("");
+  const [signerKeys, setSignerKeys] = useState<{ label: string; armored: string }[]>([]);
+  const [detected, setDetected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [fetchingKeys, setFetchingKeys] = useState(false);
+  const [result, setResult] = useState<{
+    verified: "valid" | "invalid" | "unknown";
+    signatures: Array<{
+      keyID: string;
+      fingerprint?: string;
+      verified: string;
+      error?: string;
+    }>;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleFetchKeys = useCallback(async () => {
+  // Auto-detect format on input change
+  useEffect(() => {
+    if (!armored.trim()) {
+      setDetected(null);
+      return;
+    }
+    const f = detectArmoredFormat(armored);
+    setDetected(f);
+  }, [armored]);
+
+  const handleFetchSignerKey = useCallback(async () => {
     setError(null);
-    const names = signerUsernames
-      .split(/[\s,;]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (names.length === 0) {
-      setError("Enter at least one Keybase username.");
+    const name = signerUsername.trim().toLowerCase();
+    if (!name) {
+      setError("Enter a Keybase username to fetch the signer's public key.");
       return;
     }
     setFetchingKeys(true);
     try {
-      const r = await lookupKeybaseUsersClient(names, keybaseProxy);
+      const r = await lookupKeybaseUsersClient([name], proxies.keybaseProxy);
       if (r.found.length === 0) {
-        setError("No Keybase public keys found for the given usernames.");
-      } else {
-        setPubKeys(
-          r.found.map((k) => ({ label: `@${k.username}`, armored: k.armored })),
-        );
+        setError(`No Keybase key found for @${name}.`);
+        return;
       }
-      if (r.missing.length > 0) {
-        setError(
-          (prev) =>
-            (prev ? prev + " " : "") +
-            `No key found for: ${r.missing.join(", ")}.`,
-        );
-      }
+      setSignerKeys(
+        r.found.map((k) => ({ label: `@${k.username}`, armored: k.armored })),
+      );
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setFetchingKeys(false);
     }
-  }, [signerUsernames, keybaseProxy]);
+  }, [signerUsername, proxies.keybaseProxy]);
 
   const handleVerify = useCallback(async () => {
     setError(null);
     setResult(null);
     if (!armored.trim()) {
-      setError("Paste the signature (or cleartext-signed message) to verify.");
-      return;
-    }
-    if (pubKeys.length === 0) {
-      setError("Provide at least one signer public key (Keybase username).");
-      return;
-    }
-    if (detached && !plaintext.trim()) {
-      setError("For detached signatures, paste the original plaintext too.");
+      setError("Paste a signature or cleartext-signed message to verify.");
       return;
     }
     setBusy(true);
     try {
-      const res = await verifyMessage({
-        plaintext,
-        armoredSignature: armored,
-        publicKeys: pubKeys.map((k) => k.armored),
-        detached,
-      });
+      const res = await verifyAutoDetect(
+        armored,
+        signerKeys.map((k) => k.armored),
+        plaintext || undefined,
+      );
       setResult(res);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [armored, plaintext, detached, pubKeys]);
+  }, [armored, plaintext, signerKeys]);
+
+  const showPlaintextField = detected === "detached-signature";
 
   return (
     <section className="space-y-4">
-      <Card>
-        <CardHeader
-          title="Verify a signature"
-          subtitle="Check that a signed message or detached signature was produced by the claimed Keybase identity."
+      <div>
+        <Label>Signature or signed message</Label>
+        <Textarea
+          value={armored}
+          onChange={setArmored}
+          placeholder={
+            "Paste a cleartext-signed message (-----BEGIN PGP SIGNED MESSAGE-----)\n" +
+            "or a detached signature (-----BEGIN PGP SIGNATURE-----)."
+          }
+          rows={8}
         />
-        <div className="space-y-4">
-          <Field label="Signer Keybase usernames">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={signerUsernames}
-                onChange={(e) => setSignerUsernames(e.target.value)}
-                placeholder="alice, bob"
-                className="flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
-              />
-              <Button
-                onClick={handleFetchKeys}
-                disabled={fetchingKeys}
-                variant="ghost"
-              >
-                {fetchingKeys ? "Fetching…" : "Fetch keys"}
-              </Button>
-            </div>
-            {pubKeys.length > 0 && (
-              <ul className="mt-2 text-[11px] text-neutral-400 list-disc list-inside">
-                {pubKeys.map((k, i) => (
-                  <li key={i}>{k.label} · loaded</li>
-                ))}
-              </ul>
+        {detected && (
+          <p className="mt-1.5 text-[11px] text-neutral-500">
+            Detected format:{" "}
+            <span className="font-medium text-neutral-700">{detected}</span>
+            {detected === "encrypted-message" && (
+              <span className="ml-1">
+                — switch to the Decrypt tab to decrypt and verify.
+              </span>
             )}
-          </Field>
+          </p>
+        )}
+      </div>
 
-          <Field label="Signature format">
-            <div className="flex gap-4 text-sm">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  checked={!detached}
-                  onChange={() => setDetached(false)}
-                  className="accent-amber-500"
-                />
-                <span>
-                  <span className="font-medium">Cleartext signed</span>{" "}
-                  <span className="text-neutral-500">(single block)</span>
-                </span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  checked={detached}
-                  onChange={() => setDetached(true)}
-                  className="accent-amber-500"
-                />
-                <span>
-                  <span className="font-medium">Detached</span>{" "}
-                  <span className="text-neutral-500">(signature + original text)</span>
-                </span>
-              </label>
-            </div>
-          </Field>
-
-          {detached && (
-            <Field label="Original plaintext">
-              <Textarea
-                value={plaintext}
-                onChange={setPlaintext}
-                placeholder="Paste the original plaintext that was signed."
-                rows={6}
-              />
-            </Field>
-          )}
-
-          <Field label={detached ? "Detached signature" : "Cleartext signed message"}>
-            <Textarea
-              value={armored}
-              onChange={setArmored}
-              placeholder={
-                detached
-                  ? "-----BEGIN PGP SIGNATURE-----\n...\n-----END PGP SIGNATURE-----"
-                  : "-----BEGIN PGP SIGNED MESSAGE-----\n...\n-----END PGP SIGNATURE-----"
-              }
-              rows={10}
-            />
-          </Field>
-
-          {error && <ErrorBanner message={error} />}
-
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={handleVerify} disabled={busy} variant="primary">
-              {busy ? "Verifying…" : "Verify signature"}
-            </Button>
-            <Button
-              onClick={() => {
-                setArmored("");
-                setPlaintext("");
-                setResult(null);
-                setError(null);
-              }}
-              variant="ghost"
-            >
-              Clear
-            </Button>
-          </div>
+      {showPlaintextField && (
+        <div>
+          <Label>Original plaintext (required for detached signatures)</Label>
+          <Textarea
+            value={plaintext}
+            onChange={setPlaintext}
+            placeholder="Paste the plaintext that was signed."
+            rows={6}
+          />
         </div>
-      </Card>
+      )}
+
+      <div>
+        <Label>Signer's Keybase username</Label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={signerUsername}
+            onChange={(e) => setSignerUsername(e.target.value)}
+            placeholder="e.g. chris"
+            className="flex-1 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
+          />
+          <Button
+            onClick={handleFetchSignerKey}
+            disabled={fetchingKeys}
+            variant="default"
+          >
+            {fetchingKeys ? "Fetching…" : "Fetch key"}
+          </Button>
+        </div>
+        {signerKeys.length > 0 && (
+          <p className="mt-1.5 text-[11px] text-emerald-700">
+            ✓ Loaded {signerKeys[0].label}'s public key
+          </p>
+        )}
+        <p className="mt-1.5 text-[11px] text-neutral-500">
+          The signature is verified against this signer's public key. Without a
+          key, the signature status will be "unknown".
+        </p>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+
+      <div className="flex gap-2">
+        <Button onClick={handleVerify} disabled={busy} variant="primary">
+          {busy ? "Verifying…" : "Verify"}
+        </Button>
+        {(result || error) && (
+          <Button
+            onClick={() => {
+              setArmored("");
+              setPlaintext("");
+              setResult(null);
+              setError(null);
+              setDetected(null);
+            }}
+            variant="ghost"
+          >
+            Reset
+          </Button>
+        )}
+      </div>
 
       {result && (
-        <Card>
-          <CardHeader
-            title="Verification result"
-            subtitle={
-              result.verified === "valid"
-                ? "Signature is valid ✓"
-                : result.verified === "invalid"
-                  ? "Signature is invalid ✗"
-                  : "Signature could not be verified (unknown signer key)"
-            }
-          />
-          <SignatureTable signatures={result.signatures} />
-        </Card>
+        <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3">
+          <div className="text-sm font-medium mb-2">
+            {result.verified === "valid" ? (
+              <span className="text-emerald-700">✓ Signature is valid</span>
+            ) : result.verified === "invalid" ? (
+              <span className="text-red-700">✗ Signature is invalid</span>
+            ) : (
+              <span className="text-neutral-700">
+                ? Signature could not be verified
+              </span>
+            )}
+          </div>
+          {result.signatures.length > 0 && (
+            <ul className="space-y-1 text-[11px] font-mono text-neutral-600">
+              {result.signatures.map((s, i) => (
+                <li key={i}>
+                  key {s.keyID || "(unknown)"} — {s.verified}
+                  {s.error ? ` — ${s.error}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </section>
   );
 }
 
-/* ------------------------------- Keybase sidebar --------------------------- */
+/* --------------------------- Output + nuke block --------------------------- */
 
-interface KeybaseSidebarProps {
-  keybaseProxy: string;
-  recipients: Recipient[];
-  setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>;
+function OutputBlock({
+  title,
+  output,
+  nukeLabel,
+  nukeConfirmed,
+  onNuke,
+  onReset,
+}: {
+  title: string;
+  output: string;
+  nukeLabel: string;
+  nukeConfirmed: boolean;
+  onNuke: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <Label>{title}</Label>
+        <Textarea value={output} readOnly rows={12} />
+        <div className="mt-2 flex justify-end">
+          <CopyButton text={output} />
+        </div>
+      </div>
+
+      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
+        {!nukeConfirmed ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-amber-800">
+              Your input is still in memory. Nuke it now to make sure only the
+              output remains.
+            </p>
+            <button
+              onClick={onNuke}
+              className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+            >
+              {nukeLabel}
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-emerald-700">
+            ✓ Input nuked. Only the output remains in memory.
+          </p>
+        )}
+      </div>
+
+      <div className="flex gap-2">
+        <Button onClick={onReset} variant="ghost">
+          Start over
+        </Button>
+      </div>
+    </div>
+  );
 }
 
-function KeybaseSidebar({
-  keybaseProxy,
-  recipients,
-  setRecipients,
-}: KeybaseSidebarProps) {
-  const [usernames, setUsernames] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<KeybasePublicKey[]>([]);
-  const [missing, setMissing] = useState<string[]>([]);
-  const [lastQuery, setLastQuery] = useState<string>("");
+/* ---------------------------- Configure modal ------------------------------ */
 
-  const handleFetch = useCallback(async () => {
+interface ConfigureModalProps {
+  onClose: () => void;
+  privateKey: PrivateKeyConfig | null;
+  onSave: (next: PrivateKeyConfig) => void;
+  onClear: () => void;
+  proxies: {
+    getsaltProxy: string;
+    loginProxy: string;
+  };
+}
+
+function ConfigureModal({
+  onClose,
+  privateKey,
+  onSave,
+  onClear,
+  proxies,
+}: ConfigureModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 sm:p-8 overflow-auto">
+      <div className="w-full max-w-lg rounded-lg bg-white shadow-xl my-8">
+        <div className="flex items-center justify-between border-b border-neutral-200 px-5 py-3">
+          <h2 className="text-base font-semibold">Configure your private key</h2>
+          <button
+            onClick={onClose}
+            className="text-neutral-400 hover:text-neutral-700 text-xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 max-h-[80vh] overflow-y-auto">
+          {privateKey && (
+            <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+              <div className="text-xs font-medium text-emerald-800 mb-1">
+                Currently configured
+              </div>
+              <div className="text-sm text-emerald-900">
+                {privateKey.source === "keybase"
+                  ? `@${privateKey.username} (via Keybase login)`
+                  : privateKey.label}
+              </div>
+              {privateKey.info && (
+                <div className="text-[11px] font-mono text-emerald-700 mt-1 break-all">
+                  {formatFingerprint(privateKey.info.fingerprint)}
+                </div>
+              )}
+              <button
+                onClick={onClear}
+                className="mt-2 text-[11px] text-red-600 hover:underline"
+              >
+                Clear / log out
+              </button>
+            </div>
+          )}
+
+          <KeybaseLoginForm
+            proxies={proxies}
+            onLoaded={(cfg) => onSave(cfg)}
+          />
+
+          <hr className="my-4 border-neutral-200" />
+
+          <ManualKeyForm onLoaded={(cfg) => onSave(cfg)} />
+
+          <hr className="my-4 border-neutral-200" />
+
+          <GenerateKeyForm onLoaded={(cfg) => onSave(cfg)} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KeybaseLoginForm({
+  proxies,
+  onLoaded,
+}: {
+  proxies: { getsaltProxy: string; loginProxy: string };
+  onLoaded: (cfg: PrivateKeyConfig) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLogin = useCallback(async () => {
     setError(null);
-    const names = usernames
-      .split(/[\s,;\n]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (names.length === 0) {
-      setError("Enter at least one Keybase username.");
+    if (!username.trim() || !password) {
+      setError("Enter your Keybase username and password.");
       return;
     }
     setBusy(true);
     try {
-      const r = await lookupKeybaseUsersClient(names, keybaseProxy);
-      setResults(r.found);
-      setMissing(r.missing);
-      setLastQuery(names.join(", "));
-      if (r.found.length === 0 && r.missing.length === 0) {
-        setError("Keybase returned no results.");
+      setStage("Fetching salt…");
+      const { pwhashHex, salt } = await derivePwHash(
+        username,
+        password,
+        proxies.getsaltProxy,
+      );
+
+      setStage("Logging in to Keybase…");
+      const me = await loginAndFetchMe(
+        username,
+        pwhashHex,
+        salt.csrf_token,
+        salt.login_session,
+        proxies.loginProxy,
+      );
+
+      if (!me.private_key_bundle) {
+        throw new Error(
+          "Your Keybase account has no private key bundle. Generate one in the Keybase app first.",
+        );
       }
+
+      setStage("Decrypting private key…");
+      const { privateKey: decrypted } = await decryptPrivateKeyBundle(
+        me.private_key_bundle,
+        pwhashHex,
+      );
+      const armored = decrypted.armor();
+      const info = await validateArmoredKey(armored);
+      if (!info.ok || !info.info) {
+        throw new Error(info.error ?? "Decrypted key could not be parsed.");
+      }
+
+      onLoaded({
+        source: "keybase",
+        label: `@${me.username}`,
+        username: me.username,
+        armored,
+        passphrase: undefined, // key is already decrypted
+        info: info.info,
+      });
     } catch (e) {
       setError((e as Error).message);
-      setResults([]);
-      setMissing([]);
+    } finally {
+      setBusy(false);
+      setStage("");
+    }
+  }, [username, password, proxies, onLoaded]);
+
+  return (
+    <div>
+      <div className="text-sm font-semibold text-neutral-900 mb-1">
+        Log in with Keybase
+      </div>
+      <p className="text-[11px] text-neutral-500 mb-3">
+        Your password is used to derive the PGP passphrase via scrypt and never
+        leaves your browser. We fetch your private key bundle from{" "}
+        <code className="text-neutral-700">keybase.io/_/api/1.0/me.json</code>{" "}
+        and decrypt it locally.
+      </p>
+      <div className="space-y-2">
+        <input
+          type="text"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="Keybase username"
+          autoComplete="username"
+          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
+          disabled={busy}
+        />
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          autoComplete="current-password"
+          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
+          disabled={busy}
+        />
+        {error && <ErrorBanner message={error} />}
+        {busy && stage && (
+          <p className="text-[11px] text-neutral-500">{stage}</p>
+        )}
+        <Button onClick={handleLogin} disabled={busy} variant="primary" full>
+          {busy ? "Working…" : "Log in & load private key"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ManualKeyForm({
+  onLoaded,
+}: {
+  onLoaded: (cfg: PrivateKeyConfig) => void;
+}) {
+  const [armored, setArmored] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLoad = useCallback(async () => {
+    setError(null);
+    if (!armored.trim()) {
+      setError("Paste your armored private key.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const v = await validateArmoredKey(armored.trim());
+      if (!v.ok || !v.info) {
+        setError(v.error ?? "Invalid key.");
+        return;
+      }
+      if (!("isPrivate" in v.info) || !v.info.isPrivate) {
+        setError("That's a public key. Paste a private key.");
+        return;
+      }
+      onLoaded({
+        source: "manual",
+        label:
+          v.info.userIDs[0]?.name ||
+          v.info.userIDs[0]?.email ||
+          "Pasted private key",
+        armored: armored.trim(),
+        passphrase: passphrase || undefined,
+        info: v.info,
+      });
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [usernames, keybaseProxy]);
-
-  const addRecipient = useCallback(
-    (k: KeybasePublicKey) => {
-      setRecipients((prev) => {
-        if (prev.some((p) => p.fingerprint === k.fingerprint)) return prev;
-        return [
-          ...prev,
-          {
-            source: "keybase",
-            username: k.username,
-            label: `@${k.username}`,
-            armored: k.armored,
-            fingerprint: k.fingerprint,
-            keyID: k.keyID,
-            algorithm: k.algorithm,
-            expiresAt: k.expiresAt,
-          },
-        ];
-      });
-    },
-    [setRecipients],
-  );
+  }, [armored, passphrase, onLoaded]);
 
   return (
-    <Card>
-      <CardHeader
-        title="Keybase public keys"
-        subtitle="Look up any Keybase user's public key by username."
-        accent
-      />
-      <div className="space-y-3">
-        <Field label="Usernames">
-          <Textarea
-            value={usernames}
-            onChange={setUsernames}
-            placeholder={"alice\nbob\nchris"}
-            rows={3}
-          />
-          <p className="mt-1 text-[11px] text-neutral-500">
-            Comma, space, or newline-separated. Keybase usernames only.
-          </p>
-        </Field>
-
-        <Button onClick={handleFetch} disabled={busy} variant="primary" full>
-          {busy ? "Looking up…" : "Look up public keys"}
-        </Button>
-
+    <div>
+      <div className="text-sm font-semibold text-neutral-900 mb-1">
+        Paste a private key
+      </div>
+      <p className="text-[11px] text-neutral-500 mb-3">
+        Use this if you already have an armored PGP private key block.
+      </p>
+      <div className="space-y-2">
+        <Textarea
+          value={armored}
+          onChange={setArmored}
+          placeholder={"-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"}
+          rows={5}
+        />
+        <input
+          type="password"
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+          placeholder="Passphrase (if encrypted)"
+          autoComplete="off"
+          className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
+        />
         {error && <ErrorBanner message={error} />}
-
-        {missing.length > 0 && (
-          <div className="rounded-md border border-amber-700/40 bg-amber-950/30 p-2 text-[11px] text-amber-300">
-            No public key found for: {missing.join(", ")}
-          </div>
-        )}
-
-        {results.length > 0 && (
-          <ul className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
-            {results.map((k) => {
-              const isAdded = recipients.some(
-                (p) => p.fingerprint === k.fingerprint,
-              );
-              return (
-                <li
-                  key={k.fingerprint}
-                  className="rounded-md border border-neutral-800 bg-neutral-900/60 p-3 space-y-1.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-amber-400 text-sm">
-                      @{k.username}
-                    </span>
-                    <button
-                      onClick={() => addRecipient(k)}
-                      disabled={isAdded}
-                      className={`text-[11px] rounded px-2 py-0.5 ${
-                        isAdded
-                          ? "bg-neutral-800 text-neutral-500 cursor-not-allowed"
-                          : "bg-amber-500 text-neutral-950 hover:bg-amber-400"
-                      }`}
-                    >
-                      {isAdded ? "Added" : "+ Add recipient"}
-                    </button>
-                  </div>
-                  <KeyMeta
-                    fingerprint={k.fingerprint}
-                    keyID={k.keyID}
-                    algorithm={k.algorithm}
-                    bits={k.bits}
-                    curve={k.curve}
-                    createdAt={k.createdAt}
-                    expiresAt={k.expiresAt}
-                  />
-                  <details className="text-[11px] text-neutral-400">
-                    <summary className="cursor-pointer hover:text-neutral-200">
-                      Show armored public key
-                    </summary>
-                    <pre className="mt-1 max-h-40 overflow-auto rounded bg-neutral-950 p-2 whitespace-pre-wrap break-all">
-                      {k.armored}
-                    </pre>
-                  </details>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        {results.length === 0 && !busy && !error && lastQuery === "" && (
-          <p className="text-[11px] text-neutral-500">
-            Example: try <code className="text-neutral-300">chris</code>,{" "}
-            <code className="text-neutral-300">max</code>, or{" "}
-            <code className="text-neutral-300">malgorithms</code> — these are
-            well-known Keybase team accounts.
-          </p>
-        )}
+        <Button onClick={handleLoad} disabled={busy} variant="default" full>
+          {busy ? "Loading…" : "Load private key"}
+        </Button>
       </div>
-    </Card>
+    </div>
   );
 }
 
-/* --------------------------- My private key card --------------------------- */
+function GenerateKeyForm({
+  onLoaded,
+}: {
+  onLoaded: (cfg: PrivateKeyConfig) => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [type, setType] = useState<"ecc" | "rsa">("ecc");
+  const [curve, setCurve] = useState("ed25519Legacy");
+  const [bits, setBits] = useState<2048 | 3072 | 4096>(4096);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-interface MyPrivateKeyCardProps {
-  myPrivateKey: string;
-  setMyPrivateKey: (v: string) => void;
-  myPrivateKeyPass: string;
-  setMyPrivateKeyPass: (v: string) => void;
-  myPrivateKeyInfo: AnyKeyInfo | null;
-  myPrivateKeyError: string | null;
-  localKeys: LocalKey[];
-  onLoadLocalKey: (armored: string) => void;
-}
+  const handleGenerate = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const kp: GeneratedKeyPair = await generateKeyPair({
+        name: name || undefined,
+        email: email || undefined,
+        passphrase: pass || undefined,
+        type,
+        curve: type === "ecc" ? (curve as never) : undefined,
+        rsaBits: type === "rsa" ? bits : undefined,
+        expirationSeconds: 0,
+      });
+      const label =
+        name || email || (type === "ecc" ? "ECC key" : "RSA key");
+      onLoaded({
+        source: "generated",
+        label,
+        armored: kp.privateKey,
+        passphrase: pass || undefined,
+        info: kp.info,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [name, email, pass, type, curve, bits, onLoaded]);
 
-function MyPrivateKeyCard({
-  myPrivateKey,
-  setMyPrivateKey,
-  myPrivateKeyPass,
-  setMyPrivateKeyPass,
-  myPrivateKeyInfo,
-  myPrivateKeyError,
-  localKeys,
-  onLoadLocalKey,
-}: MyPrivateKeyCardProps) {
-  const [showKey, setShowKey] = useState(false);
   return (
-    <Card>
-      <CardHeader
-        title="Your private key"
-        subtitle="Used for signing and decryption. Stays in your browser."
-        accent
-      />
-      <div className="space-y-3">
-        <Field label="Armored private key">
-          <Textarea
-            value={myPrivateKey}
-            onChange={setMyPrivateKey}
-            placeholder={"-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"}
-            rows={6}
-            hidden={!showKey}
-            onToggleHide={() => setShowKey((v) => !v)}
-          />
-          {localKeys.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1">
-              {localKeys
-                .filter((k) => k.isPrivate)
-                .map((k) => (
-                  <button
-                    key={k.id}
-                    onClick={() => onLoadLocalKey(k.armored)}
-                    className="text-[11px] rounded px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
-                    title={k.info?.fingerprint}
-                  >
-                    Load "{k.label}"
-                  </button>
-                ))}
-            </div>
-          )}
-        </Field>
-
-        <Field label="Passphrase (optional)">
-          <input
-            type="password"
-            value={myPrivateKeyPass}
-            onChange={(e) => setMyPrivateKeyPass(e.target.value)}
-            placeholder="If your private key is encrypted"
-            className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
-          />
-        </Field>
-
-        {myPrivateKeyInfo && (
-          <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 p-3 space-y-1.5">
-            <div className="text-xs font-semibold text-emerald-400">
-              ✓ Private key loaded
-            </div>
-            <KeyMeta
-              fingerprint={myPrivateKeyInfo.fingerprint}
-              keyID={myPrivateKeyInfo.keyID}
-              algorithm={myPrivateKeyInfo.algorithm}
-              bits={myPrivateKeyInfo.bitSize}
-              curve={myPrivateKeyInfo.curve}
-              createdAt={myPrivateKeyInfo.creationTime.getTime()}
-              expiresAt={myPrivateKeyInfo.expirationTime?.getTime() ?? null}
-            />
-            <div className="text-[11px] text-neutral-400">
-              {myPrivateKeyInfo.userIDs.map((u, i) => (
-                <div key={i}>
-                  {u.name && <span className="text-neutral-300">{u.name}</span>}
-                  {u.email && <span className="text-neutral-500"> &lt;{u.email}&gt;</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {myPrivateKeyError && <ErrorBanner message={myPrivateKeyError} />}
-      </div>
-    </Card>
-  );
-}
-
-/* ------------------------------ Local keys card ---------------------------- */
-
-interface LocalKeysCardProps {
-  localKeys: LocalKey[];
-  setLocalKeys: (next: LocalKey[]) => void;
-  showLocalKeys: boolean;
-  setShowLocalKeys: (v: boolean) => void;
-  onLoadAsSigner: (armored: string) => void;
-  onAddAsRecipient: (r: Recipient) => void;
-}
-
-function LocalKeysCard({
-  localKeys,
-  setLocalKeys,
-  showLocalKeys,
-  setShowLocalKeys,
-  onLoadAsSigner,
-  onAddAsRecipient,
-}: LocalKeysCardProps) {
-  return (
-    <Card>
-      <button
-        onClick={() => setShowLocalKeys(!showLocalKeys)}
-        className="w-full flex items-center justify-between text-left"
-      >
-        <div>
-          <div className="text-sm font-semibold text-neutral-200">
-            Local keys (advanced)
-          </div>
-          <div className="text-[11px] text-neutral-500">
-            Generate or paste keys you don't want to fetch from Keybase. Stored
-            in your browser's localStorage.
-          </div>
-        </div>
-        <span className="text-neutral-500 text-sm">
-          {showLocalKeys ? "−" : "+"}
+    <details className="group">
+      <summary className="cursor-pointer text-sm font-semibold text-neutral-900 select-none">
+        Generate a new local key{" "}
+        <span className="text-[11px] text-neutral-500 font-normal">
+          (advanced)
         </span>
-      </button>
-
-      {showLocalKeys && (
-        <div className="mt-4 space-y-4">
-          <GenerateKeyForm
-            onGenerated={(kp) => {
-              const priv: LocalKey = {
-                id: crypto.randomUUID(),
-                label: kp.info.userIDs[0]?.name ||
-                  kp.info.userIDs[0]?.email ||
-                  "Generated key",
-                armored: kp.privateKey,
-                isPrivate: true,
-                info: kp.info,
-                createdAt: Date.now(),
-              };
-              const pub: LocalKey = {
-                id: crypto.randomUUID(),
-                label: `${priv.label} (public)`,
-                armored: kp.publicKey,
-                isPrivate: false,
-                // For a public-key-only entry we strip the private-only fields.
-                info: {
-                  armored: kp.info.armored,
-                  fingerprint: kp.info.fingerprint,
-                  keyID: kp.info.keyID,
-                  userIDs: kp.info.userIDs,
-                  creationTime: kp.info.creationTime,
-                  expirationTime: kp.info.expirationTime,
-                  algorithm: kp.info.algorithm,
-                  bitSize: kp.info.bitSize,
-                  curve: kp.info.curve,
-                  isRevoked: kp.info.isRevoked,
-                },
-                createdAt: Date.now(),
-              };
-              setLocalKeys([...localKeys, priv, pub]);
-            }}
+      </summary>
+      <div className="mt-3 space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Full name"
+            className="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs"
           />
-
-          <ImportKeyForm
-            onImport={(label, armored, info, isPrivate) => {
-              const k: LocalKey = {
-                id: crypto.randomUUID(),
-                label,
-                armored,
-                isPrivate,
-                info,
-                createdAt: Date.now(),
-              };
-              setLocalKeys([...localKeys, k]);
-            }}
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="email@example.com"
+            className="rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs"
           />
-
-          {localKeys.length > 0 && (
-            <ul className="space-y-2 max-h-72 overflow-y-auto pr-1">
-              {localKeys.map((k) => (
-                <li
-                  key={k.id}
-                  className="rounded-md border border-neutral-800 bg-neutral-900/60 p-3 space-y-1.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-neutral-200 truncate">
-                      {k.label}
-                    </span>
-                    <span
-                      className={`text-[10px] rounded px-1.5 py-0.5 ${
-                        k.isPrivate
-                          ? "bg-amber-950/60 text-amber-300 border border-amber-700/40"
-                          : "bg-neutral-800 text-neutral-400 border border-neutral-700"
-                      }`}
-                    >
-                      {k.isPrivate ? "private" : "public"}
-                    </span>
-                  </div>
-                  {k.info && (
-                    <KeyMeta
-                      fingerprint={k.info.fingerprint}
-                      keyID={k.info.keyID}
-                      algorithm={k.info.algorithm}
-                      bits={k.info.bitSize}
-                      curve={k.info.curve}
-                      createdAt={k.info.creationTime.getTime()}
-                      expiresAt={k.info.expirationTime?.getTime() ?? null}
-                    />
-                  )}
-                  <div className="flex flex-wrap gap-1.5 mt-1">
-                    {k.isPrivate ? (
-                      <button
-                        onClick={() => onLoadAsSigner(k.armored)}
-                        className="text-[11px] rounded px-2 py-0.5 bg-amber-500 text-neutral-950 hover:bg-amber-400"
-                      >
-                        Use as signer
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() =>
-                          k.info &&
-                          onAddAsRecipient({
-                            source: "local",
-                            label: k.label,
-                            armored: k.armored,
-                            fingerprint: k.info.fingerprint,
-                            keyID: k.info.keyID,
-                            algorithm: k.info.algorithm,
-                            expiresAt: k.info.expirationTime?.getTime() ?? null,
-                          })
-                        }
-                        className="text-[11px] rounded px-2 py-0.5 bg-amber-500 text-neutral-950 hover:bg-amber-400"
-                      >
-                        Add as recipient
-                      </button>
-                    )}
-                    <button
-                      onClick={() => {
-                        navigator.clipboard?.writeText(k.armored);
-                      }}
-                      className="text-[11px] rounded px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
-                    >
-                      Copy
-                    </button>
-                    <button
-                      onClick={() =>
-                        setLocalKeys(localKeys.filter((x) => x.id !== k.id))
-                      }
-                      className="text-[11px] rounded px-2 py-0.5 bg-neutral-800 hover:bg-red-900 text-neutral-400 hover:text-red-300"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <p className="text-[10px] text-neutral-600">
-            Local keys are stored only in this browser. Clearing site data will
-            remove them permanently — export any keys you want to keep.
-          </p>
         </div>
-      )}
-    </Card>
+        <input
+          type="password"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          placeholder="Passphrase (optional)"
+          autoComplete="off"
+          className="w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-xs"
+        />
+        <div className="grid grid-cols-2 gap-2 text-[11px]">
+          <select
+            value={type}
+            onChange={(e) => setType(e.target.value as "ecc" | "rsa")}
+            className="rounded-md border border-neutral-300 bg-white px-2 py-1.5"
+          >
+            <option value="ecc">ECC (recommended)</option>
+            <option value="rsa">RSA</option>
+          </select>
+          {type === "ecc" ? (
+            <select
+              value={curve}
+              onChange={(e) => setCurve(e.target.value)}
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1.5"
+            >
+              <option value="ed25519Legacy">ed25519</option>
+              <option value="nistP256">NIST P-256</option>
+              <option value="nistP384">NIST P-384</option>
+              <option value="nistP521">NIST P-521</option>
+              <option value="secp256k1">secp256k1</option>
+            </select>
+          ) : (
+            <select
+              value={bits}
+              onChange={(e) =>
+                setBits(Number(e.target.value) as 2048 | 3072 | 4096)
+              }
+              className="rounded-md border border-neutral-300 bg-white px-2 py-1.5"
+            >
+              <option value={2048}>2048</option>
+              <option value={3072}>3072</option>
+              <option value={4096}>4096</option>
+            </select>
+          )}
+        </div>
+        {error && <ErrorBanner message={error} />}
+        <Button onClick={handleGenerate} disabled={busy} variant="default" full>
+          {busy ? "Generating…" : "Generate key pair"}
+        </Button>
+      </div>
+    </details>
   );
 }
 
 /* --------------------------------- Sub-UI ---------------------------------- */
 
-function Card({ children }: { children: React.ReactNode }) {
+function Label({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-4 sm:p-5 backdrop-blur">
+    <label className="block text-xs font-medium uppercase tracking-wide text-neutral-500 mb-1.5">
       {children}
-    </div>
-  );
-}
-
-function CardHeader({
-  title,
-  subtitle,
-  accent,
-}: {
-  title: string;
-  subtitle?: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className="mb-4">
-      <h2
-        className={`text-base font-semibold ${accent ? "text-amber-400" : "text-neutral-100"}`}
-      >
-        {title}
-      </h2>
-      {subtitle && (
-        <p className="text-[12px] text-neutral-500 mt-0.5">{subtitle}</p>
-      )}
-    </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label className="block text-xs font-medium text-neutral-400 uppercase tracking-wide">
-        {label}
-      </label>
-      {children}
-    </div>
+    </label>
   );
 }
 
@@ -1485,41 +1601,28 @@ function Textarea({
   placeholder,
   rows,
   readOnly,
-  hidden,
-  onToggleHide,
+  disabled,
 }: {
   value: string;
   onChange?: (v: string) => void;
   placeholder?: string;
   rows?: number;
   readOnly?: boolean;
-  hidden?: boolean;
-  onToggleHide?: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="relative">
-      <textarea
-        value={value}
-        onChange={onChange ? (e) => onChange(e.target.value) : undefined}
-        placeholder={placeholder}
-        rows={rows ?? 6}
-        readOnly={readOnly}
-        spellCheck={false}
-        className={`w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs leading-relaxed placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-amber-500 ${
-          hidden ? "text-transparent [caret-color:white] selection:bg-amber-500/40" : ""
-        }`}
-        style={hidden ? { WebkitTextSecurity: "disc" } as React.CSSProperties : undefined}
-      />
-      {onToggleHide && (
-        <button
-          type="button"
-          onClick={onToggleHide}
-          className="absolute top-2 right-2 text-[10px] text-neutral-400 hover:text-amber-400 bg-neutral-900/80 px-1.5 py-0.5 rounded"
-        >
-          {hidden ? "Show" : "Hide"}
-        </button>
-      )}
-    </div>
+    <textarea
+      value={value}
+      onChange={onChange ? (e) => onChange(e.target.value) : undefined}
+      placeholder={placeholder}
+      rows={rows ?? 6}
+      readOnly={readOnly}
+      disabled={disabled}
+      spellCheck={false}
+      className={`w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-xs leading-relaxed placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc] ${
+        readOnly ? "bg-neutral-50" : ""
+      } ${disabled ? "opacity-60" : ""}`}
+    />
   );
 }
 
@@ -1539,9 +1642,9 @@ function Button({
   const base =
     "inline-flex items-center justify-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
   const variants: Record<string, string> = {
-    primary: "bg-amber-500 text-neutral-950 hover:bg-amber-400",
-    ghost: "bg-transparent text-neutral-300 hover:bg-neutral-800",
-    default: "bg-neutral-800 text-neutral-200 hover:bg-neutral-700",
+    primary: "bg-[#0055dc] text-white hover:bg-[#0044b8]",
+    ghost: "bg-transparent text-neutral-700 hover:bg-neutral-100",
+    default: "bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-50",
   };
   return (
     <button
@@ -1556,7 +1659,7 @@ function Button({
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="rounded-md border border-red-800/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+    <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
       {message}
     </div>
   );
@@ -1575,478 +1678,9 @@ function CopyButton({ text }: { text: string }) {
           // ignore
         }
       }}
-      className="text-[11px] rounded px-2 py-1 bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
+      className="text-[11px] rounded px-2 py-1 bg-white border border-neutral-300 hover:bg-neutral-50 text-neutral-700"
     >
-      {copied ? "Copied!" : "Copy to clipboard"}
+      {copied ? "Copied!" : "Copy"}
     </button>
-  );
-}
-
-function KeyMeta({
-  fingerprint,
-  keyID,
-  algorithm,
-  bits,
-  curve,
-  createdAt,
-  expiresAt,
-}: {
-  fingerprint: string;
-  keyID: string;
-  algorithm: string;
-  bits?: number;
-  curve?: string;
-  createdAt: number;
-  expiresAt: number | null;
-}) {
-  const expired = expiresAt !== null && expiresAt < Date.now();
-  return (
-    <div className="space-y-0.5 text-[11px] text-neutral-400 font-mono">
-      <div>
-        <span className="text-neutral-600">FP: </span>
-        {formatFingerprint(fingerprint)}
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>
-          <span className="text-neutral-600">KeyID: </span>
-          {keyID}
-        </span>
-        <span>
-          <span className="text-neutral-600">Algo: </span>
-          {algorithm}
-          {bits ? ` ${bits}` : ""}
-          {curve ? ` (${curve})` : ""}
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>
-          <span className="text-neutral-600">Created: </span>
-          {new Date(createdAt).toLocaleDateString()}
-        </span>
-        <span>
-          <span className="text-neutral-600">Expires: </span>
-          {expiresAt ? (
-            <span className={expired ? "text-red-400" : ""}>
-              {new Date(expiresAt).toLocaleDateString()}
-              {expired ? " (expired)" : ""}
-            </span>
-          ) : (
-            "never"
-          )}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function RecipientList({
-  recipients,
-  onRemove,
-}: {
-  recipients: Recipient[];
-  onRemove: (fingerprint: string) => void;
-}) {
-  if (recipients.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed border-neutral-800 px-3 py-4 text-center text-xs text-neutral-500">
-        No recipients yet. Add some from the Keybase panel on the right.
-      </div>
-    );
-  }
-  return (
-    <ul className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-      {recipients.map((r) => (
-        <li
-          key={r.fingerprint}
-          className="flex items-start justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-900/60 px-2.5 py-1.5"
-        >
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-amber-400 truncate">
-                {r.label}
-              </span>
-              <span className="text-[10px] uppercase tracking-wide text-neutral-500">
-                {r.source}
-              </span>
-            </div>
-            <div className="text-[10px] text-neutral-500 font-mono truncate">
-              {formatFingerprint(r.fingerprint)}
-            </div>
-          </div>
-          <button
-            onClick={() => onRemove(r.fingerprint)}
-            className="text-[11px] text-neutral-500 hover:text-red-400"
-            aria-label="Remove recipient"
-          >
-            ✕
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function ManualRecipientForm({
-  onAdd,
-}: {
-  onAdd: (r: Recipient) => void;
-}) {
-  const [armored, setArmored] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleAdd = useCallback(async () => {
-    setError(null);
-    if (!armored.trim()) {
-      setError("Paste an armored public key.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const v = await validateArmoredKey(armored.trim());
-      if (!v.ok || !v.info) {
-        setError(v.error ?? "Invalid public key.");
-        return;
-      }
-      if ("isPrivate" in v.info && v.info.isPrivate) {
-        setError(
-          "You pasted a private key. Only public keys can be used as recipients.",
-        );
-        return;
-      }
-      onAdd({
-        source: "local",
-        label: v.info.userIDs[0]?.name ||
-          v.info.userIDs[0]?.email ||
-          "Pasted key",
-        armored: armored.trim(),
-        fingerprint: v.info.fingerprint,
-        keyID: v.info.keyID,
-        algorithm: v.info.algorithm,
-        expiresAt: v.info.expirationTime?.getTime() ?? null,
-      });
-      setArmored("");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }, [armored, onAdd]);
-
-  return (
-    <div className="mt-2 space-y-2">
-      <Textarea
-        value={armored}
-        onChange={setArmored}
-        placeholder={"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"}
-        rows={5}
-      />
-      {error && <ErrorBanner message={error} />}
-      <Button onClick={handleAdd} disabled={busy} variant="default">
-        {busy ? "Validating…" : "Add public key"}
-      </Button>
-    </div>
-  );
-}
-
-function SignerStatus({
-  info,
-  error,
-  hasKey,
-  localKeys,
-  isPrivateForDecryption,
-}: {
-  info: AnyKeyInfo | null;
-  error: string | null;
-  hasKey: boolean;
-  localKeys: LocalKey[];
-  isPrivateForDecryption?: boolean;
-}) {
-  if (!hasKey) {
-    return (
-      <div className="rounded-md border border-neutral-700/50 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-400">
-        {isPrivateForDecryption
-          ? "Provide your private key in the sidebar to decrypt."
-          : "Provide your private key in the sidebar to sign."}
-        {localKeys.filter((k) => k.isPrivate).length > 0 && (
-          <> You have local private keys available in the sidebar.</>
-        )}
-      </div>
-    );
-  }
-  if (info) {
-    return (
-      <div className="rounded-md border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">
-        ✓ Signing as: {info.userIDs[0]?.name || info.userIDs[0]?.email || "unknown"}
-        <span className="text-neutral-500 ml-2 font-mono">
-          {info.keyID}
-        </span>
-      </div>
-    );
-  }
-  if (error) {
-    return <ErrorBanner message={error} />;
-  }
-  return null;
-}
-
-function SignatureTable({
-  signatures,
-}: {
-  signatures: { keyID: string; fingerprint?: string; verified: string; error?: string }[];
-}) {
-  if (signatures.length === 0) {
-    return (
-      <p className="text-xs text-neutral-500">
-        No signature information was present in the message.
-      </p>
-    );
-  }
-  return (
-    <div className="overflow-x-auto rounded-md border border-neutral-800">
-      <table className="w-full text-xs">
-        <thead className="bg-neutral-900/80 text-neutral-400">
-          <tr>
-            <th className="text-left px-3 py-1.5 font-medium">Status</th>
-            <th className="text-left px-3 py-1.5 font-medium">Key ID</th>
-            <th className="text-left px-3 py-1.5 font-medium">Fingerprint</th>
-            <th className="text-left px-3 py-1.5 font-medium">Notes</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-800">
-          {signatures.map((s, i) => {
-            const color =
-              s.verified === "valid"
-                ? "text-emerald-400"
-                : s.verified === "invalid"
-                  ? "text-red-400"
-                  : "text-neutral-400";
-            const label =
-              s.verified === "valid"
-                ? "✓ Valid"
-                : s.verified === "invalid"
-                  ? "✗ Invalid"
-                  : "? Unknown";
-            return (
-              <tr key={i} className="bg-neutral-950/40">
-                <td className={`px-3 py-1.5 font-medium ${color}`}>{label}</td>
-                <td className="px-3 py-1.5 font-mono text-neutral-300">
-                  {s.keyID || "—"}
-                </td>
-                <td className="px-3 py-1.5 font-mono text-neutral-400 text-[10px] break-all">
-                  {s.fingerprint ? formatFingerprint(s.fingerprint) : "—"}
-                </td>
-                <td className="px-3 py-1.5 text-neutral-500">
-                  {s.error ?? (s.verified === "unknown"
-                    ? "Signer key not in verification set"
-                    : "")}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function GenerateKeyForm({
-  onGenerated,
-}: {
-  onGenerated: (kp: GeneratedKeyPair) => void;
-}) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [pass, setPass] = useState("");
-  const [type, setType] = useState<"ecc" | "rsa">("ecc");
-  const [curve, setCurve] = useState<string>("ed25519");
-  const [bits, setBits] = useState<2048 | 3072 | 4096>(4096);
-  const [expiryDays, setExpiryDays] = useState<number>(0);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleGenerate = useCallback(async () => {
-    setError(null);
-    setBusy(true);
-    try {
-      const kp = await generateKeyPair({
-        name: name || undefined,
-        email: email || undefined,
-        passphrase: pass || undefined,
-        type,
-        curve: type === "ecc" ? (curve as never) : undefined,
-        rsaBits: type === "rsa" ? bits : undefined,
-        expirationSeconds: expiryDays > 0 ? expiryDays * 86400 : 0,
-      });
-      onGenerated(kp);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }, [name, email, pass, type, curve, bits, expiryDays, onGenerated]);
-
-  return (
-    <div className="space-y-2 rounded-md border border-neutral-800 bg-neutral-950/40 p-3">
-      <div className="text-xs font-semibold text-neutral-300">
-        Generate a new local key pair
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Full name"
-          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-xs"
-        />
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="email@example.com"
-          className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-xs"
-        />
-      </div>
-      <input
-        type="password"
-        value={pass}
-        onChange={(e) => setPass(e.target.value)}
-        placeholder="Passphrase (optional, recommended)"
-        className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-xs"
-      />
-      <div className="grid grid-cols-2 gap-2 text-[11px]">
-        <label className="flex flex-col gap-1">
-          <span className="text-neutral-500">Type</span>
-          <select
-            value={type}
-            onChange={(e) => setType(e.target.value as "ecc" | "rsa")}
-            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-          >
-            <option value="ecc">ECC (recommended)</option>
-            <option value="rsa">RSA</option>
-          </select>
-        </label>
-        {type === "ecc" ? (
-          <label className="flex flex-col gap-1">
-            <span className="text-neutral-500">Curve</span>
-            <select
-              value={curve}
-              onChange={(e) => setCurve(e.target.value)}
-              className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-            >
-              <option value="ed25519Legacy">ed25519 (default)</option>
-              <option value="nistP256">NIST P-256</option>
-              <option value="nistP384">NIST P-384</option>
-              <option value="nistP521">NIST P-521</option>
-              <option value="secp256k1">secp256k1</option>
-            </select>
-          </label>
-        ) : (
-          <label className="flex flex-col gap-1">
-            <span className="text-neutral-500">Bits</span>
-            <select
-              value={bits}
-              onChange={(e) =>
-                setBits(Number(e.target.value) as 2048 | 3072 | 4096)
-              }
-              className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5"
-            >
-              <option value={2048}>2048</option>
-              <option value={3072}>3072</option>
-              <option value={4096}>4096</option>
-            </select>
-          </label>
-        )}
-        <label className="flex flex-col gap-1 col-span-2">
-          <span className="text-neutral-500">
-            Expiration (days, 0 = never)
-          </span>
-          <input
-            type="number"
-            min={0}
-            value={expiryDays}
-            onChange={(e) => setExpiryDays(Number(e.target.value))}
-            className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-xs"
-          />
-        </label>
-      </div>
-      {error && <ErrorBanner message={error} />}
-      <Button onClick={handleGenerate} disabled={busy} variant="default" full>
-        {busy ? "Generating…" : "Generate key pair"}
-      </Button>
-    </div>
-  );
-}
-
-function ImportKeyForm({
-  onImport,
-}: {
-  onImport: (
-    label: string,
-    armored: string,
-    info: AnyKeyInfo,
-    isPrivate: boolean,
-  ) => void;
-}) {
-  const [label, setLabel] = useState("");
-  const [armored, setArmored] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleImport = useCallback(async () => {
-    setError(null);
-    if (!armored.trim()) {
-      setError("Paste an armored key.");
-      return;
-    }
-    setBusy(true);
-    try {
-      const v = await validateArmoredKey(armored.trim());
-      if (!v.ok || !v.info) {
-        setError(v.error ?? "Invalid key.");
-        return;
-      }
-      const isPrivate = "isPrivate" in v.info && v.info.isPrivate;
-      onImport(
-        label.trim() ||
-          v.info.userIDs[0]?.name ||
-          v.info.userIDs[0]?.email ||
-          (isPrivate ? "Imported private key" : "Imported public key"),
-        armored.trim(),
-        v.info,
-        isPrivate,
-      );
-      setArmored("");
-      setLabel("");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }, [armored, label, onImport]);
-
-  return (
-    <div className="space-y-2 rounded-md border border-neutral-800 bg-neutral-950/40 p-3">
-      <div className="text-xs font-semibold text-neutral-300">
-        Import an existing key
-      </div>
-      <input
-        type="text"
-        value={label}
-        onChange={(e) => setLabel(e.target.value)}
-        placeholder="Label (optional)"
-        className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-xs"
-      />
-      <Textarea
-        value={armored}
-        onChange={setArmored}
-        placeholder={"-----BEGIN PGP PRIVATE KEY BLOCK-----\n... or PUBLIC KEY BLOCK ..."}
-        rows={5}
-      />
-      {error && <ErrorBanner message={error} />}
-      <Button onClick={handleImport} disabled={busy} variant="default" full>
-        {busy ? "Validating…" : "Import key"}
-      </Button>
-    </div>
   );
 }

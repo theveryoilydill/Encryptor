@@ -227,3 +227,143 @@ export async function lookupKeybaseUsersClient(
 
   return (await res.json()) as KeybaseLookupResult;
 }
+
+export interface KeybaseAutocompleteResult {
+  username: string;
+  full_name?: string;
+  picture_url?: string;
+  uid: string;
+}
+
+/**
+ * Server-side: call the Keybase user_search.json endpoint to autocomplete
+ * usernames by prefix. Used by the React Router loader and Next.js API route.
+ */
+export async function autocompleteKeybaseUsersServer(
+  query: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeybaseAutocompleteResult[]> {
+  const q = query.trim();
+  if (q.length < 1) return [];
+
+  const url = `https://keybase.io/_/api/1.0/user/user_search.json?q=${encodeURIComponent(q)}&num_wanted=10`;
+  const res = await fetchImpl(url, {
+    headers: { Accept: "application/json", "User-Agent": "pgp-keybase-cloudflare/1.0" },
+  });
+  if (!res.ok) {
+    throw new Error(`Keybase autocomplete returned HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as {
+    status: { code: number; name: string };
+    list: Array<{
+      keybase: {
+        username: string;
+        uid: string;
+        full_name?: string;
+        picture_url?: string;
+      };
+    }>;
+  };
+  if (!data.status || data.status.code !== 0) return [];
+  return (data.list ?? []).map((item) => ({
+    username: item.keybase.username,
+    uid: item.keybase.uid,
+    full_name: item.keybase.full_name ?? undefined,
+    picture_url: item.keybase.picture_url ?? undefined,
+  }));
+}
+
+export interface KeybaseKeyByIDResult {
+  /** The Keybase username that owns this key, if known. */
+  username?: string;
+  uid?: string;
+  /** ASCII-armored public key. */
+  armored: string;
+  fingerprint: string;
+  /** Short 16-hex key ID. */
+  keyID: string;
+  kid?: string;
+}
+
+/**
+ * Server-side: fetch a public key by its PGP key ID (short 16-hex or long 40-hex)
+ * via Keybase's key/fetch.json endpoint. The response includes the owning
+ * username and uid, so this doubles as a "who signed it" lookup.
+ */
+export async function fetchKeyByKeyIDServer(
+  keyIDs: string[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeybaseKeyByIDResult[]> {
+  const cleaned = keyIDs
+    .map((k) => k.trim().toLowerCase())
+    .filter((k) => k.length > 0);
+  if (cleaned.length === 0) return [];
+
+  const url = `https://keybase.io/_/api/1.0/key/fetch.json?pgp_key_ids=${encodeURIComponent(
+    cleaned.join(","),
+  )}`;
+  const res = await fetchImpl(url, {
+    headers: { Accept: "application/json", "User-Agent": "pgp-keybase-cloudflare/1.0" },
+  });
+  if (!res.ok) {
+    throw new Error(`Keybase key fetch returned HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as {
+    status: { code: number };
+    keys?: Array<{
+      bundle?: string;
+      username?: string;
+      uid?: string;
+      kid?: string;
+      fingerprint?: string;
+    }>;
+  };
+  if (!data.status || data.status.code !== 0 || !data.keys) return [];
+
+  return data.keys
+    .filter((k) => k.bundle && k.fingerprint)
+    .map((k) => {
+      const fp = (k.fingerprint ?? "").toUpperCase();
+      return {
+        armored: k.bundle as string,
+        fingerprint: fp,
+        keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : fp,
+        username: k.username,
+        uid: k.uid,
+        kid: k.kid,
+      };
+    });
+}
+
+/**
+ * Browser-side: autocomplete Keybase usernames via our proxy.
+ * GET /api/keybase/autocomplete?q=chri
+ */
+export async function autocompleteKeybaseUsersClient(
+  query: string,
+  proxyUrl = "/api/keybase/autocomplete",
+): Promise<KeybaseAutocompleteResult[]> {
+  const q = query.trim();
+  if (q.length < 1) return [];
+  const url = `${proxyUrl}?q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) return [];
+  return (await res.json()) as KeybaseAutocompleteResult[];
+}
+
+/**
+ * Browser-side: fetch public key + owner username by PGP key ID.
+ * GET /api/keybase/fetchkey?key_id=fbc07d6a97016cb3
+ */
+export async function fetchKeyByKeyIDClient(
+  keyIDs: string[],
+  proxyUrl = "/api/keybase/fetchkey",
+): Promise<KeybaseKeyByIDResult[]> {
+  const cleaned = keyIDs.map((k) => k.trim().toLowerCase()).filter(Boolean);
+  if (cleaned.length === 0) return [];
+  const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) return [];
+  const body = (await res.json()) as { keys?: KeybaseKeyByIDResult[] };
+  return body.keys ?? [];
+}

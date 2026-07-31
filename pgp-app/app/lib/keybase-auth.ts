@@ -29,18 +29,13 @@
  *  6. Client decrypts the private key bundle with `pwh` (first 32 bytes of the
  *     scrypt output, hex-encoded) as the passphrase via openpgp.js.
  */
-import { scrypt } from "scrypt-js";
 import * as openpgp from "openpgp";
 
-// kbpgp and keybase-proofs are heavy CommonJS libraries (kbpgp alone is ~1MB).
-// We import them dynamically inside generatePdpkaSignatures() so they only
-// load when the user actually clicks "Log in with Keybase", keeping the
-// initial page bundle small and fast.
+// triplesec, kbpgp, and keybase-proofs are heavy CommonJS libraries.
+// We import them dynamically inside the functions that need them so they
+// only load when the user actually clicks "Log in with Keybase", keeping
+// the initial page bundle small and fast.
 
-const SCRYPT_N = 32768; // 2^15
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const SCRYPT_DKLEN = 128; // pwh(32) + eddsa(32) + dh(32) + lks(32)
 const HOSTNAME = "keybase.io";
 
 /** Convert a hex string to a Uint8Array. */
@@ -107,26 +102,47 @@ export async function getSalt(
   return (await res.json()) as SaltResponse;
 }
 
-/** Step 2: Run scrypt and split the 128-byte output into pwh + eddsa seed. */
+/**
+ * Step 2: Derive pwh + eddsa seed from the password using triplesec's resalt.
+ *
+ * Keybase uses triplesec (not raw scrypt) to derive key material. triplesec's
+ * `kdf` method runs scrypt with dkLen = hmac_key(96) + aes(32) + twofish(32) +
+ * salsa20(32) + extra_keymaterial(128) = 320 bytes, then splits the output:
+ *   bytes 0..191  → cipher keys (hmac, aes, twofish, salsa20)
+ *   bytes 192..319 → extra key material (pwh + eddsa + dh + lks)
+ *
+ * The pwh is at bytes 192..224 of the scrypt output, NOT bytes 0..32.
+ * This was the root cause of the "bad passphrase" login error.
+ */
 export async function deriveKeysFromPassword(
   password: string,
   saltHex: string,
 ): Promise<DerivedKeys> {
-  const passwordBytes = new TextEncoder().encode(password);
-  const saltBytes = hexToBytes(saltHex);
-  const derived = await scrypt(
-    passwordBytes,
-    saltBytes,
-    SCRYPT_N,
-    SCRYPT_R,
-    SCRYPT_P,
-    SCRYPT_DKLEN,
-  );
-  const buf = new Uint8Array(derived);
+  const triplesec = await import("triplesec");
+  const { Buffer: TSBuffer, Encryptor } = triplesec;
+
+  const salt = new TSBuffer(saltHex, "hex");
+  const enc = new Encryptor({ key: new TSBuffer(password, "utf8") });
+
+  const keys = await new Promise<{
+    extra: { toString: (enc: string) => string; slice: (a: number, b: number) => { toString: (enc: string) => string } };
+  }>((resolve, reject) => {
+    enc.resalt(
+      { salt, extra_keymaterial: 128, progress_hook: () => {} },
+      (err: Error | null, keys: { extra: { toString: (enc: string) => string; slice: (a: number, b: number) => { toString: (enc: string) => string } } }) => {
+        if (err) reject(err);
+        else resolve(keys);
+      },
+    );
+  });
+
+  const pwhHex = keys.extra.slice(0, 32).toString("hex");
+  const eddsaHex = keys.extra.slice(32, 64).toString("hex");
+
   return {
-    pwh: buf.slice(0, 32),
-    pwhHex: bytesToHex(buf.slice(0, 32)),
-    eddsaSeed: buf.slice(32, 64),
+    pwh: hexToBytes(pwhHex),
+    pwhHex,
+    eddsaSeed: hexToBytes(eddsaHex),
   };
 }
 
@@ -294,10 +310,12 @@ export async function loginWithPassword(
     );
   }
 
-  // 6. Decrypt the private key bundle with pwhHex as the passphrase.
-  const { privateKey } = await decryptPrivateKeyBundle(
+  // 6. Decrypt the private key bundle.
+  // The P3SKB bundle from me.json is encrypted with the user's PASSWORD
+  // (not the pwh) via triplesec. We decode + unlock + parse it.
+  const privateKey = await decryptPrivateKeyBundle(
     me.private_key_bundle,
-    keys.pwhHex,
+    password,
   );
 
   return { me, privateKey, pwhHex: keys.pwhHex };
@@ -306,43 +324,57 @@ export async function loginWithPassword(
 /**
  * Decrypt the private key bundle returned by me.json.
  *
- * Keybase encrypts the bundle with the hex-encoded pwh (first 32 bytes of the
- * scrypt output) as the passphrase. We try a few candidate passphrases in case
- * Keybase changes their format.
+ * The bundle is a Keybase P3SKB (PGP3 Secret Key Block) — a MessagePack-
+ * encoded packet that wraps a PGP private key encrypted with triplesec
+ * using the user's PASSWORD (not the pwh) as the key.
+ *
+ * Flow:
+ *  1. Decode the P3SKB packet using kbpgp's unbox_decode
+ *  2. Unlock (decrypt) the packet with triplesec using the password as key
+ *  3. Parse the decrypted bytes as a binary PGP private key via openpgp.js
+ *  4. The key is already decrypted (no passphrase needed)
  */
 export async function decryptPrivateKeyBundle(
   bundle: string,
-  pwhHex: string,
-): Promise<{ privateKey: openpgp.PrivateKey; passphraseUsed: string }> {
-  const candidates = [
-    pwhHex,
-    pwhHex.slice(0, 64), // first 32 bytes (same as pwhHex since it's already 64 chars)
-    pwhHex.slice(64), // last 32 bytes (won't apply for our 32-byte pwh, but be defensive)
-  ].filter((p, i, arr) => p && arr.indexOf(p) === i); // dedupe
+  password: string,
+): Promise<openpgp.PrivateKey> {
+  // Dynamically import the heavy CommonJS libraries.
+  const triplesec = await import("triplesec");
+  const kbpgp = await import("kbpgp");
+  const { Buffer: TSBuffer, Encryptor } = triplesec;
+  const { unbox_decode } = (kbpgp as unknown as { kb: { unbox_decode: (arg: { armored: string }) => [Error | null, unknown] } }).kb;
 
-  let lastError: Error | null = null;
-  for (const passphrase of candidates) {
-    try {
-      const key = await openpgp.readKey({ armoredKey: bundle });
-      if (!key.isPrivate()) {
-        throw new Error("Bundle is not a private key.");
-      }
-      if (key.isDecrypted()) {
-        return { privateKey: key as openpgp.PrivateKey, passphraseUsed: "" };
-      }
-      const decrypted = await openpgp.decryptKey({
-        privateKey: key as openpgp.PrivateKey,
-        passphrase,
-      });
-      return { privateKey: decrypted, passphraseUsed: passphrase };
-    } catch (e) {
-      lastError = e as Error;
-    }
+  // 1. Decode the P3SKB packet
+  const [decodeErr, packet] = unbox_decode({ armored: bundle });
+  if (decodeErr || !packet) {
+    throw new Error(`Failed to decode P3SKB bundle: ${decodeErr?.message ?? "unknown error"}`);
   }
 
-  throw new Error(
-    `Could not decrypt private key bundle. Keybase's auth protocol may have changed, or the password is incorrect. Last error: ${lastError?.message ?? "unknown"}`,
-  );
+  // 2. Unlock with triplesec (password as key)
+  const tsEnc = new Encryptor({ key: new TSBuffer(password, "utf8") });
+  const unlockErr = await new Promise<Error | null>((resolve) => {
+    (packet as { unlock: (arg: { tsenc: unknown }, cb: (err: Error | null) => void) => void }).unlock(
+      { tsenc: tsEnc },
+      (err: Error | null) => resolve(err),
+    );
+  });
+  if (unlockErr) {
+    throw new Error(`Failed to unlock P3SKB bundle (wrong password?): ${unlockErr.message}`);
+  }
+
+  // 3. Extract the decrypted private key data
+  const rawPriv = (packet as { priv: { data: Uint8Array } }).priv.data;
+
+  // 4. Parse as a binary PGP private key
+  try {
+    const key = await openpgp.readKey({ binaryKey: rawPriv });
+    if (!key.isPrivate()) {
+      throw new Error("Decoded key is not a private key.");
+    }
+    return key as openpgp.PrivateKey;
+  } catch (e) {
+    throw new Error(`Failed to parse PGP private key from bundle: ${(e as Error).message}`);
+  }
 }
 
 /** Convert a PrivateKey back to armored form (decrypted or re-encrypted). */

@@ -56,3 +56,29 @@ declare module "keybase-proofs/lib/auth.js" {
     ): void;
   }
 }
+
+declare module "triplesec" {
+  export class Buffer {
+    constructor(data: string, encoding: string);
+    static from(data: string, encoding: string): Buffer;
+    toString(encoding: string): string;
+    slice(start: number, end?: number): Buffer;
+    length: number;
+  }
+  export class Encryptor {
+    constructor(opts: { key: Buffer });
+    set_key(key: Buffer): void;
+    resalt(
+      opts: {
+        salt: Buffer;
+        extra_keymaterial?: number;
+        progress_hook?: (p: number) => void;
+      },
+      cb: (err: Error | null, keys: { extra: Buffer }) => void,
+    ): void;
+  }
+  export function scrypt(
+    opts: unknown,
+    cb: (err: Error | null, result: unknown) => void,
+  ): void;
+}

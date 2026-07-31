@@ -31,14 +31,11 @@
  */
 import { scrypt } from "scrypt-js";
 import * as openpgp from "openpgp";
-import { kb } from "kbpgp";
-// Import Auth directly from lib/auth.js to avoid pulling in the DNS scraper
-// (which requires Node's 'dns' built-in and breaks browser bundles).
-// The default `keybase-proofs` entry point loads all proof types including
-// the DNS scraper, which we don't need.
-import { Auth } from "keybase-proofs/lib/auth.js";
 
-const { KeyManager } = kb;
+// kbpgp and keybase-proofs are heavy CommonJS libraries (kbpgp alone is ~1MB).
+// We import them dynamically inside generatePdpkaSignatures() so they only
+// load when the user actually clicks "Log in with Keybase", keeping the
+// initial page bundle small and fast.
 
 const SCRYPT_N = 32768; // 2^15
 const SCRYPT_R = 8;
@@ -147,6 +144,16 @@ export async function generatePdpkaSignatures(
   uid: string | undefined,
   loginSession: string,
 ): Promise<{ pdpka4: string; pdpka5: string }> {
+  // Dynamically import the heavy CommonJS libraries only when needed.
+  // This keeps the initial page bundle small (kbpgp alone is ~1MB).
+  const kbpgpMod = await import("kbpgp");
+  // Import Auth directly from lib/auth.js to avoid pulling in the DNS scraper
+  // (which requires Node's 'dns' built-in and breaks browser bundles).
+  const authMod = await import("keybase-proofs/lib/auth.js");
+  const kb = (kbpgpMod as unknown as { kb: { KeyManager: typeof import("kbpgp").kb.KeyManager } }).kb;
+  const Auth = (authMod as unknown as { Auth: typeof import("keybase-proofs/lib/auth.js").Auth }).Auth;
+  const { KeyManager } = kb;
+
   if (!KeyManager || !Auth) {
     throw new Error("Failed to load kbpgp or keybase-proofs");
   }
@@ -160,17 +167,20 @@ export async function generatePdpkaSignatures(
   else user.username = username.trim().toLowerCase();
 
   // Derive both EdDSA KeyManagers from the password-derived seeds.
-  const km4 = await generateKeyManager(pwh);
-  const km5 = await generateKeyManager(eddsaSeed);
+  const km4 = await generateKeyManager(KeyManager, pwh);
+  const km5 = await generateKeyManager(KeyManager, eddsaSeed);
 
   // Generate the two PDPKA signatures.
-  const pdpka4 = await signAuthChallenge(km4, user, loginSession, nonce);
-  const pdpka5 = await signAuthChallenge(km5, user, loginSession, nonce);
+  const pdpka4 = await signAuthChallenge(Auth, km4, user, loginSession, nonce);
+  const pdpka5 = await signAuthChallenge(Auth, km5, user, loginSession, nonce);
 
   return { pdpka4, pdpka5 };
 }
 
-function generateKeyManager(seed: Uint8Array): Promise<InstanceType<typeof KeyManager>> {
+function generateKeyManager(
+  KeyManager: typeof import("kbpgp").kb.KeyManager,
+  seed: Uint8Array,
+): Promise<InstanceType<typeof KeyManager>> {
   return new Promise((resolve, reject) => {
     KeyManager.generate(
       { seed: seed as unknown as Buffer, split: false },
@@ -183,7 +193,8 @@ function generateKeyManager(seed: Uint8Array): Promise<InstanceType<typeof KeyMa
 }
 
 function signAuthChallenge(
-  km: InstanceType<typeof KeyManager>,
+  Auth: typeof import("keybase-proofs/lib/auth.js").Auth,
+  km: InstanceType<typeof import("kbpgp").kb.KeyManager>,
   user: Record<string, string>,
   session: string,
   nonce: Uint8Array,

@@ -155,6 +155,26 @@ export async function readKey(armored: Armored): Promise<openpgp.Key> {
   }
 }
 
+/**
+ * Read a private key (unlocking it if needed) and return its public half as
+ * ASCII-armored text. Used for "Include me as a recipient" — derives the
+ * user's own public key from their configured private key.
+ */
+export async function derivePublicFromPrivate(
+  armoredPrivate: Armored,
+  passphrase?: string,
+): Promise<Armored> {
+  const key = await readKey(armoredPrivate);
+  if (!key.isPrivate()) {
+    return key.armor();
+  }
+  const unlocked = await unlockPrivateKey(
+    key as openpgp.PrivateKey,
+    passphrase,
+  );
+  return unlocked.toPublic().armor();
+}
+
 export async function readPrivateKey(armored: Armored): Promise<openpgp.PrivateKey> {
   const key = await readKey(armored);
   if (!key.isPrivate()) {

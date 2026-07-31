@@ -7,11 +7,11 @@ import {
   type KeybaseAutocompleteResult,
   type KeybasePublicKey,
 } from "~/lib/keybase";
-import {
-  loginWithPassword,
-} from "~/lib/keybase-auth";
+// keybase-auth is dynamically imported inside KeybaseLoginForm to keep
+// kbpgp/keybase-proofs out of the initial client bundle.
 import {
   decryptAndAutoVerify,
+  derivePublicFromPrivate,
   detectArmoredFormat,
   encryptAndSign,
   formatFingerprint,
@@ -23,27 +23,6 @@ import {
   type AnyKeyInfo,
   type GeneratedKeyPair,
 } from "~/lib/pgp";
-import { readKey, unlockPrivateKey } from "~/lib/pgp";
-import * as openpgp from "openpgp";
-
-/** Read a private key (unlocking it if needed) and return its public half as
- *  ASCII-armored text. Used for "Include me as a recipient". */
-async function derivePublicFromPrivate(
-  armoredPrivate: string,
-  passphrase?: string,
-): Promise<string> {
-  const key = await readKey(armoredPrivate);
-  if (!key.isPrivate()) {
-    // Already a public key
-    return key.armor();
-  }
-  const unlocked = await unlockPrivateKey(
-    key as openpgp.PrivateKey,
-    passphrase,
-  );
-  // toPublic() strips the secret material and returns a PublicKey.
-  return unlocked.toPublic().armor();
-}
 
 export function meta(_: Route.MetaArgs) {
   return [
@@ -1421,6 +1400,11 @@ function KeybaseLoginForm({
     }
     setBusy(true);
     try {
+      setStage("Loading crypto libraries…");
+      // Dynamically import keybase-auth (which in turn dynamically imports
+      // kbpgp + keybase-proofs) only when the user actually clicks login.
+      const { loginWithPassword } = await import("~/lib/keybase-auth");
+
       setStage("Fetching salt + deriving keys…");
       // Yield to the browser so the stage label can paint before the
       // synchronous scrypt + PDPKA signing work blocks the main thread.

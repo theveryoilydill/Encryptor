@@ -1,5 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  "main": ".open-next/worker.js",
   "name": "encryptor",
   "compatibility_date": "2026-08-02",
   "compatibility_flags": ["nodejs_compat"],

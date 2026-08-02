@@ -1,0 +1,9 @@
+allowBuilds:
+  '@parcel/watcher': true
+  '@prisma/engines': true
+  '@swc/core': true
+  prisma: true
+  sharp: true
+  unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@hookform/resolvers@5.7.0'

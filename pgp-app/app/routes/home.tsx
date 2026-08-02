@@ -576,11 +576,8 @@ function RecipientPicker({
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const searchCache = useRef<Map<string, KeySearchResult[]>>(new Map());
 
-  // Multi-source search with streaming results.
-  // Fast sources (Keybase) appear immediately; slower sources (Ubuntu
-  // keyserver, keys.openpgp.org) populate as they arrive.
+  // Debounced multi-source search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = input.trim();
@@ -588,54 +585,18 @@ function RecipientPicker({
       setSuggestions([]);
       return;
     }
-
-    // Show suggestions immediately if we have cached results for this query
-    const cached = searchCache.current.get(q.toLowerCase());
-    if (cached) {
-      setSuggestions(cached);
-      setShowSuggestions(true);
-    }
-
     debounceRef.current = setTimeout(async () => {
       setBusy(true);
-      setShowSuggestions(true);
-
-      // Phase 1: Keybase only (fast, ~200ms)
       try {
-        const keybaseResults = await searchAllKeyserversClient(
-          q,
-          searchAllProxy + "&keybase_only=1",
-        );
-        if (keybaseResults.length > 0) {
-          setSuggestions((prev) => {
-            const seen = new Set(prev.map((r) => r.fingerprint || r.label.toLowerCase()));
-            const fresh = keybaseResults.filter(
-              (r) => !seen.has(r.fingerprint || r.label.toLowerCase()),
-            );
-            return [...prev, ...fresh];
-          });
-        }
+        const results = await searchAllKeyserversClient(q, searchAllProxy);
+        setSuggestions(results);
+        setShowSuggestions(true);
       } catch {
-        // ignore — phase 2 will retry
-      }
-
-      // Phase 2: All sources (includes slower keyservers)
-      try {
-        const allResults = await searchAllKeyserversClient(q, searchAllProxy);
-        setSuggestions(allResults);
-        // Cache for instant display on re-type
-        searchCache.current.set(q.toLowerCase(), allResults);
-        // Keep cache small
-        if (searchCache.current.size > 20) {
-          const firstKey = searchCache.current.keys().next().value;
-          if (firstKey) searchCache.current.delete(firstKey);
-        }
-      } catch {
-        // keep phase-1 results if phase 2 fails
+        setSuggestions([]);
       } finally {
         setBusy(false);
       }
-    }, 150);
+    }, 250);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };

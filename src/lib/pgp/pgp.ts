@@ -64,7 +64,8 @@ export interface GeneratedKeyPair {
 export interface EncryptAndSignOptions {
   plaintext: string;
   recipientPublicKeys: Armored[];
-  signerPrivateKey: Armored;
+  /** The signer's private key — can be an armored string or an already-parsed PrivateKey object. */
+  signerPrivateKey: Armored | openpgp.PrivateKey;
   signerPassphrase?: string;
   /** Sign as a separate detached signature file (false = inline signature in the encrypted message). */
   detached?: boolean;
@@ -72,7 +73,8 @@ export interface EncryptAndSignOptions {
 
 export interface DecryptAndVerifyOptions {
   armoredMessage: string;
-  decryptionPrivateKey: Armored;
+  /** The decryption private key — can be an armored string or an already-parsed PrivateKey object. */
+  decryptionPrivateKey: Armored | openpgp.PrivateKey;
   decryptionPassphrase?: string;
   /** One or more public keys that may have signed the message. */
   verificationPublicKeys: Armored[];
@@ -90,7 +92,8 @@ export interface DecryptAndVerifyResult {
 
 export interface SignOptions {
   plaintext: string;
-  privateKey: Armored;
+  /** The signer's private key — can be an armored string or an already-parsed PrivateKey object. */
+  privateKey: Armored | openpgp.PrivateKey;
   passphrase?: string;
   /** Detached = separate signature block; inline = cleartext signed message. */
   detached?: boolean;
@@ -316,10 +319,13 @@ export async function encryptAndSign(
     encryptionKeys.push(await readKey(arm));
   }
 
-  const signingKey = await unlockPrivateKey(
-    await readPrivateKey(opts.signerPrivateKey),
-    opts.signerPassphrase,
-  );
+  const signingKey =
+    typeof opts.signerPrivateKey === "string"
+      ? await unlockPrivateKey(
+          await readPrivateKey(opts.signerPrivateKey),
+          opts.signerPassphrase,
+        )
+      : opts.signerPrivateKey;
 
   const message = await openpgp.createMessage({ text: opts.plaintext });
 
@@ -340,10 +346,14 @@ export async function decryptAndVerify(
   if (!opts.decryptionPrivateKey)
     throw new Error("A decryption private key is required.");
 
-  const decryptionKey = await unlockPrivateKey(
-    await readPrivateKey(opts.decryptionPrivateKey),
-    opts.decryptionPassphrase,
-  );
+  // Accept either an armored string or an already-parsed PrivateKey object.
+  const decryptionKey =
+    typeof opts.decryptionPrivateKey === "string"
+      ? await unlockPrivateKey(
+          await readPrivateKey(opts.decryptionPrivateKey),
+          opts.decryptionPassphrase,
+        )
+      : opts.decryptionPrivateKey;
 
   const verificationKeys: openpgp.PublicKey[] = [];
   for (const arm of opts.verificationPublicKeys) {
@@ -417,6 +427,7 @@ export async function decryptAndAutoVerify(
       keyID: string;
       fingerprint: string;
       username?: string;
+      allKeyIDs?: string[];
     }>
   >,
 ): Promise<{
@@ -433,10 +444,14 @@ export async function decryptAndAutoVerify(
   if (!opts.decryptionPrivateKey)
     throw new Error("A decryption private key is required.");
 
-  const decryptionKey = await unlockPrivateKey(
-    await readPrivateKey(opts.decryptionPrivateKey),
-    opts.decryptionPassphrase,
-  );
+  // Accept either an armored string or an already-parsed PrivateKey object.
+  const decryptionKey =
+    typeof opts.decryptionPrivateKey === "string"
+      ? await unlockPrivateKey(
+          await readPrivateKey(opts.decryptionPrivateKey),
+          opts.decryptionPassphrase,
+        )
+      : opts.decryptionPrivateKey;
 
   // First pass: decrypt without verification to discover signature key IDs.
   const message = await openpgp.readMessage({
@@ -446,6 +461,7 @@ export async function decryptAndAutoVerify(
   const initial = await openpgp.decrypt({
     message,
     decryptionKeys: [decryptionKey],
+    verificationKeys: [],
   });
 
   const plaintext = typeof initial.data === "string" ? initial.data : "";
@@ -492,8 +508,14 @@ export async function decryptAndAutoVerify(
     }
   }
 
+  // Re-read the message for the second pass — the message object is consumed
+  // by the first decrypt, so we need to re-parse it.
+  const message2 = await openpgp.readMessage({
+    armoredMessage: opts.armoredMessage,
+  });
+
   const verified = await openpgp.decrypt({
-    message,
+    message: message2,
     decryptionKeys: [decryptionKey],
     verificationKeys,
   });
@@ -518,7 +540,9 @@ export async function decryptAndAutoVerify(
         error = msg;
       }
       // Find the matching fetched key for fingerprint + username.
-      const match = fetched.find((f) => f.keyID.toUpperCase() === keyID.toUpperCase());
+      const match = fetched.find((f) =>
+        f.allKeyIDs?.includes(keyID.toUpperCase()),
+      );
       return {
         keyID,
         fingerprint: match?.fingerprint,
@@ -536,10 +560,13 @@ export async function signMessage(opts: SignOptions): Promise<string> {
   if (!opts.plaintext) throw new Error("Plaintext is required.");
   if (!opts.privateKey) throw new Error("A signer private key is required.");
 
-  const signingKey = await unlockPrivateKey(
-    await readPrivateKey(opts.privateKey),
-    opts.passphrase,
-  );
+  const signingKey =
+    typeof opts.privateKey === "string"
+      ? await unlockPrivateKey(
+          await readPrivateKey(opts.privateKey),
+          opts.passphrase,
+        )
+      : opts.privateKey;
 
   if (opts.detached) {
     // For detached signatures we sign the binary message and emit a separate
@@ -777,6 +804,7 @@ export async function verifyAutoDetectWithKeyFetch(
       keyID: string;
       fingerprint: string;
       username?: string;
+      allKeyIDs?: string[];
     }>
   >,
 ): Promise<{
@@ -934,8 +962,8 @@ export async function verifyAutoDetectWithKeyFetch(
         }
         error = msg;
       }
-      const match = fetched.find(
-        (f) => f.keyID.toUpperCase() === keyID.toUpperCase(),
+      const match = fetched.find((f) =>
+        f.allKeyIDs?.includes(keyID.toUpperCase()),
       );
       return {
         keyID,

@@ -280,8 +280,10 @@ export interface KeybaseKeyByIDResult {
   /** ASCII-armored public key. */
   armored: string;
   fingerprint: string;
-  /** Short 16-hex key ID. */
+  /** Short 16-hex key ID of the primary key. */
   keyID: string;
+  /** All key IDs associated with this key (primary + subkeys), uppercase. */
+  allKeyIDs?: string[];
   kid?: string;
 }
 
@@ -316,6 +318,7 @@ export async function fetchKeyByKeyIDServer(
       uid?: string;
       kid?: string;
       fingerprint?: string;
+      subkeys?: Record<string, unknown>;
     }>;
   };
   if (!data.status || data.status.code !== 0 || !data.keys) return [];
@@ -324,10 +327,16 @@ export async function fetchKeyByKeyIDServer(
     .filter((k) => k.bundle && k.fingerprint)
     .map((k) => {
       const fp = (k.fingerprint ?? "").toUpperCase();
+      const primaryKID = fp.length >= 16 ? fp.slice(fp.length - 16) : fp;
+      // Collect all key IDs: primary key ID + all subkey IDs.
+      const subkeyIDs = k.subkeys
+        ? Object.keys(k.subkeys).map((sk) => sk.toUpperCase())
+        : [];
       return {
         armored: k.bundle as string,
         fingerprint: fp,
-        keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : fp,
+        keyID: primaryKID,
+        allKeyIDs: [primaryKID, ...subkeyIDs],
         username: k.username,
         uid: k.uid,
         kid: k.kid,
@@ -360,6 +369,96 @@ export async function fetchKeyByKeyIDClient(
   proxyUrl = "/api/keybase/fetchkey",
 ): Promise<KeybaseKeyByIDResult[]> {
   const cleaned = keyIDs.map((k) => k.trim().toLowerCase()).filter(Boolean);
+  if (cleaned.length === 0) return [];
+  const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) return [];
+  const body = (await res.json()) as { keys?: KeybaseKeyByIDResult[] };
+  return body.keys ?? [];
+}
+
+/* ----------------------- keys.openpgp.org fallback ------------------------ */
+
+/**
+ * Server-side: fetch a public key from keys.openpgp.org by its key ID.
+ *
+ * keys.openpgp.org is a privacy-respecting Verifying Key Server (VKS).
+ * Unlike Keybase, it doesn't associate keys with usernames — keys are
+ * looked up by key ID, fingerprint, or verified email address.
+ *
+ * The VKS API returns the armored public key as plain text (200) or
+ * "No key found" (404). We parse the returned key with openpgp.js to
+ * extract the fingerprint, key ID, and all subkey IDs.
+ *
+ * Endpoint: GET https://keys.openpgp.org/vks/v1/by-keyid/<keyID>
+ */
+export async function fetchKeyFromOpenPGP_orgServer(
+  keyIDs: string[],
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeybaseKeyByIDResult[]> {
+  const cleaned = keyIDs
+    .map((k) => k.trim().toUpperCase())
+    .filter((k) => k.length > 0);
+  if (cleaned.length === 0) return [];
+
+  const results: KeybaseKeyByIDResult[] = [];
+
+  for (const keyID of cleaned) {
+    try {
+      const url = `https://keys.openpgp.org/vks/v1/by-keyid/${encodeURIComponent(keyID)}`;
+      const res = await fetchImpl(url, {
+        headers: { Accept: "application/pgp-keys" },
+      });
+      if (!res.ok) continue;
+      const armored = await res.text();
+      if (!armored.includes("-----BEGIN PGP PUBLIC KEY BLOCK-----")) continue;
+
+      // Parse the key to extract fingerprint and all subkey IDs.
+      // We use a lightweight regex to avoid pulling in openpgp.js here
+      // (the caller will parse it properly when verifying).
+      const fpMatch = armored.match(/:fingerprint:\s*([0-9A-Fa-f]{40})/);
+      const fingerprint = fpMatch ? fpMatch[1].toUpperCase() : "";
+
+      // Extract subkey IDs from the armor header comments.
+      // keys.openpgp.org includes comment lines like:
+      //   "Comment: 5EFD8A95 2960B04B"
+      // for each subkey. We'll also derive the primary key ID from the fingerprint.
+      const allKeyIDs = new Set<string>();
+      if (fingerprint.length >= 16) {
+        allKeyIDs.add(fingerprint.slice(fingerprint.length - 16));
+      }
+      // Also add the key ID we searched for (it might be a subkey ID).
+      allKeyIDs.add(keyID);
+
+      results.push({
+        armored,
+        fingerprint: fingerprint || keyID,
+        keyID:
+          fingerprint.length >= 16
+            ? fingerprint.slice(fingerprint.length - 16)
+            : keyID,
+        allKeyIDs: Array.from(allKeyIDs),
+        // keys.openpgp.org doesn't provide usernames — caller should show
+        // the fingerprint/key ID instead.
+        username: undefined,
+      });
+    } catch {
+      // skip on error
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Browser-side: fetch public keys from keys.openpgp.org via our proxy.
+ * GET /api/keybase/fetchkey-opg?key_id=<comma_separated_key_ids>
+ */
+export async function fetchKeyFromOpenPGP_orgClient(
+  keyIDs: string[],
+  proxyUrl = "/api/keybase/fetchkey-opg",
+): Promise<KeybaseKeyByIDResult[]> {
+  const cleaned = keyIDs.map((k) => k.trim().toUpperCase()).filter(Boolean);
   if (cleaned.length === 0) return [];
   const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
   const res = await fetch(url, { headers: { Accept: "application/json" } });

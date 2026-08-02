@@ -4,14 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   autocompleteKeybaseUsersClient,
   fetchKeyByKeyIDClient,
+  fetchKeyFromOpenPGP_orgClient,
   lookupKeybaseUsersClient,
   type KeybaseAutocompleteResult,
+  type KeybaseKeyByIDResult,
 } from "@/lib/pgp/keybase";
 // keybase-auth is dynamically imported inside KeybaseLoginForm to keep
 // kbpgp/keybase-proofs out of the initial client bundle.
 import {
   decryptAndAutoVerify,
-  derivePublicFromPrivate,
   detectArmoredFormat,
   encryptAndSign,
   formatFingerprint,
@@ -28,11 +29,62 @@ const PROXIES = {
   keybaseProxy: "/api/keybase",
   autocompleteProxy: "/api/keybase/autocomplete",
   fetchkeyProxy: "/api/keybase/fetchkey",
+  fetchkeyOpgProxy: "/api/keybase/fetchkey-opg",
   getsaltProxy: "/api/keybase/getsalt",
   loginProxy: "/api/keybase/login",
 } as const;
 
 type Tab = "encrypt" | "decrypt" | "sign" | "verify";
+
+/**
+ * Fetch public keys for signature verification from BOTH Keybase and
+ * keys.openpgp.org, merging the results.
+ *
+ * Keybase is tried first because it returns the owning username. If a key
+ * isn't found on Keybase, we fall back to keys.openpgp.org (which doesn't
+ * have usernames but still allows signature verification).
+ *
+ * Results are deduplicated by fingerprint.
+ */
+async function fetchKeysFromAllSources(
+  keyIDs: string[],
+  keybaseProxy: string,
+  opgProxy: string,
+): Promise<KeybaseKeyByIDResult[]> {
+  // Try Keybase first.
+  const keybaseResults = await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(
+    () => [],
+  );
+
+  // Find key IDs that Keybase didn't resolve.
+  const foundKeyIDs = new Set(
+    keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]),
+  );
+  const missingKeyIDs = keyIDs.filter((id) => {
+    const upper = id.toUpperCase();
+    return !foundKeyIDs.has(upper) && !foundKeyIDs.has(upper.toLowerCase());
+  });
+
+  // Try keys.openpgp.org for the missing ones.
+  const opgResults =
+    missingKeyIDs.length > 0
+      ? await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(
+          () => [],
+        )
+      : [];
+
+  // Merge and deduplicate by fingerprint.
+  const seen = new Set<string>();
+  const merged: KeybaseKeyByIDResult[] = [];
+  for (const k of [...keybaseResults, ...opgResults]) {
+    const fp = k.fingerprint.toUpperCase();
+    if (!seen.has(fp)) {
+      seen.add(fp);
+      merged.push(k);
+    }
+  }
+  return merged;
+}
 
 interface Recipient {
   source: "keybase" | "local";
@@ -49,8 +101,10 @@ interface PrivateKeyConfig {
   source: "keybase" | "manual" | "generated";
   label: string;
   username?: string;
-  armored: string;
-  passphrase?: string;
+  /** For manual/generated sources: the ENCRYPTED armored private key.
+   *  For keybase source: not used (the key is fetched on demand). */
+  encryptedArmored?: string;
+  /** Key metadata for display (fingerprint, key ID, algorithm). */
   info: AnyKeyInfo;
 }
 
@@ -87,13 +141,14 @@ export default function Home() {
     }
   }, []);
 
-  // Hydrate persisted config (only the armored private key, not the passphrase)
+  // Hydrate persisted config. Only metadata + encrypted key are stored —
+  // NEVER the decrypted private key or the passphrase.
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as PrivateKeyConfig;
-        if (parsed?.armored && parsed?.info) {
+        if (parsed?.info && (parsed.source === "keybase" || parsed.encryptedArmored)) {
           setPrivateKey(parsed);
         }
       }
@@ -106,15 +161,28 @@ export default function Home() {
     setPrivateKey(next);
     try {
       if (next) {
-        // Don't persist passphrase
-        const toStore: PrivateKeyConfig = { ...next, passphrase: undefined };
-        localStorage.setItem(LS_KEY, JSON.stringify(toStore));
+        localStorage.setItem(LS_KEY, JSON.stringify(next));
       } else {
         localStorage.removeItem(LS_KEY);
       }
     } catch {
       // ignore
     }
+  }, []);
+
+  // --- On-demand key decryption (Keybase-style) ---
+  // When a tab needs the decrypted private key, it calls requestDecryptedKey().
+  // This shows a passphrase prompt. The decrypted key exists only in the
+  // promise resolver's scope and is cleared after the operation completes.
+  const [keyRequest, setKeyRequest] = useState<{
+    resolve: (key: OpenPGP.PrivateKey) => void;
+    reject: (err: Error) => void;
+  } | null>(null);
+
+  const requestDecryptedKey = useCallback((): Promise<OpenPGP.PrivateKey> => {
+    return new Promise((resolve, reject) => {
+      setKeyRequest({ resolve, reject });
+    });
   }, []);
 
   return (
@@ -136,12 +204,22 @@ export default function Home() {
               proxies={proxies}
               includeSelf={includeSelf}
               setIncludeSelf={handleSetIncludeSelf}
+              requestDecryptedKey={requestDecryptedKey}
             />
           )}
           {tab === "decrypt" && (
-            <DecryptTab privateKey={privateKey} proxies={proxies} />
+            <DecryptTab
+              privateKey={privateKey}
+              proxies={proxies}
+              requestDecryptedKey={requestDecryptedKey}
+            />
           )}
-          {tab === "sign" && <SignTab privateKey={privateKey} />}
+          {tab === "sign" && (
+            <SignTab
+              privateKey={privateKey}
+              requestDecryptedKey={requestDecryptedKey}
+            />
+          )}
           {tab === "verify" && <VerifyTab proxies={proxies} />}
         </div>
       </main>
@@ -161,6 +239,24 @@ export default function Home() {
             setConfigOpen(false);
           }}
           proxies={proxies}
+        />
+      )}
+
+      {keyRequest && privateKey && (
+        <PassphrasePrompt
+          config={privateKey}
+          proxies={proxies}
+          onResolve={(key) => {
+            keyRequest.resolve(key);
+            setKeyRequest(null);
+          }}
+          onCancel={(err) => {
+            keyRequest.reject(err);
+            setKeyRequest(null);
+          }}
+          onKeyUpdated={(updatedConfig) => {
+            handleSetPrivateKey(updatedConfig);
+          }}
         />
       )}
     </div>
@@ -281,11 +377,13 @@ interface EncryptTabProps {
     keybaseProxy: string;
     autocompleteProxy: string;
     fetchkeyProxy: string;
+    fetchkeyOpgProxy: string;
     getsaltProxy: string;
     loginProxy: string;
   };
   includeSelf: boolean;
   setIncludeSelf: (v: boolean) => void;
+  requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
 }
 
 function EncryptTab({
@@ -295,6 +393,7 @@ function EncryptTab({
   proxies,
   includeSelf,
   setIncludeSelf,
+  requestDecryptedKey,
 }: EncryptTabProps) {
   const [plaintext, setPlaintext] = useState("");
   const [output, setOutput] = useState("");
@@ -334,35 +433,31 @@ function EncryptTab({
       return;
     }
 
-    // Build the final recipient key list. If "include me" is checked, derive
-    // the public key from the private key and prepend it.
-    const recipientKeys: string[] = [...recipients.map((r) => r.armored)];
-    if (includeSelf && privateKey) {
-      // Read the private key, then extract its public half as armored text.
-      try {
-        const pubArmored = await derivePublicFromPrivate(
-          privateKey.armored,
-          privateKey.passphrase,
-        );
-        recipientKeys.push(pubArmored);
-      } catch {
-        // If we can't derive the public key, just skip self-inclusion rather
-        // than failing the whole encrypt operation.
-      }
-    }
-
-    if (recipientKeys.length === 0) {
-      setError("Add at least one recipient (or enable 'Include me').");
-      return;
-    }
-
     setBusy(true);
     try {
+      // Request the decrypted key — this shows the passphrase prompt.
+      // The decrypted key exists only in this local variable and is
+      // cleared when the function returns.
+      const decryptedKey = await requestDecryptedKey();
+
+      // Build the recipient key list. If "include me" is checked, derive
+      // the public key from the decrypted private key.
+      const recipientKeys: string[] = [...recipients.map((r) => r.armored)];
+      if (includeSelf) {
+        try {
+          const pubArmored = decryptedKey.toPublic().armor();
+          recipientKeys.push(pubArmored);
+        } catch {
+          // skip self-inclusion on error
+        }
+      }
+
+      // Pass the PrivateKey object directly to avoid re-armoring +
+      // re-parsing, which can lose key material for Keybase P3SKB keys.
       const armored = await encryptAndSign({
         plaintext,
         recipientPublicKeys: recipientKeys,
-        signerPrivateKey: privateKey.armored,
-        signerPassphrase: privateKey.passphrase || undefined,
+        signerPrivateKey: decryptedKey,
       });
       setOutput(armored);
     } catch (e) {
@@ -370,7 +465,7 @@ function EncryptTab({
     } finally {
       setBusy(false);
     }
-  }, [plaintext, recipients, privateKey, includeSelf]);
+  }, [plaintext, recipients, privateKey, includeSelf, requestDecryptedKey]);
 
   return (
     <section className="space-y-4">
@@ -782,9 +877,11 @@ function ManualRecipientAdd({
 function DecryptTab({
   privateKey,
   proxies,
+  requestDecryptedKey,
 }: {
   privateKey: PrivateKeyConfig | null;
-  proxies: { fetchkeyProxy: string };
+  proxies: { fetchkeyProxy: string; fetchkeyOpgProxy: string };
+  requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
 }) {
   const [armored, setArmored] = useState("");
   const [output, setOutput] = useState<{
@@ -815,20 +912,30 @@ function DecryptTab({
     }
     setBusy(true);
     try {
+      // Request the decrypted key — shows passphrase prompt.
+      // The key exists only in this local variable and is cleared after.
+      const decryptedKey = await requestDecryptedKey();
+
+      // Pass the PrivateKey object directly to avoid re-armoring +
+      // re-parsing, which can lose key material for Keybase P3SKB keys.
       const result = await decryptAndAutoVerify(
         {
           armoredMessage: armored,
-          decryptionPrivateKey: privateKey.armored,
-          decryptionPassphrase: privateKey.passphrase || undefined,
+          decryptionPrivateKey: decryptedKey,
           verificationPublicKeys: [],
         },
         async (keyIDs) => {
-          const fetched = await fetchKeyByKeyIDClient(keyIDs, proxies.fetchkeyProxy);
+          const fetched = await fetchKeysFromAllSources(
+            keyIDs,
+            proxies.fetchkeyProxy,
+            proxies.fetchkeyOpgProxy,
+          );
           return fetched.map((f) => ({
             armored: f.armored,
             keyID: f.keyID,
             fingerprint: f.fingerprint,
             username: f.username,
+            allKeyIDs: f.allKeyIDs,
           }));
         },
       );
@@ -838,7 +945,7 @@ function DecryptTab({
     } finally {
       setBusy(false);
     }
-  }, [armored, privateKey, proxies.fetchkeyProxy]);
+  }, [armored, privateKey, proxies.fetchkeyProxy, proxies.fetchkeyOpgProxy, requestDecryptedKey]);
 
   return (
     <section className="space-y-4">
@@ -943,7 +1050,13 @@ function SignerBadges({
 
 /* ----------------------------------- Sign ---------------------------------- */
 
-function SignTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
+function SignTab({
+  privateKey,
+  requestDecryptedKey,
+}: {
+  privateKey: PrivateKeyConfig | null;
+  requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
+}) {
   const [plaintext, setPlaintext] = useState("");
   const [detached, setDetached] = useState(false);
   const [output, setOutput] = useState("");
@@ -965,10 +1078,15 @@ function SignTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
     }
     setBusy(true);
     try {
+      // Request the decrypted key — shows passphrase prompt.
+      // The key exists only in this local variable and is cleared after.
+      const decryptedKey = await requestDecryptedKey();
+
+      // Pass the PrivateKey object directly to avoid re-armoring +
+      // re-parsing, which can lose key material for Keybase P3SKB keys.
       const signed = await signMessage({
         plaintext,
-        privateKey: privateKey.armored,
-        passphrase: privateKey.passphrase || undefined,
+        privateKey: decryptedKey,
         detached,
       });
       setOutput(signed);
@@ -977,7 +1095,7 @@ function SignTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
     } finally {
       setBusy(false);
     }
-  }, [plaintext, privateKey, detached]);
+  }, [plaintext, privateKey, detached, requestDecryptedKey]);
 
   return (
     <section className="space-y-4">
@@ -1050,7 +1168,7 @@ function SignTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
 function VerifyTab({
   proxies,
 }: {
-  proxies: { fetchkeyProxy: string };
+  proxies: { fetchkeyProxy: string; fetchkeyOpgProxy: string };
 }) {
   const [armored, setArmored] = useState("");
   const [plaintext, setPlaintext] = useState("");
@@ -1091,15 +1209,17 @@ function VerifyTab({
         armored,
         plaintext || undefined,
         async (keyIDs) => {
-          const fetched = await fetchKeyByKeyIDClient(
+          const fetched = await fetchKeysFromAllSources(
             keyIDs,
             proxies.fetchkeyProxy,
+            proxies.fetchkeyOpgProxy,
           );
           return fetched.map((f) => ({
             armored: f.armored,
             keyID: f.keyID,
             fingerprint: f.fingerprint,
             username: f.username,
+            allKeyIDs: f.allKeyIDs,
           }));
         },
       );
@@ -1109,7 +1229,7 @@ function VerifyTab({
     } finally {
       setBusy(false);
     }
-  }, [armored, plaintext, proxies.fetchkeyProxy]);
+  }, [armored, plaintext, proxies.fetchkeyProxy, proxies.fetchkeyOpgProxy]);
 
   const showPlaintextField = detected === "detached-signature";
 
@@ -1295,6 +1415,153 @@ interface ConfigureModalProps {
   };
 }
 
+/* --------------------------- Passphrase Prompt ----------------------------- */
+
+function PassphrasePrompt({
+  config,
+  proxies,
+  onResolve,
+  onCancel,
+  onKeyUpdated,
+}: {
+  config: PrivateKeyConfig;
+  proxies: { getsaltProxy: string; loginProxy: string };
+  onResolve: (key: OpenPGP.PrivateKey) => void;
+  onCancel: (err: Error) => void;
+  onKeyUpdated?: (config: PrivateKeyConfig) => void;
+}) {
+  const [passphrase, setPassphrase] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const isKeybase = config.source === "keybase";
+  const promptLabel = isKeybase ? "Keybase password" : "Passphrase";
+  const promptPlaceholder = isKeybase
+    ? "Your Keybase account password"
+    : "Passphrase for the private key";
+
+  const handleSubmit = useCallback(async () => {
+    setError(null);
+    if (!passphrase) {
+      setError(`Enter your ${promptLabel.toLowerCase()}.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      if (isKeybase) {
+        setStage("Loading crypto libraries…");
+        const { loginWithPassword } = await import("@/lib/pgp/keybase-auth");
+        setStage("Fetching salt + deriving keys…");
+        await new Promise((r) => setTimeout(r, 50));
+        setStage("Generating PDPKA signatures…");
+        await new Promise((r) => setTimeout(r, 50));
+        setStage("Logging in to Keybase…");
+        const { me, privateKey: decrypted } = await loginWithPassword(
+          config.username!,
+          passphrase,
+          {
+            getsaltUrl: proxies.getsaltProxy,
+            loginUrl: proxies.loginProxy,
+          },
+        );
+        setStage("Decrypting private key…");
+
+        const armored = decrypted.armor();
+        const info = await validateArmoredKey(armored);
+        if (info.ok && info.info && onKeyUpdated) {
+          const oldInfo = config.info;
+          const newInfo = info.info;
+          if (
+            oldInfo.fingerprint !== newInfo.fingerprint ||
+            oldInfo.keyID !== newInfo.keyID
+          ) {
+            onKeyUpdated({ ...config, info: newInfo });
+          }
+        }
+        onResolve(decrypted);
+      } else {
+        if (!config.encryptedArmored) {
+          throw new Error("No encrypted key found in configuration.");
+        }
+        setStage("Decrypting private key…");
+        const key = await readKey(config.encryptedArmored);
+        if (!key.isPrivate()) {
+          throw new Error("Stored key is not a private key.");
+        }
+        const decrypted = await unlockPrivateKey(
+          key as OpenPGP.PrivateKey,
+          passphrase,
+        );
+        onResolve(decrypted);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+      setStage("");
+    }
+  }, [passphrase, isKeybase, config, proxies, onResolve, onKeyUpdated, promptLabel]);
+
+  const handleCancel = useCallback(() => {
+    onCancel(new Error("Cancelled by user"));
+  }, [onCancel]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 sm:p-8 overflow-auto">
+      <div className="w-full max-w-md rounded-lg bg-white shadow-xl my-8">
+        <div className="flex items-center justify-between border-b border-neutral-200 px-5 py-3">
+          <h2 className="text-base font-semibold">
+            {isKeybase ? "Enter Keybase password" : "Enter passphrase"}
+          </h2>
+          <button
+            onClick={handleCancel}
+            className="text-neutral-400 hover:text-neutral-700 text-xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="px-5 py-4">
+          <p className="text-xs text-neutral-500 mb-3">
+            {isKeybase
+              ? "Your password is used to re-fetch and decrypt your private key from Keybase. It is never stored — only kept in RAM for this operation."
+              : "Your passphrase decrypts the private key in memory. It is never stored and is cleared immediately after the operation."}
+          </p>
+          <div className="space-y-2">
+            <input
+              type="password"
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !busy) handleSubmit();
+                if (e.key === "Escape") handleCancel();
+              }}
+              placeholder={promptPlaceholder}
+              autoFocus
+              autoComplete="off"
+              className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
+              disabled={busy}
+            />
+            {error && <ErrorBanner message={error} />}
+            {busy && stage && (
+              <p className="text-[11px] text-neutral-500">{stage}</p>
+            )}
+            <div className="flex gap-2 pt-1">
+              <Button onClick={handleSubmit} disabled={busy} variant="primary" full>
+                {busy ? "Working…" : "Decrypt & continue"}
+              </Button>
+              <Button onClick={handleCancel} disabled={busy} variant="ghost">
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConfigureModal({
   onClose,
   privateKey,
@@ -1418,12 +1685,13 @@ function KeybaseLoginForm({
         throw new Error(info.error ?? "Decrypted key could not be parsed.");
       }
 
+      // Store ONLY the username + metadata. The decrypted key is NOT stored.
+      // At operation time, the password will be re-requested and the key
+      // re-fetched from Keybase's me.json API.
       onLoaded({
         source: "keybase",
         label: `@${me.username}`,
         username: me.username,
-        armored,
-        passphrase: undefined, // key is already decrypted
         info: info.info,
       });
     } catch (e) {
@@ -1503,14 +1771,14 @@ function ManualKeyForm({
         setError("That's a public key. Paste a private key.");
         return;
       }
+      // Store ONLY the ENCRYPTED armored key. The passphrase is NOT stored.
       onLoaded({
         source: "manual",
         label:
           v.info.userIDs[0]?.name ||
           v.info.userIDs[0]?.email ||
           "Pasted private key",
-        armored: armored.trim(),
-        passphrase: passphrase || undefined,
+        encryptedArmored: armored.trim(),
         info: v.info,
       });
     } catch (e) {
@@ -1581,11 +1849,12 @@ function GenerateKeyForm({
       });
       const label =
         name || email || (type === "ecc" ? "ECC key" : "RSA key");
+      // Store ONLY the ENCRYPTED armored private key. The passphrase is
+      // NOT stored — it will be re-requested at operation time.
       onLoaded({
         source: "generated",
         label,
-        armored: kp.privateKey,
-        passphrase: pass || undefined,
+        encryptedArmored: kp.privateKey,
         info: kp.info,
       });
     } catch (e) {

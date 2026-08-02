@@ -10,7 +10,9 @@
     "db:push": "prisma db push --accept-data-loss",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -86,6 +88,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "^1.20.2",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
@@ -101,5 +104,5 @@
     "bun": ">=1.3.14",
     "pnpm": ">=8.9.0"
   },
-  "packageManager": "pnpm@12.0.0-beta.3+sha512.32106b88c481b31ce09bae4c5d04d17d66c327d20b98ad0f1560e40a26904bfd5fac1cf9588332e5be31fa6839827bc9fa586528770384f87f98b90017e672cc"
+  "packageManager": "bun"
 }

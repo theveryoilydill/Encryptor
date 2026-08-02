@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  autocompleteKeybaseUsersClient,
   fetchKeyByKeyIDClient,
   fetchKeyFromOpenPGP_orgClient,
   lookupKeybaseUsersClient,
-  type KeybaseAutocompleteResult,
+  searchAllKeyserversClient,
   type KeybaseKeyByIDResult,
+  type KeySearchResult,
 } from "@/lib/pgp/keybase";
 // keybase-auth is dynamically imported inside KeybaseLoginForm to keep
 // kbpgp/keybase-proofs out of the initial client bundle.
@@ -28,6 +28,7 @@ import {
 const PROXIES = {
   keybaseProxy: "/api/keybase",
   autocompleteProxy: "/api/keybase/autocomplete",
+  searchAllProxy: "/api/keybase/search-all",
   fetchkeyProxy: "/api/keybase/fetchkey",
   fetchkeyOpgProxy: "/api/keybase/fetchkey-opg",
   getsaltProxy: "/api/keybase/getsalt",
@@ -376,6 +377,7 @@ interface EncryptTabProps {
   proxies: {
     keybaseProxy: string;
     autocompleteProxy: string;
+    searchAllProxy: string;
     fetchkeyProxy: string;
     fetchkeyOpgProxy: string;
     getsaltProxy: string;
@@ -473,6 +475,7 @@ function EncryptTab({
         recipients={recipients}
         setRecipients={setRecipients}
         autocompleteProxy={proxies.autocompleteProxy}
+        searchAllProxy={proxies.searchAllProxy}
         keybaseProxy={proxies.keybaseProxy}
         includeSelf={includeSelf}
         setIncludeSelf={setIncludeSelf}
@@ -528,6 +531,7 @@ function RecipientPicker({
   recipients,
   setRecipients,
   autocompleteProxy,
+  searchAllProxy,
   keybaseProxy,
   includeSelf,
   setIncludeSelf,
@@ -536,13 +540,14 @@ function RecipientPicker({
   recipients: Recipient[];
   setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>;
   autocompleteProxy: string;
+  searchAllProxy: string;
   keybaseProxy: string;
   includeSelf: boolean;
   setIncludeSelf: (v: boolean) => void;
   selfRecipient: Recipient | null;
 }) {
   const [input, setInput] = useState("");
-  const [suggestions, setSuggestions] = useState<KeybaseAutocompleteResult[]>([]);
+  const [suggestions, setSuggestions] = useState<KeySearchResult[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -550,7 +555,7 @@ function RecipientPicker({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Debounced autocomplete
+  // Debounced multi-source search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = input.trim();
@@ -561,7 +566,7 @@ function RecipientPicker({
     debounceRef.current = setTimeout(async () => {
       setBusy(true);
       try {
-        const results = await autocompleteKeybaseUsersClient(q, autocompleteProxy);
+        const results = await searchAllKeyserversClient(q, searchAllProxy);
         setSuggestions(results);
         setShowSuggestions(true);
       } catch {
@@ -569,11 +574,11 @@ function RecipientPicker({
       } finally {
         setBusy(false);
       }
-    }, 200);
+    }, 250);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [input, autocompleteProxy]);
+  }, [input, searchAllProxy]);
 
   // Click-outside to close suggestions
   useEffect(() => {
@@ -589,39 +594,76 @@ function RecipientPicker({
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
-  const addRecipientByKeybaseUsername = useCallback(
-    async (username: string) => {
+  const addRecipient = useCallback(
+    async (result: KeySearchResult) => {
       setError(null);
-      const name = username.trim().toLowerCase();
-      if (!name) return;
       setAdding(true);
       try {
-        const r = await lookupKeybaseUsersClient([name], keybaseProxy);
-        if (r.found.length === 0) {
-          setError(`No Keybase key found for @${name}.`);
-          return;
+        if (result.source === "keybase" && result.username) {
+          // Fetch the full public key from Keybase
+          const r = await lookupKeybaseUsersClient(
+            [result.username],
+            keybaseProxy,
+          );
+          if (r.found.length === 0) {
+            setError(`No Keybase key found for @${result.username}.`);
+            return;
+          }
+          const k = r.found[0];
+          if (recipients.some((p) => p.fingerprint === k.fingerprint)) {
+            setInput("");
+            setSuggestions([]);
+            setShowSuggestions(false);
+            return;
+          }
+          setRecipients((prev) => [
+            ...prev,
+            {
+              source: "keybase",
+              username: k.username,
+              label: `@${k.username}`,
+              armored: k.armored,
+              fingerprint: k.fingerprint,
+              keyID: k.keyID,
+              algorithm: k.algorithm,
+              expiresAt: k.expiresAt,
+            },
+          ]);
+        } else if (result.fingerprint) {
+          // Fetch the key from keys.openpgp.org or Ubuntu keyserver
+          const fetched = await fetchKeysFromAllSources(
+            [result.fingerprint],
+            "/api/keybase/fetchkey",
+            "/api/keybase/fetchkey-opg",
+          );
+          if (fetched.length === 0) {
+            setError(`Could not fetch key ${result.keyID || result.fingerprint}.`);
+            return;
+          }
+          const k = fetched[0];
+          if (recipients.some((p) => p.fingerprint === k.fingerprint)) {
+            setInput("");
+            setSuggestions([]);
+            setShowSuggestions(false);
+            return;
+          }
+          setRecipients((prev) => [
+            ...prev,
+            {
+              source: "local",
+              label: result.fullName
+                ? `${result.fullName} <${result.email}>`
+                : result.label,
+              armored: k.armored,
+              fingerprint: k.fingerprint,
+              keyID: k.keyID,
+              algorithm: "Unknown",
+              expiresAt: null,
+            },
+          ]);
+        } else {
+          setError("No key fingerprint available for this result.");
         }
-        const k = r.found[0];
-        const fp = k.fingerprint;
-        if (recipients.some((p) => p.fingerprint === fp)) {
-          setInput("");
-          setSuggestions([]);
-          setShowSuggestions(false);
-          return;
-        }
-        setRecipients((prev) => [
-          ...prev,
-          {
-            source: "keybase",
-            username: k.username,
-            label: `@${k.username}`,
-            armored: k.armored,
-            fingerprint: fp,
-            keyID: k.keyID,
-            algorithm: k.algorithm,
-            expiresAt: k.expiresAt,
-          },
-        ]);
         setInput("");
         setSuggestions([]);
         setShowSuggestions(false);
@@ -636,15 +678,22 @@ function RecipientPicker({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter" || e.key === ",") {
+      if (e.key === "Enter" && suggestions.length > 0) {
         e.preventDefault();
-        addRecipientByKeybaseUsername(input);
+        addRecipient(suggestions[0]);
       } else if (e.key === "Escape") {
         setShowSuggestions(false);
       }
     },
-    [input, addRecipientByKeybaseUsername],
+    [suggestions, addRecipient],
   );
+
+  const sourceColors: Record<string, string> = {
+    keybase: "bg-[#0055dc]/10 text-[#0055dc]",
+    ubuntu: "bg-orange-100 text-orange-700",
+    "openpgp.org": "bg-green-100 text-green-700",
+    mailvelope: "bg-purple-100 text-purple-700",
+  };
 
   return (
     <div>
@@ -716,7 +765,7 @@ function RecipientPicker({
           onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
           placeholder={
             recipients.length === 0
-              ? "Type a Keybase username (e.g. chris)"
+              ? "Search by name, email, or Keybase username…"
               : "Add another recipient…"
           }
           className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#0055dc]/30 focus:border-[#0055dc]"
@@ -731,41 +780,55 @@ function RecipientPicker({
         {/* Suggestions dropdown - BELOW the input */}
         {showSuggestions && suggestions.length > 0 && (
           <ul className="absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-auto rounded-md border border-neutral-200 bg-white shadow-lg">
-            {suggestions.map((s) => {
+            {suggestions.map((s, i) => {
               const alreadyAdded = recipients.some(
-                (p) => p.username === s.username,
+                (p) =>
+                  (s.username && p.username === s.username) ||
+                  (s.fingerprint && p.fingerprint === s.fingerprint),
               );
               return (
-                <li key={s.uid}>
+                <li key={`${s.source}-${s.label}-${i}`}>
                   <button
                     type="button"
-                    onClick={() => addRecipientByKeybaseUsername(s.username)}
+                    onClick={() => addRecipient(s)}
                     disabled={alreadyAdded}
                     className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-neutral-50 ${
                       alreadyAdded ? "opacity-50 cursor-not-allowed" : ""
                     }`}
                   >
-                    {s.picture_url ? (
+                    {s.pictureUrl ? (
                       <img
-                        src={s.picture_url}
+                        src={s.pictureUrl}
                         alt=""
                         className="size-6 rounded-full object-cover"
                       />
                     ) : (
                       <div className="size-6 rounded-full bg-neutral-200 grid place-items-center text-[10px] text-neutral-600 font-medium">
-                        {s.username.slice(0, 2)}
+                        {(s.username || s.fullName || s.label)
+                          .slice(0, 2)
+                          .toUpperCase()}
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="font-medium text-neutral-900 truncate">
-                        @{s.username}
+                        {s.label}
                       </div>
-                      {s.full_name && (
+                      {s.fullName && s.username && (
                         <div className="text-[11px] text-neutral-500 truncate">
-                          {s.full_name}
+                          {s.fullName}
+                        </div>
+                      )}
+                      {s.email && !s.username && (
+                        <div className="text-[11px] text-neutral-500 truncate">
+                          {s.email}
                         </div>
                       )}
                     </div>
+                    <span
+                      className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-medium ${sourceColors[s.source] || "bg-neutral-100 text-neutral-500"}`}
+                    >
+                      {s.source}
+                    </span>
                     {alreadyAdded && (
                       <span className="text-[10px] text-neutral-400">added</span>
                     )}
@@ -780,8 +843,8 @@ function RecipientPicker({
       {error && <p className="mt-1.5 text-[11px] text-red-600">{error}</p>}
 
       <p className="mt-1.5 text-[11px] text-neutral-500">
-        Type a Keybase username and press Enter (or pick a suggestion). You can
-        also paste a public key manually below.
+        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name,
+        email, or Keybase username.
       </p>
 
       <ManualRecipientAdd

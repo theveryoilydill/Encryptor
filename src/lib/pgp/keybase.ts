@@ -466,3 +466,212 @@ export async function fetchKeyFromOpenPGP_orgClient(
   const body = (await res.json()) as { keys?: KeybaseKeyByIDResult[] };
   return body.keys ?? [];
 }
+
+/* --------------------- Multi-source keyserver search --------------------- */
+//
+// Searches across multiple PGP keyserver sources for autocomplete:
+//
+// 1. Keybase (user_search.json) — returns usernames, full names, avatars
+// 2. Ubuntu keyserver (HKP) — searches by name, email, key ID
+// 3. keys.openpgp.org (VKS) — exact email or key ID lookup
+//
+// "Vector search" isn't practical for PGP keys (no pre-computed embeddings
+// exist), but HKP's `search` parameter does fuzzy matching on user IDs
+// (name <email>), which gives a similar "find by anything" experience.
+
+export interface KeySearchResult {
+  /** Where this result came from. */
+  source: "keybase" | "ubuntu" | "openpgp.org" | "mailvelope";
+  /** Display label — "@username" for Keybase, "Name <email>" for HKP. */
+  label: string;
+  /** Optional username (Keybase only). */
+  username?: string;
+  /** Optional full name. */
+  fullName?: string;
+  /** Optional email. */
+  email?: string;
+  /** Optional avatar URL (Keybase only). */
+  pictureUrl?: string;
+  /** Key fingerprint (40-hex), if known. */
+  fingerprint?: string;
+  /** Short key ID (16-hex), if known. */
+  keyID?: string;
+}
+
+/** Parse an HKP machine-readable index response. */
+function parseHKPIndex(text: string): Array<{
+  fingerprint: string;
+  keyID: string;
+  uids: string[];
+}> {
+  const lines = text.split("\n").filter(Boolean);
+  const results: Array<{ fingerprint: string; keyID: string; uids: string[] }> = [];
+  let current: { fingerprint: string; keyID: string; uids: string[] } | null = null;
+
+  for (const line of lines) {
+    if (line.startsWith("pub:")) {
+      const parts = line.split(":");
+      const fp = parts[1]?.toUpperCase() ?? "";
+      if (fp.length >= 16) {
+        if (current) results.push(current);
+        current = { fingerprint: fp, keyID: fp.slice(fp.length - 16), uids: [] };
+      }
+    } else if (line.startsWith("uid:") && current) {
+      const parts = line.split(":");
+      const uid = parts[1] ? decodeURIComponent(parts[1].replace(/\+/g, " ")) : "";
+      if (uid) current.uids.push(uid);
+    }
+  }
+  if (current) results.push(current);
+  return results;
+}
+
+/** Parse a PGP user ID string like "Chris Coyne <chris@example.com>" */
+function parseUserID(uid: string): { name?: string; email?: string } {
+  const m = uid.match(/^(.*?)\s*<([^>]+)>$/);
+  if (m) return { name: m[1].trim() || undefined, email: m[2].trim() };
+  if (uid.includes("@")) return { email: uid.trim() };
+  return { name: uid.trim() };
+}
+
+/** Search Keybase for users matching the query. */
+export async function searchKeybaseServer(
+  query: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeySearchResult[]> {
+  const q = query.trim();
+  if (q.length < 1) return [];
+  try {
+    const url = `https://keybase.io/_/api/1.0/user/user_search.json?q=${encodeURIComponent(q)}&num_wanted=10`;
+    const res = await fetchImpl(url, {
+      headers: { Accept: "application/json", "User-Agent": "encryptor/1.0" },
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      status: { code: number };
+      list?: Array<{
+        keybase: {
+          username: string;
+          uid: string;
+          full_name?: string;
+          picture_url?: string;
+        };
+      }>;
+    };
+    if (!data.status || data.status.code !== 0) return [];
+    return (data.list ?? []).map((item) => ({
+      source: "keybase" as const,
+      label: `@${item.keybase.username}`,
+      username: item.keybase.username,
+      fullName: item.keybase.full_name ?? undefined,
+      pictureUrl: item.keybase.picture_url ?? undefined,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Search an HKP keyserver for keys matching the query. */
+async function searchHKPKeyserver(
+  serverUrl: string,
+  sourceName: KeySearchResult["source"],
+  query: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeySearchResult[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  try {
+    const url = `${serverUrl}/pks/lookup?op=index&search=${encodeURIComponent(q)}&options=mr&fingerprint=on`;
+    const res = await fetchImpl(url, {
+      headers: { Accept: "text/plain", "User-Agent": "encryptor/1.0" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const text = await res.text();
+    if (!text.startsWith("info:")) return [];
+
+    const keys = parseHKPIndex(text);
+    const results: KeySearchResult[] = [];
+    for (const key of keys.slice(0, 5)) {
+      const uid = key.uids[0] ?? key.keyID;
+      const parsed = parseUserID(uid);
+      results.push({
+        source: sourceName,
+        label: uid,
+        fullName: parsed.name,
+        email: parsed.email,
+        fingerprint: key.fingerprint,
+        keyID: key.keyID,
+      });
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+/** Search keys.openpgp.org by email (exact match only). */
+async function searchOpenPGPOrg(
+  query: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeySearchResult[]> {
+  const q = query.trim();
+  if (!q.includes("@") || q.length < 5) return [];
+  try {
+    const url = `https://keys.openpgp.org/vks/v1/by-email/${encodeURIComponent(q)}`;
+    const res = await fetchImpl(url, {
+      headers: { Accept: "application/pgp-keys" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const armored = await res.text();
+    if (!armored.includes("-----BEGIN PGP PUBLIC KEY BLOCK-----")) return [];
+    const fpMatch = armored.match(/:fingerprint:\s*([0-9A-Fa-f]{40})/);
+    const fp = fpMatch ? fpMatch[1].toUpperCase() : "";
+    return [{
+      source: "openpgp.org",
+      label: q,
+      email: q,
+      fingerprint: fp || undefined,
+      keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : undefined,
+    }];
+  } catch {
+    return [];
+  }
+}
+
+/** Search ALL keyserver sources in parallel and merge results. */
+export async function searchAllKeyserversServer(
+  query: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<KeySearchResult[]> {
+  const [keybase, ubuntu, opg] = await Promise.all([
+    searchKeybaseServer(query, fetchImpl),
+    searchHKPKeyserver("https://keyserver.ubuntu.com", "ubuntu", query, fetchImpl),
+    searchOpenPGPOrg(query, fetchImpl),
+  ]);
+
+  const seen = new Set<string>();
+  const merged: KeySearchResult[] = [];
+  for (const r of [...keybase, ...ubuntu, ...opg]) {
+    const key = r.fingerprint || r.email || r.label.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(r);
+    }
+  }
+  return merged.slice(0, 15);
+}
+
+/** Browser-side: search all sources via our proxy. */
+export async function searchAllKeyserversClient(
+  query: string,
+  proxyUrl = "/api/keybase/search-all",
+): Promise<KeySearchResult[]> {
+  const q = query.trim();
+  if (q.length < 1) return [];
+  const url = `${proxyUrl}?q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) return [];
+  return (await res.json()) as KeySearchResult[];
+}

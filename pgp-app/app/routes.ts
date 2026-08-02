@@ -6,6 +6,7 @@ export default [
   route("api/keybase/getsalt", "routes/api.keybase.getsalt.ts"),
   route("api/keybase/login", "routes/api.keybase.login.ts"),
   route("api/keybase/autocomplete", "routes/api.keybase.autocomplete.ts"),
+  route("api/keybase/search-all", "routes/api.keybase.search-all.ts"),
   route("api/keybase/fetchkey", "routes/api.keybase.fetchkey.ts"),
   route("api/keybase/fetchkey-opg", "routes/api.keybase.fetchkey-opg.ts"),
 ] satisfies RouteConfig;

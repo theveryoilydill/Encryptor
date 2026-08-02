@@ -641,10 +641,19 @@ async function searchOpenPGPOrg(
 }
 
 /** Search ALL keyserver sources in parallel and merge results. */
+/**
+ * Search ALL keyserver sources in parallel and merge results.
+ * If `keybaseOnly` is true, only searches Keybase (fast path for phase 1).
+ */
 export async function searchAllKeyserversServer(
   query: string,
   fetchImpl: typeof fetch = fetch,
+  keybaseOnly = false,
 ): Promise<KeySearchResult[]> {
+  if (keybaseOnly) {
+    return searchKeybaseServer(query, fetchImpl);
+  }
+
   const [keybase, ubuntu, opg] = await Promise.all([
     searchKeybaseServer(query, fetchImpl),
     searchHKPKeyserver("https://keyserver.ubuntu.com", "ubuntu", query, fetchImpl),

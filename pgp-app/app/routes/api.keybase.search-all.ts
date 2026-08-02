@@ -12,11 +12,12 @@ import { searchAllKeyserversServer } from "~/lib/keybase";
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const q = url.searchParams.get("q") ?? "";
+  const keybaseOnly = url.searchParams.get("keybase_only") === "1";
   if (q.trim().length < 1) {
     return Response.json([]);
   }
   try {
-    const results = await searchAllKeyserversServer(q);
+    const results = await searchAllKeyserversServer(q, fetch, keybaseOnly);
     return Response.json(results, {
       headers: { "Cache-Control": "no-store" },
     });

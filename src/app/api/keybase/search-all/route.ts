@@ -17,11 +17,12 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const q = url.searchParams.get("q") ?? "";
+  const keybaseOnly = url.searchParams.get("keybase_only") === "1";
   if (q.trim().length < 1) {
     return NextResponse.json([]);
   }
   try {
-    const results = await searchAllKeyserversServer(q);
+    const results = await searchAllKeyserversServer(q, fetch, keybaseOnly);
     return NextResponse.json(results, {
       headers: { "Cache-Control": "no-store" },
     });

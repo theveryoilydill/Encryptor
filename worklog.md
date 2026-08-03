@@ -48,3 +48,40 @@ Stage Summary:
 - Keybase is the primary key source (prominent sidebar + verify-by-username field). Local keys are supported via a collapsible "advanced" card and used identically for sign / decrypt / recipient / verify workflows.
 - All crypto runs client-side via openpgp.js v6; the only server-side call is the Keybase proxy at `/api/keybase`.
 - Latest versions used throughout: react-router@8.3, @react-router/cloudflare@8.3, @cloudflare/vite-plugin@1.49, openpgp@6.3, wrangler@4.116, vite@8.2, tailwindcss@4.
+
+---
+Task ID: 2
+Agent: main (Super Z)
+Task: Fix the HTTP 401 / `BAD_LOGIN_PASSWORD` error on POST /api/keybase/login.
+
+Work Log:
+- Hit the real Keybase API directly to reproduce the error. With the original repo code, login returns `{"status":{"code":204,"name":"BAD_LOGIN_PASSWORD","desc":"bad passphrase"}}` → 401 from the proxy.
+- Verified the full PDPKA flow with the user's test account (s183173): getsalt → derive keys → generate PDPKA sigs → POST login.json → fetch me.json → decrypt P3SKB bundle.
+- Traced the root cause by reading Keybase's open-source Go client:
+  - `go/libkb/constants.go:766`: `ClientTriplesecVersion = 3` — Keybase hard-codes triplesec v3.
+  - `go/libkb/passphrase_stream.go`: StretchPassphrase calls `tsec.DeriveKey(extraLen=128)`, then splits `extra` into `pwh=extra[0..32]`, `eddsa_seed=extra[32..64]`, `dh=extra[64..96]`, `lks=extra[96..128]`.
+  - `go-triplesec/triplesec.go:DeriveKey`: returns `(dk[0:DkLen], dk[DkLen:])`, where for v3 `DkLen = 2*MacKeyLen(48) + 3*CipherKeyLen(32) = 192`. So `extra` = scrypt bytes [192..320].
+- The JS `triplesec@4.0.3` package supports v3 and v4 but defaults to **v4** (line 116 of `lib/enc.js`: `CURRENT_VERSION = 4`). v4 has `use_twofish=false`, so its cipher-key consumption is 160 bytes, not 192. Without explicitly passing `version: 3`, `keys.extra` starts at scrypt byte 160 instead of 192 — a 32-byte offset that produces a completely different pwh and Ed25519 keypair.
+- Initial (wrong) fix attempt: replaced triplesec with raw `scrypt-js` reading bytes [0..32]. This is also wrong — `pwh` is genuinely at scrypt bytes [192..224], not [0..32]. Verified this by computing pwh three ways and comparing:
+  - Method A (triplesec default v4, extra[0..32])     = scrypt bytes [160..192]
+  - Method B (raw scrypt dkLen=64, bytes[0..32])      = scrypt bytes [0..32]   ← wrong
+  - Method C (triplesec v3, extra[0..32])             = scrypt bytes [192..224] ← correct
+- Final fix: keep the original triplesec `resalt` + `keys.extra.slice(0, 32)` approach, but pass `version: 3` to the `Encryptor` constructor:
+  ```ts
+  const enc = new Encryptor({
+    key: new TSBuffer(password, "utf8"),
+    version: 3,  // ← THE FIX
+  });
+  ```
+- Verified end-to-end with real credentials:
+  - login.json → status.code 0 (OK), session returned.
+  - me.json → returned username `s183173`, public key KID, and encrypted private_key_bundle.
+  - P3SKB bundle decrypted with raw password → real RSA private key (Key ID 5efd8a952960b04b, fingerprint 71590E8FB2BFBCD7EB1A5AB85EFD8A952960B04B, isDecrypted=true).
+
+Stage Summary:
+- The fix is a one-line change in two files (`src/lib/pgp/keybase-auth.ts` and `pgp-app/app/lib/keybase-auth.ts`): add `version: 3` to the `Encryptor` constructor.
+- No new dependencies. `scrypt-js` is no longer needed (reverted the package.json change in `pgp-app/package.json`).
+- `decryptPrivateKeyBundle` is unchanged — it was already correctly using triplesec with the raw password.
+- See `FIX-NOTES.md` for the full write-up with citations to Keybase's Go source code.
+
+

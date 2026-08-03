@@ -7,11 +7,19 @@
  *  1. GET /api/keybase/getsalt?email_or_username=X&pdpka_login=true
  *     → { salt, login_session, csrf_token, pwh_version: 3 }
  *
- *  2. scrypt(password, hex_decode(salt), N=2^15, r=8, p=1, dklen=128)
- *     Split the 128-byte output into:
- *       pwh         = bytes[ 0..32]  (the actual password hash)
- *       eddsa_seed  = bytes[32..64]  (seed for the pdpka5 EdDSA key)
- *       (remaining 64 bytes are unused for login)
+ *  2. Stretch the password using triplesec VERSION 3 (not the default v4!)
+ *     with extra_keymaterial=128. The first 32 bytes of `keys.extra` are the
+ *     `pwh` (seeds the pdpka4 Ed25519 key); the next 32 bytes are the
+ *     `eddsa_seed` (seeds the pdpka5 Ed25519 key). See
+ *     github.com/keybase/client/blob/master/go/libkb/passphrase_stream.go
+ *     and github.com/keybase/go-triplesec: pwhIndex=0, eddsaIndex=32 of `extra`,
+ *     and `extra = scrypt_out[DkLen:]` where DkLen=192 for triplesec v3.
+ *
+ *     CRITICAL: triplesec's default version is 4 (no twofish, DkLen=160),
+ *     which produces a completely different `extra` slice and therefore a
+ *     wrong pwh + wrong Ed25519 keypair → Keybase returns
+ *     `BAD_LOGIN_PASSWORD` (code 204) on /api/keybase/login. You MUST pass
+ *     `version: 3` explicitly to `new Encryptor({ ..., version: 3 })`.
  *
  *  3. Derive two EdDSA KeyManagers using kbpgp:
  *       km4 = KeyManager.generate({ seed: pwh })
@@ -26,8 +34,8 @@
  *     the CSRF cookie, then calls me.json with the returned session cookie to
  *     fetch the user's encrypted private key bundle.
  *
- *  6. Client decrypts the private key bundle with `pwh` (first 32 bytes of the
- *     scrypt output, hex-encoded) as the passphrase via openpgp.js.
+ *  6. Client decrypts the private key bundle (P3SKB / PGP3 Secret Key Block)
+ *     using triplesec with the user's raw PASSWORD as the key — NOT pwh.
  */
 import * as openpgp from "openpgp";
 
@@ -103,16 +111,22 @@ export async function getSalt(
 }
 
 /**
- * Step 2: Derive pwh + eddsa seed from the password using triplesec's resalt.
+ * Step 2: Derive pwh + eddsa seed from the password using triplesec v3.
  *
- * Keybase uses triplesec (not raw scrypt) to derive key material. triplesec's
- * `kdf` method runs scrypt with dkLen = hmac_key(96) + aes(32) + twofish(32) +
- * salsa20(32) + extra_keymaterial(128) = 320 bytes, then splits the output:
- *   bytes 0..191  → cipher keys (hmac, aes, twofish, salsa20)
- *   bytes 192..319 → extra key material (pwh + eddsa + dh + lks)
+ * Keybase's `pwh_version: 3` means: use triplesec VERSION 3 (the version
+ * Keybase's Go client hard-codes as `ClientTriplesecVersion = 3`). v3 includes
+ * twofish, so its DkLen = 2*MacKeyLen(48) + 3*CipherKeyLen(32) = 192 bytes of
+ * cipher keys, and `keys.extra` starts at scrypt output byte 192.
  *
- * The pwh is at bytes 192..224 of the scrypt output, NOT bytes 0..32.
- * This was the root cause of the "bad passphrase" login error.
+ * Then per passphrase_stream.go:
+ *   pwh        = keys.extra[0..32]   (seeds the pdpka4 Ed25519 key)
+ *   eddsa_seed = keys.extra[32..64]  (seeds the pdpka5 Ed25519 key)
+ *
+ * The 32-byte gap between v3 (DkLen=192) and v4 (DkLen=160) was the root cause
+ * of `BAD_LOGIN_PASSWORD`: the JS triplesec library defaults to v4 unless you
+ * explicitly pass `version: 3` to the Encryptor constructor, which produced
+ * `keys.extra` from scrypt bytes [160..288] instead of [192..320] — a wrong
+ * pwh that no longer matched what Keybase's server derived.
  */
 export async function deriveKeysFromPassword(
   password: string,
@@ -122,7 +136,13 @@ export async function deriveKeysFromPassword(
   const { Buffer: TSBuffer, Encryptor } = triplesec;
 
   const salt = new TSBuffer(saltHex, "hex");
-  const enc = new Encryptor({ key: new TSBuffer(password, "utf8") });
+  // MUST pass version: 3 — Keybase's ClientTriplesecVersion is 3, not the
+  // library default of 4. Without this, the derived pwh is wrong and login
+  // fails with HTTP 401 BAD_LOGIN_PASSWORD.
+  const enc = new Encryptor({
+    key: new TSBuffer(password, "utf8"),
+    version: 3,
+  });
 
   const keys = await new Promise<{
     extra: { toString: (enc: string) => string; slice: (a: number, b: number) => { toString: (enc: string) => string } };

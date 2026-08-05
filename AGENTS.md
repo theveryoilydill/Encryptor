@@ -1,9 +1,15 @@
 # For agents 
 
+## Security
+This is a high security project where it is critical that everything stays secure. Please make sure that there is no way anything can go wrong. Use these rules to help.
+
+1. Minimize uploads: This will make it easier to see if anything is being exfiltrated. 
+2. Keep everything up to date: More on that below
+
 ## Always make sure it works
 Do as much as you can with the info you are given to make sure that the product looks the best it can, works the best it can, etc. 
 
-## Latest stuff rule
+## Up to date rule
 Make sure that everything in the repo is the latest version. This is to get new features and remove vulerabilities. Here are some examples of things to check for:
 * Dependencies in package.json: Use bun update --latest to update.
 * NodeJS: Make sure to use the latest

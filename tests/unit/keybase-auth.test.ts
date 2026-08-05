@@ -279,8 +279,249 @@ describe("keybase-auth (mocked)", () => {
       expect(calls[1].url).toBe("/api/keybase/login");
     });
   });
-});
 
+  // -------------------------------------------------------------------------
+  // Direct Keybase API mode — verifies that getSalt and loginAndFetchMe
+  // handle raw keybase.io responses (with the `status` envelope wrapper)
+  // when the test passes a direct `https://keybase.io/...` URL instead of a
+  // local proxy path. This is what the live integration test exercises for
+  // real; these mocks let us assert the wire format in CI without hitting
+  // the network.
+  // -------------------------------------------------------------------------
+  describe("direct Keybase API mode (no proxy)", () => {
+    it("getSalt uses GET with query params and unwraps the status envelope", async () => {
+      const { calls } = stubFetch({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: { code: 0, name: "OK" },
+          salt: "deadbeefdeadbeefdeadbeefdeadbeef",
+          csrf_token: "real-csrf",
+          login_session: "real-session",
+          pwh_version: 3,
+          uid: "real-uid",
+        }),
+        headers: new Map(),
+      });
+
+      const result = await getSalt(
+        "alice",
+        "https://keybase.io/_/api/1.0/getsalt.json",
+      );
+
+      expect(result.salt).toBe("deadbeefdeadbeefdeadbeefdeadbeef");
+      expect(result.csrf_token).toBe("real-csrf");
+      expect(result.uid).toBe("real-uid");
+
+      // Should be a GET (not POST), with query params in the URL.
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init?.method).toBeUndefined(); // GET = no method set
+      const url = calls[0].url;
+      expect(url).toContain("email_or_username=alice");
+      expect(url).toContain("pdpka_login=true");
+    });
+
+    it("getSalt surfaces Keybase API errors from the status envelope", async () => {
+      stubFetch({
+        ok: true, // HTTP 200 — but the body has a non-zero status code
+        status: 200,
+        json: async () => ({
+          status: { code: 205, name: "BAD_USERNAME", desc: "Username not found" },
+        }),
+        headers: new Map(),
+      });
+
+      await expect(
+        getSalt("alice", "https://keybase.io/_/api/1.0/getsalt.json"),
+      ).rejects.toThrow("Username not found");
+    });
+
+    it("getSalt with a proxy URL continues to POST JSON (no GET query params)", async () => {
+      const { calls } = stubFetch({
+        ok: true,
+        status: 200,
+        json: async () => fakeSalt(),
+        headers: new Map(),
+      });
+
+      await getSalt("alice", "/api/keybase/getsalt");
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init?.method).toBe("POST");
+      expect(calls[0].url).toBe("/api/keybase/getsalt");
+      const body = JSON.parse(calls[0].init?.body as string);
+      expect(body.username).toBe("alice");
+    });
+
+    it("loginAndFetchMe does the two-step login → me.json flow for direct Keybase URLs", async () => {
+      // The direct-mode flow makes TWO fetches:
+      //   1. POST to login.json with form-encoded body + CSRF cookie
+      //   2. GET to me.json with the session cookie
+      const { calls } = stubFetch(
+        // login.json response — returns a session cookie in body
+        {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: { code: 0, name: "OK" },
+            session: "real-session-cookie",
+          }),
+          headers: new Map(),
+        },
+        // me.json response — wrapped in { status, me: { ... } }
+        {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: { code: 0, name: "OK" },
+            me: {
+              basics: { username: "alice", uid: "uid123" },
+              pictures: { primary: { url: "https://example.com/a.png" } },
+              profile: { full_name: "Alice Liddell" },
+              public_keys: {
+                primary: {
+                  bundle: "public-key-bundle",
+                  kid: "kid123",
+                  fingerprint: "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+                },
+              },
+              private_keys: {
+                primary: { bundle: "private-key-bundle", kid: "pkid123" },
+              },
+            },
+          }),
+          headers: new Map(),
+        },
+      );
+
+      const result = await loginAndFetchMe(
+        "alice",
+        "pdpka4-sig",
+        "pdpka5-sig",
+        "csrf-token",
+        "login-session",
+        "https://keybase.io/_/api/1.0/login.json",
+      );
+
+      // The flat response shape should match what the proxy returns.
+      expect(result.username).toBe("alice");
+      expect(result.uid).toBe("uid123");
+      expect(result.picture_url).toBe("https://example.com/a.png");
+      expect(result.full_name).toBe("Alice Liddell");
+      expect(result.private_key_bundle).toBe("private-key-bundle");
+      expect(result.primary_key_fingerprint).toBe(
+        "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      );
+      expect(result.primary_key_kid).toBe("kid123");
+
+      // Two fetches were made.
+      expect(calls).toHaveLength(2);
+
+      // First fetch: POST to login.json with form-encoded body.
+      expect(calls[0].url).toBe("https://keybase.io/_/api/1.0/login.json");
+      expect(calls[0].init?.method).toBe("POST");
+      const loginHeaders = calls[0].init?.headers as Record<string, string>;
+      expect(loginHeaders["Content-Type"]).toBe(
+        "application/x-www-form-urlencoded",
+      );
+      expect(loginHeaders.Cookie).toContain("csrf_token=csrf-token");
+      const loginBody = calls[0].init?.body as string;
+      expect(loginBody).toContain("email_or_username=alice");
+      expect(loginBody).toContain("pdpka4=pdpka4-sig");
+      expect(loginBody).toContain("pdpka5=pdpka5-sig");
+
+      // Second fetch: GET to me.json with the session cookie.
+      expect(calls[1].url).toContain("keybase.io/_/api/1.0/me.json");
+      expect(calls[1].init?.method).toBeUndefined(); // GET
+      const meHeaders = calls[1].init?.headers as Record<string, string>;
+      expect(meHeaders.Cookie).toContain("session=real-session-cookie");
+    });
+
+    it("loginAndFetchMe throws when login.json returns a non-zero status", async () => {
+      stubFetch({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: {
+            code: 204,
+            name: "BAD_LOGIN_PASSWORD",
+            desc: "BAD_LOGIN_PASSWORD",
+          },
+        }),
+        headers: new Map(),
+      });
+
+      await expect(
+        loginAndFetchMe(
+          "alice",
+          "pdpka4",
+          "pdpka5",
+          "csrf",
+          "session",
+          "https://keybase.io/_/api/1.0/login.json",
+        ),
+      ).rejects.toThrow("BAD_LOGIN_PASSWORD");
+    });
+
+    it("loginAndFetchMe throws when login succeeds but no session is returned", async () => {
+      stubFetch({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: { code: 0, name: "OK" },
+          // session field missing, and no set-cookie header either
+        }),
+        headers: new Map(),
+      });
+
+      await expect(
+        loginAndFetchMe(
+          "alice",
+          "pdpka4",
+          "pdpka5",
+          "csrf",
+          "session",
+          "https://keybase.io/_/api/1.0/login.json",
+        ),
+      ).rejects.toThrow(/no session/i);
+    });
+
+    it("loginAndFetchMe with a proxy URL continues to POST JSON (single fetch)", async () => {
+      const { calls } = stubFetch({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          username: "alice",
+          uid: "uid123",
+          private_key_bundle: null,
+          primary_key_fingerprint: "ABC",
+        }),
+        headers: new Map(),
+      });
+
+      const result = await loginAndFetchMe(
+        "alice",
+        "pdpka4",
+        "pdpka5",
+        "csrf",
+        "session",
+        "/api/keybase/login",
+      );
+
+      expect(result.username).toBe("alice");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].init?.method).toBe("POST");
+      const body = JSON.parse(calls[0].init?.body as string);
+      expect(body).toMatchObject({
+        username: "alice",
+        pdpka4: "pdpka4",
+        pdpka5: "pdpka5",
+        csrf_token: "csrf",
+        login_session: "session",
+      });
+    });
+  });
+});
 // ---------------------------------------------------------------------------
 // Live integration tests — only run when INTEGRATION=true AND credentials
 // are available. Skipped by default to avoid hitting Keybase from CI on

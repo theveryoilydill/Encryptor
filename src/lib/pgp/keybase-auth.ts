@@ -93,21 +93,81 @@ export interface DerivedKeys {
   eddsaSeed: Uint8Array;
 }
 
-/** Step 1: Get the salt + CSRF token for the username. */
+/** True if `url` points directly at the Keybase REST API (rather than our
+ *  local Next.js proxy). When true, getSalt/loginAndFetchMe use the wire
+ *  format Keybase actually expects (GET with query params for getsalt,
+ *  form-encoded POST for login) and unwrap the `{ status, ... }` envelope
+ *  the API wraps every response in. */
+function isDirectKeybase(url: string): boolean {
+  return /https?:\/\/[^/]*keybase\.io/.test(url);
+}
+
+/** Step 1: Get the salt + CSRF token for the username.
+ *
+ *  Two modes:
+ *   - Proxy mode (default, `proxyUrl` starts with `/api/keybase/...`):
+ *     POSTs `{ username }` as JSON to our local Next.js route, which already
+ *     unwraps the Keybase `status` envelope and returns a clean SaltResponse.
+ *   - Direct mode (`proxyUrl` is a `https://keybase.io/...` URL):
+ *     Performs a GET against the Keybase REST API directly with query params
+ *     `email_or_username` and `pdpka_login=true`, then unwraps the `status`
+ *     envelope locally. Used by the live integration test in CI.
+ */
 export async function getSalt(
   username: string,
   proxyUrl = "/api/keybase/getsalt",
 ): Promise<SaltResponse> {
-  const res = await fetch(proxyUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: username.trim().toLowerCase() }),
-  });
-  if (!res.ok) {
-    const e = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(e.error || `Failed to get salt (HTTP ${res.status})`);
+  const cleanUsername = username.trim().toLowerCase();
+
+  let res: Response;
+  if (isDirectKeybase(proxyUrl)) {
+    // Keybase's getsalt.json is a GET endpoint that takes query params.
+    const url = `${proxyUrl}?email_or_username=${encodeURIComponent(cleanUsername)}&pdpka_login=true`;
+    res = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "encryptor/1.0",
+      },
+    });
+  } else {
+    res = await fetch(proxyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: cleanUsername }),
+    });
   }
-  return (await res.json()) as SaltResponse;
+
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      status?: { desc?: string; name?: string };
+    };
+    throw new Error(
+      e.error || e.status?.desc || e.status?.name || `Failed to get salt (HTTP ${res.status})`,
+    );
+  }
+
+  const data = (await res.json()) as Partial<SaltResponse> & {
+    status?: { code: number; name: string; desc?: string };
+  };
+
+  // Direct Keybase responses are wrapped in a `status` envelope; the proxy
+  // already strips it. If we see one, check the code and surface any error.
+  if (data.status && typeof data.status.code === "number") {
+    if (data.status.code !== 0) {
+      throw new Error(
+        data.status.desc || data.status.name || "Keybase getsalt API error",
+      );
+    }
+  }
+
+  return {
+    salt: data.salt as string,
+    csrf_token: data.csrf_token as string,
+    login_session: data.login_session as string,
+    pwh_version: data.pwh_version ?? 3,
+    uid: data.uid,
+  };
 }
 
 /**
@@ -254,8 +314,21 @@ function signAuthChallenge(
 }
 
 /**
- * Step 5: Log in to Keybase (server-side proxy handles the actual API call).
- * Sends pdpka4 + pdpka5 (NOT the password or pwh) to the proxy.
+ * Step 5: Log in to Keybase.
+ *
+ * Two modes (mirrors getSalt):
+ *   - Proxy mode (default, `loginUrl` starts with `/api/keybase/...`):
+ *     POSTs the JSON body to our local Next.js route, which already performs
+ *     the two-step login.json + me.json flow server-side and returns a flat
+ *     KeybaseLoginResponse.
+ *   - Direct mode (`loginUrl` is a `https://keybase.io/.../login.json` URL):
+ *     Performs the full two-step flow client-side:
+ *       1. POST `application/x-www-form-urlencoded` body to login.json with
+ *          the CSRF cookie — extracts the session cookie from the response.
+ *       2. GET me.json with `fields=basics,public_keys,private_keys` and the
+ *          session cookie — returns the user's profile + encrypted private
+ *          key bundle.
+ *     Used by the live integration test in CI.
  */
 export async function loginAndFetchMe(
   username: string,
@@ -265,11 +338,105 @@ export async function loginAndFetchMe(
   loginSession: string,
   loginUrl = "/api/keybase/login",
 ): Promise<KeybaseLoginResponse> {
+  const cleanUsername = username.trim().toLowerCase();
+
+  // ---- Direct Keybase mode: do the full two-step flow client-side. ----
+  if (isDirectKeybase(loginUrl)) {
+    const loginParams = new URLSearchParams();
+    loginParams.set("email_or_username", cleanUsername);
+    loginParams.set("pdpka4", pdpka4);
+    loginParams.set("pdpka5", pdpka5);
+
+    const loginRes = await fetch(loginUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+        "User-Agent": "encryptor/1.0",
+        Cookie: `csrf_token=${csrfToken}`,
+      },
+      body: loginParams.toString(),
+    });
+
+    if (!loginRes.ok) {
+      throw new Error(`Login failed (HTTP ${loginRes.status})`);
+    }
+
+    const loginData = (await loginRes.json()) as {
+      status: { code: number; name: string; desc?: string };
+      session?: string;
+    };
+
+    if (!loginData.status || loginData.status.code !== 0) {
+      throw new Error(
+        loginData.status?.desc ||
+          loginData.status?.name ||
+          "Keybase login failed (wrong username or password?)",
+      );
+    }
+
+    let sessionCookie = loginData.session ?? null;
+    if (!sessionCookie) {
+      const setCookie = loginRes.headers.get("set-cookie") || "";
+      const m = setCookie.match(/session=([^;]+)/);
+      sessionCookie = m ? m[1] : null;
+    }
+    if (!sessionCookie) {
+      throw new Error("Keybase login succeeded but no session was returned.");
+    }
+
+    // Step 2: fetch me.json with the session cookie.
+    const meRes = await fetch(
+      "https://keybase.io/_/api/1.0/me.json?fields=basics,public_keys,private_keys",
+      {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "encryptor/1.0",
+          Cookie: `session=${sessionCookie}`,
+        },
+      },
+    );
+    if (!meRes.ok) {
+      throw new Error(`me.json failed (HTTP ${meRes.status})`);
+    }
+    const meData = (await meRes.json()) as {
+      status: { code: number; name: string; desc?: string };
+      me?: {
+        basics?: { username?: string; uid?: string };
+        pictures?: { primary?: { url?: string } };
+        profile?: { full_name?: string };
+        public_keys?: {
+          primary?: { bundle?: string; kid?: string; fingerprint?: string };
+        };
+        private_keys?: { primary?: { bundle?: string; kid?: string } };
+      };
+    };
+    if (!meData.status || meData.status.code !== 0 || !meData.me) {
+      throw new Error(
+        meData.status?.desc ||
+          meData.status?.name ||
+          "Keybase me.json call failed",
+      );
+    }
+    const me = meData.me;
+    return {
+      username: me.basics?.username ?? cleanUsername,
+      uid: me.basics?.uid ?? "",
+      picture_url: me.pictures?.primary?.url,
+      full_name: me.profile?.full_name,
+      private_key_bundle: me.private_keys?.primary?.bundle ?? null,
+      primary_key_fingerprint: me.public_keys?.primary?.fingerprint,
+      primary_key_kid: me.public_keys?.primary?.kid,
+    };
+  }
+
+  // ---- Proxy mode: POST JSON, the server-side route returns the flat
+  //      KeybaseLoginResponse shape directly. ----
   const res = await fetch(loginUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      username: username.trim().toLowerCase(),
+      username: cleanUsername,
       pdpka4,
       pdpka5,
       csrf_token: csrfToken,

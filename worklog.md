@@ -85,3 +85,42 @@ Stage Summary:
 - See `FIX-NOTES.md` for the full write-up with citations to Keybase's Go source code.
 
 
+
+---
+Task ID: 2
+Agent: main (Super Z)
+Task: Fix CI/CD failures (unit + e2e) and add a paste-image-with-scaling feature that embeds the image inline in the actual encrypted message.
+
+Work Log:
+- Cloned the user's repo at `https://github.com/theveryoilydill/Encryptor_GLM-5.2`.
+- Diagnosed Log 1 (unit test failure): `tests/unit/keybase-auth.test.ts > logs in to the real Keybase API` was failing at `deriveKeysFromPassword` because `saltHex` was `undefined`. Root cause: the live integration test bypasses the local proxy and calls `https://keybase.io/_/api/1.0/getsalt.json` directly, but `getSalt()` POSTed a JSON body — Keybase's getsalt endpoint is a GET that takes query params, so the response came back without a `salt` field. Same problem on the login side: `loginAndFetchMe()` POSTed JSON to `login.json` but Keybase expects form-encoded data, and it never called `me.json` to fetch the private-key bundle.
+- Diagnosed Log 2 (e2e failures):
+  - `encrypt-decrypt.spec.ts:35` — `getByText("@Test User").or(getByText("Test User"))` resolved to 2 elements because the user's name now appears in BOTH the header button AND the "Include me" recipient chip ("Test User (you)"). Strict-mode violation.
+  - `sign-verify.spec.ts:78` — "Signature is valid" never appeared because `VerifyTab` only fetched public keys from Keybase; locally-generated keys aren't published to Keybase, so verification always returned "unknown".
+
+Fixes:
+- **`src/lib/pgp/keybase-auth.ts`**: `getSalt()` and `loginAndFetchMe()` now detect direct `keybase.io` URLs and switch to the wire format Keybase actually expects:
+  - getSalt: GET with `?email_or_username=X&pdpka_login=true`, unwrap the `{status, salt, ...}` envelope locally.
+  - loginAndFetchMe: POST form-encoded body to `login.json` with the CSRF cookie, extract the session cookie, then separately GET `me.json` with the session cookie and return a flat `KeybaseLoginResponse`. Proxy mode (default) is unchanged — still POSTs JSON to `/api/keybase/...` and gets back the flat response.
+- **`tests/e2e/encrypt-decrypt.spec.ts`**: changed `getByText("@Test User").or(getByText("Test User"))` to `getByText("Test User").first()` to disambiguate the strict-mode violation.
+- **`src/components/pgp/PgpApp.tsx`**: `VerifyTab` now accepts the local `privateKey` config and prepends its public key to the verification key pool, so signatures made by locally-generated keys verify as "valid" instead of "unknown".
+
+Feature: image paste + custom scaling, rendered inline in the message
+- **`src/lib/pgp/inline-image.ts`** (new file): helpers for parsing/building/scaling/removing `![displayName|scale%](envelope://filename)` markers. Pure functions, fully unit-tested.
+- **`src/components/pgp/PgpApp.tsx`**:
+  - `EncryptTab.handlePaste` rewritten: when an image is pasted, it (a) adds the image bytes to `attachments` (so they're encrypted into the envelope AND downloadable), (b) inserts an inline marker at the cursor position `![filename.png|50%](envelope://filename.png)`, and (c) deduplicates filenames so each marker references the correct attachment.
+  - New `InlineImageControls` component: renders a row per pasted image with a thumbnail, a scale slider (10%–200%), a live "NN%" readout, and a remove button. Slider changes patch the marker in-place inside the plaintext, preserving everything else.
+  - New `DecryptedMessageView` component: renders the decrypted message text with inline images. Splits the text on `![alt|NN%](envelope://filename)` markers, resolves each `envelope://` URI to a `data:` URL by looking up the filename in the envelope's `files` array, and renders the image with `width: NN%`. Plain-text segments preserve newlines via `whitespace-pre-wrap`. If a marker references a missing file, renders a "[missing image: NAME]" placeholder instead of a broken `<img>`.
+  - DecryptTab now shows the rendered preview ABOVE the raw-text textarea (the raw textarea is kept for copy-paste and to satisfy the existing e2e test that searches for a textarea with the plaintext).
+
+Tests:
+- **`tests/unit/inline-image.test.ts`** (new file, 35 tests): full coverage of `parseInlineImageAlt`, `findInlineImageMarkers`, `buildInlineImageMarker`, `updateMarkerScale`, `removeMarker`, plus round-trip build→find→rescale→re-find tests.
+- **`tests/unit/keybase-auth.test.ts`**: added 7 new tests under "direct Keybase API mode (no proxy)" that verify getSalt/loginAndFetchMe use the right wire format (GET+query params vs POST+form-encoded), unwrap the `status` envelope, surface API errors, and that proxy mode is unchanged.
+- **`tests/e2e/encrypt-decrypt.spec.ts`**: added a new test "pasted images appear inline in the message with a custom scale slider" that simulates an image paste via a synthetic ClipboardEvent, asserts the marker appears in the textarea + the InlineImageControls panel appears with a 50% scale slider, encrypts, decrypts, and verifies the rendered `<img>` is visible with `width: 50%`.
+
+Stage Summary:
+- All 113 unit tests pass (1 integration test skipped because no real Keybase credentials are set).
+- All 8 e2e tests pass (was 5/7 before — both previously-failing tests now green, plus the new image-paste test).
+- TypeScript compiles clean (`bunx tsc --noEmit` returns no errors).
+- New feature: pasted images appear inline in the encrypted message body at a user-controlled scale, and the recipient sees them rendered at that scale on decrypt.
+

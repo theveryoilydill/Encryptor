@@ -304,10 +304,7 @@ describe("keybase-auth (mocked)", () => {
         headers: new Map(),
       });
 
-      const result = await getSalt(
-        "alice",
-        "https://keybase.io/_/api/1.0/getsalt.json",
-      );
+      const result = await getSalt("alice", "https://keybase.io/_/api/1.0/getsalt.json");
 
       expect(result.salt).toBe("deadbeefdeadbeefdeadbeefdeadbeef");
       expect(result.csrf_token).toBe("real-csrf");
@@ -331,9 +328,9 @@ describe("keybase-auth (mocked)", () => {
         headers: new Map(),
       });
 
-      await expect(
-        getSalt("alice", "https://keybase.io/_/api/1.0/getsalt.json"),
-      ).rejects.toThrow("Username not found");
+      await expect(getSalt("alice", "https://keybase.io/_/api/1.0/getsalt.json")).rejects.toThrow(
+        "Username not found",
+      );
     });
 
     it("getSalt with a proxy URL continues to POST JSON (no GET query params)", async () => {
@@ -409,9 +406,7 @@ describe("keybase-auth (mocked)", () => {
       expect(result.picture_url).toBe("https://example.com/a.png");
       expect(result.full_name).toBe("Alice Liddell");
       expect(result.private_key_bundle).toBe("private-key-bundle");
-      expect(result.primary_key_fingerprint).toBe(
-        "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
-      );
+      expect(result.primary_key_fingerprint).toBe("ABCDEF0123456789ABCDEF0123456789ABCDEF01");
       expect(result.primary_key_kid).toBe("kid123");
 
       // Two fetches were made.
@@ -421,9 +416,7 @@ describe("keybase-auth (mocked)", () => {
       expect(calls[0].url).toBe("https://keybase.io/_/api/1.0/login.json");
       expect(calls[0].init?.method).toBe("POST");
       const loginHeaders = calls[0].init?.headers as Record<string, string>;
-      expect(loginHeaders["Content-Type"]).toBe(
-        "application/x-www-form-urlencoded",
-      );
+      expect(loginHeaders["Content-Type"]).toBe("application/x-www-form-urlencoded");
       expect(loginHeaders.Cookie).toContain("csrf_token=csrf-token");
       const loginBody = calls[0].init?.body as string;
       expect(loginBody).toContain("email_or_username=alice");

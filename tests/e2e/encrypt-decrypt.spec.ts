@@ -54,7 +54,10 @@ test.describe("encrypt-decrypt round-trip", () => {
     await passInput.fill("test-pass-123");
     await page.getByRole("button", { name: "Decrypt & continue" }).click();
 
-    // The encrypted output should appear.
+    // The encrypted output area should appear. The default view is the
+    // rendered preview, so toggle to "Show raw text" to access the
+    // encrypted PGP text in a textarea.
+    await page.getByText("Show raw text").first().click();
     const outputTextarea = page.locator("textarea").filter({
       hasText: "BEGIN PGP MESSAGE",
     });
@@ -80,6 +83,9 @@ test.describe("encrypt-decrypt round-trip", () => {
     await page.getByRole("button", { name: "Decrypt & continue" }).click();
 
     // The decrypted output should match the original plaintext.
+    // The Decrypt tab defaults to the rendered preview, so toggle to
+    // "Show raw text" to access the raw decrypted text in a textarea.
+    await page.getByText("Show raw text").click();
     const decryptedTextarea = page.locator("textarea").filter({
       hasText: plaintext,
     });
@@ -111,10 +117,14 @@ test.describe("encrypt-decrypt round-trip", () => {
     await passInput.fill("pass");
     await page.getByRole("button", { name: "Decrypt & continue" }).click();
 
-    // Wait for encrypted output to appear.
+    // Wait for encrypted output to appear. The default view is the rendered
+    // preview, so toggle to "Show raw text" to see the PGP text.
+    await page.getByText("Show raw text").first().click();
     await expect(page.locator("textarea").filter({ hasText: "BEGIN PGP MESSAGE" })).toBeVisible({
       timeout: 30_000,
     });
+    // Toggle back to preview so the UI is in its default state.
+    await page.getByText("Show preview").first().click();
 
     // The textarea should still be editable (not disabled) — verify by
     // changing the value.
@@ -125,7 +135,9 @@ test.describe("encrypt-decrypt round-trip", () => {
     await expect(page.getByRole("button", { name: "Re-encrypt & sign" })).toBeVisible();
   });
 
-  test("pasted images appear inline in the message with a custom scale slider", async ({ page }) => {
+  test("pasted images appear inline in the message and can be scaled with keyboard shortcuts", async ({
+    page,
+  }) => {
     await page.goto("/");
 
     // Generate a local key first so we can encrypt + decrypt.
@@ -165,20 +177,50 @@ test.describe("encrypt-decrypt round-trip", () => {
       textarea.dispatchEvent(ev);
     }, pngBase64);
 
-    // The inline image marker should appear in the textarea.
+    // The inline image marker should appear in the textarea with default
+    // scale 50% and position (0, 0) (the @0,0 suffix is omitted).
     await expect(textarea).toHaveValue(/!\[red-pixel\.png\|50%\]\(envelope:\/\/red-pixel\.png\)/, {
       timeout: 5_000,
     });
 
-    // The InlineImageControls panel should appear with a thumbnail + scale slider.
-    await expect(page.getByText(/Inline images \(1\)/)).toBeVisible();
-    await expect(page.getByRole("slider", { name: /Scale for red-pixel\.png/i })).toBeVisible();
-    // The scale readout span sits next to the slider — use exact match to
-    // disambiguate from the textarea content (which also contains "50%"
-    // as part of the `|50%|` marker).
-    await expect(page.getByText("50%", { exact: true })).toBeVisible();
+    // The interactive preview should render the image.
+    const previewImage = page.locator('img[alt="red-pixel.png"]');
+    await expect(previewImage).toBeVisible({ timeout: 5_000 });
+
+    // Click the image in the preview to select it.
+    await previewImage.click();
+
+    // Use keyboard shortcuts to scale the image:
+    // Alt+ArrowUp increases scale by 5% (from 50% to 55%).
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect(textarea).toHaveValue(/!\[red-pixel\.png\|55%\]/, { timeout: 5_000 });
+
+    // Use Shift+Alt+ArrowUp for micro-scale (+1% → 56%).
+    await page.keyboard.press("Shift+Alt+ArrowUp");
+    await expect(textarea).toHaveValue(/!\[red-pixel\.png\|56%\]/, { timeout: 5_000 });
+
+    // Use arrow keys to move the image (adds a position offset).
+    // ArrowRight moves by 10px → dx=10.
+    await page.keyboard.press("ArrowRight");
+    await expect(textarea).toHaveValue(/!\[red-pixel\.png\|56%@\d+,\d+\]/, { timeout: 5_000 });
+
+    // Use Shift+ArrowRight for micro-move (1px).
+    await page.keyboard.press("Shift+ArrowRight");
+    // The dx should have increased by 1 more pixel.
+    const value = await textarea.inputValue();
+    const match = value.match(/!\[red-pixel\.png\|56%@(-?\d+),(-?\d+)\]/);
+    expect(match).not.toBeNull();
+    if (match) {
+      const dx = parseInt(match[1], 10);
+      // After ArrowRight (10px) + Shift+ArrowRight (1px), dx should be 11.
+      expect(dx).toBe(11);
+    }
+
+    // Deselect with Escape.
+    await page.keyboard.press("Escape");
 
     // Type a message after the image.
+    await textarea.click();
     await textarea.press("End");
     await textarea.type("\n\nThis message has an inline image.");
 
@@ -189,7 +231,9 @@ test.describe("encrypt-decrypt round-trip", () => {
     await passInput.fill("pass");
     await page.getByRole("button", { name: "Decrypt & continue" }).click();
 
-    // Wait for the encrypted output.
+    // Wait for the encrypted output — toggle to "Show raw text" since the
+    // default view is now the rendered preview.
+    await page.getByText("Show raw text").click();
     await expect(page.locator("textarea").filter({ hasText: "BEGIN PGP MESSAGE" })).toBeVisible({
       timeout: 30_000,
     });
@@ -211,17 +255,15 @@ test.describe("encrypt-decrypt round-trip", () => {
     await page.getByRole("button", { name: "Decrypt & continue" }).click();
 
     // The rendered decrypted-message preview should contain the inline image
-    // (rendered as an <img> with width: 50%).
-    const renderedImage = page.locator(
-      'img[alt="red-pixel.png"][style*="width: 50%"]',
-    );
+    // (rendered as an <img> with the scale we set via keyboard).
+    const renderedImage = page.locator('img[alt="red-pixel.png"][style*="width: 56%"]');
     await expect(renderedImage).toBeVisible({ timeout: 30_000 });
 
-    // The "Decrypted message (raw text)" textarea should contain the marker.
-    const rawTextarea = page
-      .locator("textarea")
-      .filter({ hasText: "envelope://red-pixel.png" });
-    await expect(rawTextarea).toBeVisible({ timeout: 30_000 });
+    // Toggle to "Show raw text" to verify the raw marker text is present.
+    await page.getByText("Show raw text").click();
+    await expect(
+      page.locator("textarea").filter({ hasText: "envelope://red-pixel.png" }),
+    ).toBeVisible({ timeout: 30_000 });
 
     // And the typed text should be present too.
     await expect(

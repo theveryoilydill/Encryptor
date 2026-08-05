@@ -56,13 +56,6 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** Convert a Uint8Array to a lowercase hex string. */
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 export interface SaltResponse {
   salt: string;
   csrf_token: string;
@@ -155,9 +148,7 @@ export async function getSalt(
   // already strips it. If we see one, check the code and surface any error.
   if (data.status && typeof data.status.code === "number") {
     if (data.status.code !== 0) {
-      throw new Error(
-        data.status.desc || data.status.name || "Keybase getsalt API error",
-      );
+      throw new Error(data.status.desc || data.status.name || "Keybase getsalt API error");
     }
   }
 
@@ -205,11 +196,22 @@ export async function deriveKeysFromPassword(
   });
 
   const keys = await new Promise<{
-    extra: { toString: (enc: string) => string; slice: (a: number, b: number) => { toString: (enc: string) => string } };
+    extra: {
+      toString: (enc: string) => string;
+      slice: (a: number, b: number) => { toString: (enc: string) => string };
+    };
   }>((resolve, reject) => {
     enc.resalt(
       { salt, extra_keymaterial: 128, progress_hook: () => {} },
-      (err: Error | null, keys: { extra: { toString: (enc: string) => string; slice: (a: number, b: number) => { toString: (enc: string) => string } } }) => {
+      (
+        err: Error | null,
+        keys: {
+          extra: {
+            toString: (enc: string) => string;
+            slice: (a: number, b: number) => { toString: (enc: string) => string };
+          };
+        },
+      ) => {
         if (err) reject(err);
         else resolve(keys);
       },
@@ -246,8 +248,10 @@ export async function generatePdpkaSignatures(
   // Import Auth directly from lib/auth.js to avoid pulling in the DNS scraper
   // (which requires Node's 'dns' built-in and breaks browser bundles).
   const authMod = await import("keybase-proofs/lib/auth.js");
-  const kb = (kbpgpMod as unknown as { kb: { KeyManager: typeof import("kbpgp").kb.KeyManager } }).kb;
-  const Auth = (authMod as unknown as { Auth: typeof import("keybase-proofs/lib/auth.js").Auth }).Auth;
+  const kb = (kbpgpMod as unknown as { kb: { KeyManager: typeof import("kbpgp").kb.KeyManager } })
+    .kb;
+  const Auth = (authMod as unknown as { Auth: typeof import("keybase-proofs/lib/auth.js").Auth })
+    .Auth;
   const { KeyManager } = kb;
 
   if (!KeyManager || !Auth) {
@@ -412,11 +416,7 @@ export async function loginAndFetchMe(
       };
     };
     if (!meData.status || meData.status.code !== 0 || !meData.me) {
-      throw new Error(
-        meData.status?.desc ||
-          meData.status?.name ||
-          "Keybase me.json call failed",
-      );
+      throw new Error(meData.status?.desc || meData.status?.name || "Keybase me.json call failed");
     }
     const me = meData.me;
     return {
@@ -500,10 +500,7 @@ export async function loginWithPassword(
   // 6. Decrypt the private key bundle.
   // The P3SKB bundle from me.json is encrypted with the user's PASSWORD
   // (not the pwh) via triplesec. We decode + unlock + parse it.
-  const privateKey = await decryptPrivateKeyBundle(
-    me.private_key_bundle,
-    password,
-  );
+  const privateKey = await decryptPrivateKeyBundle(me.private_key_bundle, password);
 
   return { me, privateKey, pwhHex: keys.pwhHex };
 }
@@ -529,7 +526,11 @@ export async function decryptPrivateKeyBundle(
   const triplesec = await import("triplesec");
   const kbpgp = await import("kbpgp");
   const { Buffer: TSBuffer, Encryptor } = triplesec;
-  const { unbox_decode } = (kbpgp as unknown as { kb: { unbox_decode: (arg: { armored: string }) => [Error | null, unknown] } }).kb;
+  const { unbox_decode } = (
+    kbpgp as unknown as {
+      kb: { unbox_decode: (arg: { armored: string }) => [Error | null, unknown] };
+    }
+  ).kb;
 
   // 1. Decode the P3SKB packet
   const [decodeErr, packet] = unbox_decode({ armored: bundle });
@@ -540,10 +541,9 @@ export async function decryptPrivateKeyBundle(
   // 2. Unlock with triplesec (password as key)
   const tsEnc = new Encryptor({ key: new TSBuffer(password, "utf8") });
   const unlockErr = await new Promise<Error | null>((resolve) => {
-    (packet as { unlock: (arg: { tsenc: unknown }, cb: (err: Error | null) => void) => void }).unlock(
-      { tsenc: tsEnc },
-      (err: Error | null) => resolve(err),
-    );
+    (
+      packet as { unlock: (arg: { tsenc: unknown }, cb: (err: Error | null) => void) => void }
+    ).unlock({ tsenc: tsEnc }, (err: Error | null) => resolve(err));
   });
   if (unlockErr) {
     throw new Error(`Failed to unlock P3SKB bundle (wrong password?): ${unlockErr.message}`);

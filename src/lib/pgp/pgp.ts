@@ -149,16 +149,6 @@ function keyIDToHex(keyID: openpgp.KeyID | undefined): string {
   return keyID.toHex().toUpperCase();
 }
 
-function fpToHex(fp: Uint8Array | string | null | undefined): string {
-  if (!fp) return "";
-  if (typeof fp === "string") return fp.toUpperCase();
-  // Convert Uint8Array to hex
-  return Array.from(fp)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .toUpperCase();
-}
-
 function formatDate(d: Date | null): string {
   if (!d) return "";
   return d.toISOString();

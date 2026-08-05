@@ -11,7 +11,7 @@
  * No network calls — everything runs against openpgp.js in-memory.
  */
 import { describe, expect, it } from "vitest";
-import { generateKeyPair, readKey, signMessage, verifyMessage } from "@/lib/pgp/pgp";
+import { generateKeyPair, signMessage, verifyMessage } from "@/lib/pgp/pgp";
 import { readTimestampNotation } from "@/lib/pgp/signer-info";
 
 describe("PGP sign + verify round-trip with timestamp notation", () => {

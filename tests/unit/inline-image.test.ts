@@ -1,9 +1,10 @@
 /**
  * Unit tests for the inline image marker helpers.
  *
- * Covers parsing, building, scaling, and removal of
- * `![alt|NN%](envelope://filename)` markers — the syntax used to embed
- * pasted images inline in encrypted message bodies.
+ * Covers parsing, building, scaling, positioning, and removal of
+ * `![alt|NN%[@dx,dy]](envelope://filename)` markers — the syntax used to
+ * embed pasted images inline in encrypted message bodies with scale and
+ * position offsets.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -12,9 +13,14 @@ import {
   findInlineImageMarkers,
   MAX_INLINE_IMAGE_SCALE,
   MIN_INLINE_IMAGE_SCALE,
+  MOVE_STEP_MICRO,
+  MOVE_STEP_NORMAL,
   parseInlineImageAlt,
   removeMarker,
+  SCALE_STEP_MICRO,
+  SCALE_STEP_NORMAL,
   updateMarkerScale,
+  updateMarkerTransform,
 } from "@/lib/pgp/inline-image";
 
 describe("parseInlineImageAlt", () => {
@@ -22,13 +28,53 @@ describe("parseInlineImageAlt", () => {
     expect(parseInlineImageAlt("cat.png|50%")).toEqual({
       displayName: "cat.png",
       scale: 50,
+      dx: 0,
+      dy: 0,
     });
   });
 
-  it("defaults to 100% when no scale suffix is present", () => {
+  it("defaults to 100% scale and 0,0 position when no suffixes are present", () => {
     expect(parseInlineImageAlt("cat.png")).toEqual({
       displayName: "cat.png",
       scale: 100,
+      dx: 0,
+      dy: 0,
+    });
+  });
+
+  it("parses scale + position suffix", () => {
+    expect(parseInlineImageAlt("cat.png|50%@10,-5")).toEqual({
+      displayName: "cat.png",
+      scale: 50,
+      dx: 10,
+      dy: -5,
+    });
+  });
+
+  it("parses position-only suffix (no scale)", () => {
+    expect(parseInlineImageAlt("cat.png@10,-5")).toEqual({
+      displayName: "cat.png",
+      scale: 100,
+      dx: 10,
+      dy: -5,
+    });
+  });
+
+  it("handles negative position values", () => {
+    expect(parseInlineImageAlt("cat.png|75%@-100,-200")).toEqual({
+      displayName: "cat.png",
+      scale: 75,
+      dx: -100,
+      dy: -200,
+    });
+  });
+
+  it("handles zero position values", () => {
+    expect(parseInlineImageAlt("cat.png|50%@0,0")).toEqual({
+      displayName: "cat.png",
+      scale: 50,
+      dx: 0,
+      dy: 0,
     });
   });
 
@@ -36,22 +82,26 @@ describe("parseInlineImageAlt", () => {
     expect(parseInlineImageAlt("|75%")).toEqual({
       displayName: "",
       scale: 75,
+      dx: 0,
+      dy: 0,
     });
   });
 
   it("treats a non-numeric suffix as part of the display name", () => {
-    // `|not-a-number%` doesn't match the `\|(\d+)%$` regex, so the whole
-    // string becomes the displayName and scale defaults to 100.
     expect(parseInlineImageAlt("photo |large%")).toEqual({
       displayName: "photo |large%",
       scale: 100,
+      dx: 0,
+      dy: 0,
     });
   });
 
   it("handles display names that contain pipes elsewhere", () => {
-    expect(parseInlineImageAlt("foo|bar|25%")).toEqual({
+    expect(parseInlineImageAlt("foo|bar|25%@5,5")).toEqual({
       displayName: "foo|bar",
       scale: 25,
+      dx: 5,
+      dy: 5,
     });
   });
 });
@@ -73,35 +123,51 @@ describe("findInlineImageMarkers", () => {
       filename: "cat.png",
       scale: 50,
       displayName: "cat.png",
+      dx: 0,
+      dy: 0,
     });
     expect(markers[0].fullMatch).toBe("![cat.png|50%](envelope://cat.png)");
-    // Indexes are correct: marker starts after "Hello\n"
-    expect(text.slice(markers[0].startIndex, markers[0].endIndex)).toBe(
-      markers[0].fullMatch,
-    );
+    expect(text.slice(markers[0].startIndex, markers[0].endIndex)).toBe(markers[0].fullMatch);
+  });
+
+  it("finds a marker with scale + position", () => {
+    const text = "![cat.png|50%@10,-5](envelope://cat.png)";
+    const markers = findInlineImageMarkers(text);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({
+      filename: "cat.png",
+      scale: 50,
+      dx: 10,
+      dy: -5,
+      displayName: "cat.png",
+    });
   });
 
   it("finds multiple markers in order", () => {
-    const text =
-      "![a.png|10%](envelope://a.png) middle ![b.jpg|200%](envelope://b.jpg)";
+    const text = "![a.png|10%@0,0](envelope://a.png) middle ![b.jpg|200%@-5,10](envelope://b.jpg)";
     const markers = findInlineImageMarkers(text);
     expect(markers).toHaveLength(2);
     expect(markers[0].filename).toBe("a.png");
     expect(markers[0].scale).toBe(10);
+    expect(markers[0].dx).toBe(0);
+    expect(markers[0].dy).toBe(0);
     expect(markers[1].filename).toBe("b.jpg");
     expect(markers[1].scale).toBe(200);
+    expect(markers[1].dx).toBe(-5);
+    expect(markers[1].dy).toBe(10);
   });
 
-  it("defaults to 100% scale when the suffix is omitted", () => {
+  it("defaults to 100% scale and 0,0 position when suffixes are omitted", () => {
     const text = "![photo.png](envelope://photo.png)";
     const markers = findInlineImageMarkers(text);
     expect(markers).toHaveLength(1);
     expect(markers[0].scale).toBe(100);
+    expect(markers[0].dx).toBe(0);
+    expect(markers[0].dy).toBe(0);
     expect(markers[0].displayName).toBe("photo.png");
   });
 
   it("decodes URI-encoded filenames", () => {
-    // Spaces and special characters get encoded by buildInlineImageMarker.
     const marker = buildInlineImageMarker("my photo.png", 50);
     expect(marker).toContain("envelope://my%20photo.png");
     const parsed = findInlineImageMarkers(marker);
@@ -109,35 +175,53 @@ describe("findInlineImageMarkers", () => {
   });
 
   it("ignores non-envelope image markdown", () => {
-    // Regular markdown images (https:// URLs) should NOT be picked up.
     const text = "![cat](https://example.com/cat.png)";
     expect(findInlineImageMarkers(text)).toEqual([]);
   });
 
   it("does not match across newlines for the URI group", () => {
-    // The `[^)\s]+` character class excludes whitespace, so a URI with a
-    // newline in it won't match — protects against greedy matching bugs.
     const text = "![a](envelope://a\n.png)";
     expect(findInlineImageMarkers(text)).toEqual([]);
+  });
+
+  it("is backward compatible with old markers that have no position", () => {
+    const text = "![cat.png|50%](envelope://cat.png)";
+    const markers = findInlineImageMarkers(text);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].scale).toBe(50);
+    expect(markers[0].dx).toBe(0);
+    expect(markers[0].dy).toBe(0);
   });
 });
 
 describe("buildInlineImageMarker", () => {
-  it("builds a marker with the given scale", () => {
-    expect(buildInlineImageMarker("cat.png", 50)).toBe(
-      "![cat.png|50%](envelope://cat.png)",
+  it("builds a marker with the given scale and no position", () => {
+    expect(buildInlineImageMarker("cat.png", 50)).toBe("![cat.png|50%](envelope://cat.png)");
+  });
+
+  it("builds a marker with scale + position", () => {
+    expect(buildInlineImageMarker("cat.png", 50, 10, -5)).toBe(
+      "![cat.png|50%@10,-5](envelope://cat.png)",
     );
+  });
+
+  it("omits the @0,0 suffix when position is (0,0)", () => {
+    expect(buildInlineImageMarker("cat.png", 50, 0, 0)).toBe("![cat.png|50%](envelope://cat.png)");
   });
 
   it("uses 100% scale explicitly", () => {
-    expect(buildInlineImageMarker("cat.png", 100)).toBe(
-      "![cat.png|100%](envelope://cat.png)",
-    );
+    expect(buildInlineImageMarker("cat.png", 100)).toBe("![cat.png|100%](envelope://cat.png)");
   });
 
   it("uses a custom display name when provided", () => {
-    expect(buildInlineImageMarker("cat-1.png", 50, "cat.png")).toBe(
+    expect(buildInlineImageMarker("cat-1.png", 50, 0, 0, "cat.png")).toBe(
       "![cat.png|50%](envelope://cat-1.png)",
+    );
+  });
+
+  it("uses a custom display name with position", () => {
+    expect(buildInlineImageMarker("cat-1.png", 75, 5, 10, "My Cat")).toBe(
+      "![My Cat|75%@5,10](envelope://cat-1.png)",
     );
   });
 
@@ -171,19 +255,16 @@ describe("updateMarkerScale", () => {
     expect(updated).toBe("![cat.png|75%](envelope://cat.png)");
   });
 
-  it("preserves the display name and filename", () => {
-    const text = "![My Cat|50%](envelope://cat-1.png)";
+  it("preserves the display name, filename, and position", () => {
+    const text = "![My Cat|50%@10,-5](envelope://cat-1.png)";
     const updated = updateMarkerScale(text, 0, 25);
-    expect(updated).toBe("![My Cat|25%](envelope://cat-1.png)");
+    expect(updated).toBe("![My Cat|25%@10,-5](envelope://cat-1.png)");
   });
 
   it("updates only the targeted marker when multiple are present", () => {
-    const text =
-      "![a.png|10%](envelope://a.png) X ![b.png|20%](envelope://b.png)";
+    const text = "![a.png|10%@0,0](envelope://a.png) X ![b.png|20%@5,5](envelope://b.png)";
     const updated = updateMarkerScale(text, 1, 90);
-    expect(updated).toBe(
-      "![a.png|10%](envelope://a.png) X ![b.png|90%](envelope://b.png)",
-    );
+    expect(updated).toBe("![a.png|10%@0,0](envelope://a.png) X ![b.png|90%@5,5](envelope://b.png)");
   });
 
   it("returns the text unchanged when the index is out of bounds", () => {
@@ -202,6 +283,55 @@ describe("updateMarkerScale", () => {
   });
 });
 
+describe("updateMarkerTransform", () => {
+  it("updates only the scale", () => {
+    const text = "![cat.png|50%@10,-5](envelope://cat.png)";
+    const updated = updateMarkerTransform(text, 0, { scale: 75 });
+    expect(updated).toBe("![cat.png|75%@10,-5](envelope://cat.png)");
+  });
+
+  it("updates only the position", () => {
+    const text = "![cat.png|50%@10,-5](envelope://cat.png)";
+    const updated = updateMarkerTransform(text, 0, { dx: 20, dy: 30 });
+    expect(updated).toBe("![cat.png|50%@20,30](envelope://cat.png)");
+  });
+
+  it("updates scale and position together", () => {
+    const text = "![cat.png|50%@10,-5](envelope://cat.png)";
+    const updated = updateMarkerTransform(text, 0, {
+      scale: 75,
+      dx: 0,
+      dy: 0,
+    });
+    // When dx=0 and dy=0, the @0,0 suffix is omitted.
+    expect(updated).toBe("![cat.png|75%](envelope://cat.png)");
+  });
+
+  it("preserves unspecified fields", () => {
+    const text = "![cat.png|50%@10,-5](envelope://cat.png)";
+    const updated = updateMarkerTransform(text, 0, { dx: 20 });
+    expect(updated).toBe("![cat.png|50%@20,-5](envelope://cat.png)");
+  });
+
+  it("adds position to a marker that had none", () => {
+    const text = "![cat.png|50%](envelope://cat.png)";
+    const updated = updateMarkerTransform(text, 0, { dx: 5, dy: 10 });
+    expect(updated).toBe("![cat.png|50%@5,10](envelope://cat.png)");
+  });
+
+  it("returns the text unchanged when the index is out of bounds", () => {
+    const text = "![a.png|10%](envelope://a.png)";
+    expect(updateMarkerTransform(text, 5, { scale: 50 })).toBe(text);
+  });
+
+  it("clamps scale to the valid range", () => {
+    const text = "![a.png|10%](envelope://a.png)";
+    expect(updateMarkerTransform(text, 0, { scale: 500 })).toBe(
+      `![a.png|${MAX_INLINE_IMAGE_SCALE}%](envelope://a.png)`,
+    );
+  });
+});
+
 describe("removeMarker", () => {
   it("removes the marker at the given index", () => {
     const text = "before ![cat.png|50%](envelope://cat.png) after";
@@ -212,29 +342,23 @@ describe("removeMarker", () => {
   it("also strips a single trailing newline pair", () => {
     const text = "Text\n\n![cat.png|50%](envelope://cat.png)\n\nMore text";
     const result = removeMarker(text, 0);
-    // Trailing pair is stripped, leading pair is kept (so the two
-    // surrounding paragraphs remain separated by a single \n\n).
     expect(result).toBe("Text\n\nMore text");
   });
 
   it("preserves paragraph separation when the marker sat between two paragraphs", () => {
     const text = "Para 1\n\n![cat.png|50%](envelope://cat.png)\n\nPara 2";
     const result = removeMarker(text, 0);
-    // Both a leading and trailing \n\n are present — only the trailing one
-    // is stripped, so a single \n\n remains separating the two paragraphs.
     expect(result).toBe("Para 1\n\nPara 2");
   });
 
   it("strips the leading newline pair when there is no trailing one", () => {
     const text = "Para 1\n\n![cat.png|50%](envelope://cat.png)Para 2";
     const result = removeMarker(text, 0);
-    // No trailing newline → fall back to stripping the leading \n\n.
     expect(result).toBe("Para 1Para 2");
   });
 
   it("removes only the targeted marker when multiple are present", () => {
-    const text =
-      "![a.png|10%](envelope://a.png) X ![b.png|20%](envelope://b.png)";
+    const text = "![a.png|10%](envelope://a.png) X ![b.png|20%](envelope://b.png)";
     const result = removeMarker(text, 0);
     expect(result).toBe(" X ![b.png|20%](envelope://b.png)");
   });
@@ -255,39 +379,83 @@ describe("removeMarker", () => {
     const result = removeMarker(text, 0);
     expect(result).toBe("More");
   });
+
+  it("handles a marker with position suffix", () => {
+    const text = "![cat.png|50%@10,-5](envelope://cat.png) text";
+    const result = removeMarker(text, 0);
+    expect(result).toBe(" text");
+  });
 });
 
-describe("round-trip: build → find → scale", () => {
-  it("can build, find, rescale, and re-find a marker", () => {
-    // Build a marker
-    const marker = buildInlineImageMarker("photo.png", 50);
-    expect(marker).toBe("![photo.png|50%](envelope://photo.png)");
+describe("keyboard step constants", () => {
+  it("exposes the normal and micro move steps", () => {
+    expect(MOVE_STEP_NORMAL).toBe(10);
+    expect(MOVE_STEP_MICRO).toBe(1);
+  });
 
-    // Embed it in text
+  it("exposes the normal and micro scale steps", () => {
+    expect(SCALE_STEP_NORMAL).toBe(5);
+    expect(SCALE_STEP_MICRO).toBe(1);
+  });
+});
+
+describe("round-trip: build → find → transform → re-find", () => {
+  it("can build, find, rescale, reposition, and re-find a marker", () => {
+    const marker = buildInlineImageMarker("photo.png", 50, 10, -5);
+    expect(marker).toBe("![photo.png|50%@10,-5](envelope://photo.png)");
+
     const text = `Hello\n${marker}\nWorld`;
 
-    // Find it
     const found = findInlineImageMarkers(text);
     expect(found).toHaveLength(1);
     expect(found[0].scale).toBe(50);
+    expect(found[0].dx).toBe(10);
+    expect(found[0].dy).toBe(-5);
 
-    // Scale it up
-    const scaled = updateMarkerScale(text, 0, 125);
-    expect(scaled).toContain("|125%");
+    const transformed = updateMarkerTransform(text, 0, {
+      scale: 125,
+      dx: 0,
+      dy: 0,
+    });
+    expect(transformed).toContain("|125%");
+    expect(transformed).not.toContain("@");
 
-    // Find it again — scale should be updated
-    const found2 = findInlineImageMarkers(scaled);
+    const found2 = findInlineImageMarkers(transformed);
     expect(found2[0].scale).toBe(125);
+    expect(found2[0].dx).toBe(0);
+    expect(found2[0].dy).toBe(0);
     expect(found2[0].filename).toBe("photo.png");
   });
 
-  it("preserves attachment references across scale changes", () => {
-    // The filename in the envelope:// URI must NOT change when the scale
-    // changes — otherwise the rendered image would break.
-    const text = "![My Holiday Photo|50%](envelope://img-001.png)";
-    const scaled = updateMarkerScale(text, 0, 75);
-    expect(scaled).toContain("envelope://img-001.png");
-    expect(scaled).toContain("My Holiday Photo");
-    expect(scaled).toContain("|75%");
+  it("preserves attachment references across transform changes", () => {
+    const text = "![My Holiday Photo|50%@10,-5](envelope://img-001.png)";
+    const transformed = updateMarkerTransform(text, 0, {
+      scale: 75,
+      dx: 20,
+      dy: 30,
+    });
+    expect(transformed).toContain("envelope://img-001.png");
+    expect(transformed).toContain("My Holiday Photo");
+    expect(transformed).toContain("|75%");
+    expect(transformed).toContain("@20,30");
+  });
+
+  it("round-trips through build → parse without loss", () => {
+    const cases = [
+      { filename: "a.png", scale: 50, dx: 0, dy: 0, name: undefined as string | undefined },
+      { filename: "b.png", scale: 75, dx: 10, dy: -5, name: undefined as string | undefined },
+      { filename: "c.png", scale: 100, dx: -20, dy: 30, name: "My Photo" },
+      { filename: "d.png", scale: 200, dx: 0, dy: 0, name: "Big" },
+    ];
+    for (const c of cases) {
+      const marker = buildInlineImageMarker(c.filename, c.scale, c.dx, c.dy, c.name);
+      const parsed = findInlineImageMarkers(marker);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].filename).toBe(c.filename);
+      expect(parsed[0].scale).toBe(c.scale);
+      expect(parsed[0].dx).toBe(c.dx);
+      expect(parsed[0].dy).toBe(c.dy);
+      expect(parsed[0].displayName).toBe(c.name ?? c.filename);
+    }
   });
 });

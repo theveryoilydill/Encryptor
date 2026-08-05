@@ -33,7 +33,7 @@ import {
   readFileAsBase64,
   type EnvelopeFile,
 } from "@/lib/pgp/envelope";
-import { formatTimestamp, type SignerInfo } from "@/lib/pgp/signer-info";
+import { formatTimestamp } from "@/lib/pgp/signer-info";
 import {
   base64ToUint8Array,
   buildZipBundle,
@@ -42,10 +42,10 @@ import {
 } from "@/lib/pgp/zip-bundle";
 import {
   buildInlineImageMarker,
+  DEFAULT_INLINE_IMAGE_SCALE,
   findInlineImageMarkers,
-  removeMarker as removeInlineImageMarker,
-  type InlineImageMarker,
 } from "@/lib/pgp/inline-image";
+import { InteractiveMessagePreview } from "@/components/pgp/InteractiveMessagePreview";
 
 // In the Next.js preview, the Keybase proxies live under /api/keybase/*
 const PROXIES = {
@@ -482,141 +482,139 @@ function EncryptTab({
   //        ![filename.png|50%](envelope://filename.png)
   //      where `50%` is the rendered-width scale (default 50%, since pasted
   //      screenshots are usually much larger than the message column).
-  const handlePaste = useCallback(
-    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const imageItems: DataTransferItem[] = [];
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        if (it.kind === "file" && it.type.startsWith("image/")) {
-          imageItems.push(it);
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageItems: DataTransferItem[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === "file" && it.type.startsWith("image/")) {
+        imageItems.push(it);
+      }
+    }
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+
+    // Capture the cursor position BEFORE the (async) addFiles call —
+    // otherwise the textarea will have lost focus/selection by the time
+    // we want to insert the marker.
+    const textarea = e.currentTarget;
+    const cursorStart = textarea.selectionStart;
+    const cursorEnd = textarea.selectionEnd;
+
+    const files = imageItems.map((it) => it.getAsFile()).filter((f): f is File => f !== null);
+    if (files.length === 0) return;
+
+    // Resolve a unique filename for each pasted image so the inline marker
+    // always references the correct attachment (no duplicate-name ambiguity).
+    // We can't read `attachments` here (it's stale in this closure), so we
+    // generate the unique name inside the setAttachments updater.
+    const defaultNames = files.map((f) => f.name || `pasted-image.png`);
+    const defaultTypes = files.map((f) => f.type || "image/png");
+
+    void (async () => {
+      // Read all files first so we can do one setAttachments call.
+      const readResults: Array<
+        { name: string; type: string; data: string; size: number } | { error: string }
+      > = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const MAX_SIZE = 25 * 1024 * 1024;
+        if (f.size > MAX_SIZE) {
+          readResults.push({
+            error: `"${f.name}" is ${formatFileSize(f.size)} — max 25 MB per file.`,
+          });
+          continue;
+        }
+        try {
+          const data = await readFileAsBase64(f);
+          readResults.push({
+            name: defaultNames[i],
+            type: defaultTypes[i],
+            data,
+            size: f.size,
+          });
+        } catch (err) {
+          readResults.push({
+            error: `Failed to read "${f.name}": ${(err as Error).message}`,
+          });
         }
       }
-      if (imageItems.length === 0) return;
-      e.preventDefault();
 
-      // Capture the cursor position BEFORE the (async) addFiles call —
-      // otherwise the textarea will have lost focus/selection by the time
-      // we want to insert the marker.
-      const textarea = e.currentTarget;
-      const cursorStart = textarea.selectionStart;
-      const cursorEnd = textarea.selectionEnd;
-
-      const files = imageItems
-        .map((it) => it.getAsFile())
-        .filter((f): f is File => f !== null);
-      if (files.length === 0) return;
-
-      // Resolve a unique filename for each pasted image so the inline marker
-      // always references the correct attachment (no duplicate-name ambiguity).
-      // We can't read `attachments` here (it's stale in this closure), so we
-      // generate the unique name inside the setAttachments updater.
-      const defaultNames = files.map((f) => f.name || `pasted-image.png`);
-      const defaultTypes = files.map((f) => f.type || "image/png");
-
-      void (async () => {
-        // Read all files first so we can do one setAttachments call.
-        const readResults: Array<{ name: string; type: string; data: string; size: number } | { error: string }> = [];
-        for (let i = 0; i < files.length; i++) {
-          const f = files[i];
-          const MAX_SIZE = 25 * 1024 * 1024;
-          if (f.size > MAX_SIZE) {
-            readResults.push({
-              error: `"${f.name}" is ${formatFileSize(f.size)} — max 25 MB per file.`,
-            });
+      // Generate unique filenames + insert inline markers.
+      // We do both inside the setAttachments updater so we can deduplicate
+      // against the existing attachment list atomically.
+      let insertedMarkers: string[] = [];
+      setAttachments((prev) => {
+        const existing = prev;
+        const usedNames = new Set(existing.map((a) => a.name));
+        const added: EnvelopeFile[] = [];
+        const newMarkers: string[] = [];
+        for (const r of readResults) {
+          if ("error" in r) {
+            setError(r.error);
             continue;
           }
-          try {
-            const data = await readFileAsBase64(f);
-            readResults.push({
-              name: defaultNames[i],
-              type: defaultTypes[i],
-              data,
-              size: f.size,
-            });
-          } catch (err) {
-            readResults.push({
-              error: `Failed to read "${f.name}": ${(err as Error).message}`,
-            });
+          // Deduplicate: if "cat.png" already exists, try "cat-1.png", "cat-2.png", etc.
+          let uniqueName = r.name;
+          let counter = 1;
+          const dot = r.name.lastIndexOf(".");
+          while (usedNames.has(uniqueName)) {
+            if (dot > 0) {
+              uniqueName = `${r.name.slice(0, dot)}-${counter}${r.name.slice(dot)}`;
+            } else {
+              uniqueName = `${r.name}-${counter}`;
+            }
+            counter++;
           }
+          usedNames.add(uniqueName);
+          added.push({
+            name: uniqueName,
+            type: r.type,
+            data: r.data,
+            size: r.size,
+          });
+          // Default scale 50% — pasted screenshots are typically 2x–4x the
+          // message column width, so 50% is a sensible starting size that
+          // the user can fine-tune by dragging or using arrow keys.
+          newMarkers.push(
+            buildInlineImageMarker(uniqueName, DEFAULT_INLINE_IMAGE_SCALE, 0, 0, r.name),
+          );
         }
+        insertedMarkers = newMarkers;
+        return [...existing, ...added];
+      });
 
-        // Generate unique filenames + insert inline markers.
-        // We do both inside the setAttachments updater so we can deduplicate
-        // against the existing attachment list atomically.
-        let insertedMarkers: string[] = [];
-        setAttachments((prev) => {
-          const existing = prev;
-          const usedNames = new Set(existing.map((a) => a.name));
-          const added: EnvelopeFile[] = [];
-          const newMarkers: string[] = [];
-          for (const r of readResults) {
-            if ("error" in r) {
-              setError(r.error);
-              continue;
-            }
-            // Deduplicate: if "cat.png" already exists, try "cat-1.png", "cat-2.png", etc.
-            let uniqueName = r.name;
-            let counter = 1;
-            const dot = r.name.lastIndexOf(".");
-            while (usedNames.has(uniqueName)) {
-              if (dot > 0) {
-                uniqueName = `${r.name.slice(0, dot)}-${counter}${r.name.slice(dot)}`;
-              } else {
-                uniqueName = `${r.name}-${counter}`;
-              }
-              counter++;
-            }
-            usedNames.add(uniqueName);
-            added.push({
-              name: uniqueName,
-              type: r.type,
-              data: r.data,
-              size: r.size,
-            });
-            // Default scale 50% — pasted screenshots are typically 2x–4x the
-            // message column width, so 50% is a sensible starting size that
-            // the user can fine-tune with the slider.
-            newMarkers.push(buildInlineImageMarker(uniqueName, 50, r.name));
-          }
-          insertedMarkers = newMarkers;
-          return [...existing, ...added];
+      // Insert the markers at the captured cursor position.
+      if (insertedMarkers.length > 0) {
+        const insert = insertedMarkers.join("\n\n");
+        setPlaintext((prev) => {
+          const before = prev.slice(0, cursorStart);
+          const after = prev.slice(cursorEnd);
+          // Ensure the marker is on its own line — pad with newlines if
+          // the cursor was in the middle of a paragraph.
+          const needsLeadingNL = before.length > 0 && !before.endsWith("\n");
+          const needsTrailingNL = after.length > 0 && !after.startsWith("\n");
+          const paddedInsert =
+            (needsLeadingNL ? "\n\n" : "") + insert + (needsTrailingNL ? "\n\n" : "");
+          return before + paddedInsert + after;
         });
-
-        // Insert the markers at the captured cursor position.
-        if (insertedMarkers.length > 0) {
-          const insert = insertedMarkers.join("\n\n");
-          setPlaintext((prev) => {
-            const before = prev.slice(0, cursorStart);
-            const after = prev.slice(cursorEnd);
-            // Ensure the marker is on its own line — pad with newlines if
-            // the cursor was in the middle of a paragraph.
-            const needsLeadingNL = before.length > 0 && !before.endsWith("\n");
-            const needsTrailingNL = after.length > 0 && !after.startsWith("\n");
-            const paddedInsert =
-              (needsLeadingNL ? "\n\n" : "") + insert + (needsTrailingNL ? "\n\n" : "");
-            return before + paddedInsert + after;
-          });
-          // Restore focus + move cursor to just after the inserted markers.
-          queueMicrotask(() => {
-            textarea.focus();
-            const insertLen = insertedMarkers.join("\n\n").length;
-            // Account for any padding newlines we added.
-            const before = textarea.value.slice(0, cursorStart);
-            const after = textarea.value.slice(cursorEnd);
-            const needsLeadingNL = before.length > 0 && !before.endsWith("\n");
-            const needsTrailingNL = after.length > 0 && !after.startsWith("\n");
-            const paddedLen =
-              (needsLeadingNL ? 2 : 0) + insertLen + (needsTrailingNL ? 2 : 0);
-            const newPos = cursorStart + paddedLen;
-            textarea.setSelectionRange(newPos, newPos);
-          });
-        }
-      })();
-    },
-    [],
-  );
+        // Restore focus + move cursor to just after the inserted markers.
+        queueMicrotask(() => {
+          textarea.focus();
+          const insertLen = insertedMarkers.join("\n\n").length;
+          // Account for any padding newlines we added.
+          const before = textarea.value.slice(0, cursorStart);
+          const after = textarea.value.slice(cursorEnd);
+          const needsLeadingNL = before.length > 0 && !before.endsWith("\n");
+          const needsTrailingNL = after.length > 0 && !after.startsWith("\n");
+          const paddedLen = (needsLeadingNL ? 2 : 0) + insertLen + (needsTrailingNL ? 2 : 0);
+          const newPos = cursorStart + paddedLen;
+          textarea.setSelectionRange(newPos, newPos);
+        });
+      }
+    })();
+  }, []);
 
   const handleEncrypt = useCallback(async () => {
     setError(null);
@@ -642,7 +640,7 @@ function EncryptTab({
 
       // Build the recipient key list. If "include me" is checked, derive
       // the public key from the decrypted private key.
-      const recipientKeys: string[] = [...recipients.map((r) => r.armored)];
+      const recipientKeys: string[] = recipients.map((r) => r.armored);
       if (includeSelf) {
         try {
           const pubArmored = decryptedKey.toPublic().armor();
@@ -675,7 +673,6 @@ function EncryptTab({
       <RecipientPicker
         recipients={recipients}
         setRecipients={setRecipients}
-        autocompleteProxy={proxies.autocompleteProxy}
         searchAllProxy={proxies.searchAllProxy}
         keybaseProxy={proxies.keybaseProxy}
         includeSelf={includeSelf}
@@ -689,29 +686,28 @@ function EncryptTab({
           value={plaintext}
           onChange={setPlaintext}
           onPaste={handlePaste}
-          placeholder="Type the message you want to encrypt + sign. You can paste images directly (Ctrl/Cmd+V) — they'll appear inline and you can resize them below."
+          placeholder="Type the message you want to encrypt + sign. You can paste images directly (Ctrl/Cmd+V) — they'll appear inline and you can resize/move them below."
           rows={8}
         />
         <p className="mt-1.5 text-[11px] text-neutral-500">
-          Paste images directly into the box, or use “Add files” below to attach any file.
-          Pasted images appear inline in the message; use the slider below each image to resize it.
-          Attachments are encrypted alongside the message text.
+          Paste images directly into the box, or use “Add files” below to attach any file. Pasted
+          images appear in the preview below — drag them with the mouse or use arrow keys (Shift =
+          micro-move, Alt = scale) to position and resize.
         </p>
       </div>
 
-      {/* Inline-image scaling controls: shows a row per pasted image with a
-          width slider (10%–200%) and a remove button. Editing the slider
-          updates the corresponding marker in the plaintext in place. */}
-      <InlineImageControls
-        plaintext={plaintext}
-        setPlaintext={setPlaintext}
-        attachments={attachments}
-        onRemoveAttachment={(filename) => {
-          // Removing an inline image also drops its attachment so the bytes
-          // don't linger in the envelope with no marker referencing them.
-          setAttachments((prev) => prev.filter((a) => a.name !== filename));
-        }}
-      />
+      {/* Interactive message preview: renders the message with inline images
+          and lets the user drag/scale/move each image with the mouse and
+          keyboard. This is the primary "what your message looks like" view. */}
+      <div>
+        <Label>Preview</Label>
+        <InteractiveMessagePreview
+          plaintext={plaintext}
+          files={attachments}
+          onChange={setPlaintext}
+          emptyPlaceholder="Type a message or paste an image (Ctrl/Cmd+V) to see the preview."
+        />
+      </div>
 
       <AttachmentList
         attachments={attachments}
@@ -760,6 +756,10 @@ function EncryptTab({
             operation: "encrypt",
             files: attachments,
           }}
+          preview={{
+            plaintext: buildPlaintextForEncryption(plaintext, attachments),
+            files: attachments,
+          }}
         />
       )}
     </section>
@@ -771,7 +771,6 @@ function EncryptTab({
 function RecipientPicker({
   recipients,
   setRecipients,
-  autocompleteProxy,
   searchAllProxy,
   keybaseProxy,
   includeSelf,
@@ -780,7 +779,6 @@ function RecipientPicker({
 }: {
   recipients: Recipient[];
   setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>;
-  autocompleteProxy: string;
   searchAllProxy: string;
   keybaseProxy: string;
   includeSelf: boolean;
@@ -1163,6 +1161,11 @@ function DecryptTab({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nukeConfirmed, setNukeConfirmed] = useState(false);
+  // Hidden toggle: when true, shows the raw decrypted text (with markers)
+  // instead of the rendered preview. Defaults to false — the rendered preview
+  // is always shown. This is an advanced feature, so the toggle is visually
+  // de-emphasized (small, muted text).
+  const [showRaw, setShowRaw] = useState(false);
 
   const handleDecrypt = useCallback(async () => {
     setError(null);
@@ -1246,21 +1249,33 @@ function DecryptTab({
           {output.signatures.length > 0 && <SignerBadges signatures={output.signatures} />}
           {output.files.length > 0 && <FileDownloadList files={output.files} />}
 
-          {/* Rendered message preview with inline images.
-              Shows the decrypted text exactly as the sender typed it, with
-              any `![alt|NN%](envelope://filename)` markers replaced by the
-              actual image at the sender's chosen scale. This is the primary
-              view the user reads; the raw-text textarea below is for copy. */}
+          {/* Always show the rendered preview as the primary view.
+              The raw-text textarea is hidden behind a subtle toggle
+              ("Show raw text") — it's an advanced feature. */}
           <div>
-            <Label>Decrypted message (rendered)</Label>
-            <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
-              <DecryptedMessageView plaintext={output.plaintext} files={output.files} />
+            <div className="flex items-center justify-between mb-1">
+              <Label>Decrypted message</Label>
+              <button
+                type="button"
+                onClick={() => setShowRaw((v) => !v)}
+                className="text-[10px] text-neutral-400 hover:text-neutral-600 underline-offset-2 hover:underline"
+                title="Toggle between rendered preview and raw text (advanced)"
+              >
+                {showRaw ? "Show rendered" : "Show raw text"}
+              </button>
             </div>
+            {showRaw ? (
+              <Textarea value={output.plaintext} readOnly rows={10} />
+            ) : (
+              <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
+                <DecryptedMessageView plaintext={output.plaintext} files={output.files} />
+              </div>
+            )}
           </div>
 
           <OutputBlock
-            title="Decrypted message (raw text)"
-            output={output.plaintext}
+            title="Encrypted message (source)"
+            output={armored}
             nukeLabel="Nuke encrypted input"
             nukeConfirmed={nukeConfirmed}
             onNuke={() => {
@@ -1272,6 +1287,7 @@ function DecryptTab({
               setArmored("");
               setNukeConfirmed(false);
               setError(null);
+              setShowRaw(false);
             }}
             zipBundle={{
               operation: "decrypt",
@@ -1549,8 +1565,7 @@ function VerifyTab({
           if (privateKey?.info?.armored) {
             const localInfo = privateKey.info;
             const alreadyHave = mapped.some(
-              (m) =>
-                m.fingerprint.toUpperCase() === localInfo.fingerprint.toUpperCase(),
+              (m) => m.fingerprint.toUpperCase() === localInfo.fingerprint.toUpperCase(),
             );
             if (!alreadyHave) {
               mapped.push({
@@ -1749,136 +1764,12 @@ function VerifyTab({
 
 /* --------------------------- Output + nuke block --------------------------- */
 
-/** Controls for inline images embedded in the Encrypt textarea.
- *
- *  For each `![name|NN%](envelope://filename)` marker found in `plaintext`,
- *  renders a row with:
- *    - A small thumbnail preview (resolved from `attachments`)
- *    - The filename
- *    - A range slider (10%–200%) controlling the rendered width
- *    - A remove button that strips the marker AND drops the attachment
- *
- *  Slider changes patch the marker in-place inside `plaintext` via
- *  `setPlaintext`, preserving everything else (text, cursor, other markers).
- */
-function InlineImageControls({
-  plaintext,
-  setPlaintext,
-  attachments,
-  onRemoveAttachment,
-}: {
-  plaintext: string;
-  setPlaintext: (next: string) => void;
-  attachments: EnvelopeFile[];
-  onRemoveAttachment: (filename: string) => void;
-}) {
-  const markers = useMemo(() => findInlineImageMarkers(plaintext), [plaintext]);
-
-  if (markers.length === 0) return null;
-
-  /** Replace the marker at `index` with one using `newScale`, preserving
-   *  the display name and filename. */
-  const updateScale = (index: number, newScale: number) => {
-    const m = markers[index];
-    if (!m) return;
-    const clamped = Math.max(10, Math.min(200, newScale));
-    const newMarker = buildInlineImageMarker(m.filename, clamped, m.displayName);
-    setPlaintext(plaintext.slice(0, m.startIndex) + newMarker + plaintext.slice(m.endIndex));
-  };
-
-  /** Remove the marker at `index` from the plaintext, and also drop the
-   *  matching attachment (if any) via `onRemoveAttachment`. */
-  const removeMarker = (index: number) => {
-    const next = removeInlineImageMarker(plaintext, index);
-    if (next === plaintext) return; // nothing was removed
-    setPlaintext(next);
-    const markers = findInlineImageMarkers(plaintext);
-    const m = markers[index];
-    if (m) onRemoveAttachment(m.filename);
-  };
-
-  return (
-    <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2.5 space-y-2.5">
-      <div className="flex items-center justify-between">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-neutral-500">
-          Inline images ({markers.length})
-        </div>
-        <div className="text-[10px] text-neutral-400">
-          Drag the slider to resize each image inside the message
-        </div>
-      </div>
-      <ul className="space-y-2">
-        {markers.map((m, idx) => {
-          const attachment = attachments.find((a) => a.name === m.filename);
-          const previewUrl = attachment
-            ? `data:${attachment.type};base64,${attachment.data}`
-            : null;
-          return (
-            <li
-              key={`${m.filename}-${idx}`}
-              className="flex items-center gap-3 text-sm bg-white rounded-md border border-neutral-200 px-2.5 py-2"
-            >
-              {previewUrl ? (
-                <img
-                  src={previewUrl}
-                  alt={m.displayName}
-                  className="size-10 rounded border border-neutral-200 object-cover shrink-0"
-                />
-              ) : (
-                <div className="size-10 rounded bg-red-50 border border-red-200 grid place-items-center text-[10px] font-medium text-red-600 shrink-0">
-                  MISSING
-                </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-neutral-900" title={m.filename}>
-                    {m.displayName}
-                  </span>
-                  {attachment && (
-                    <span className="text-[10px] text-neutral-500 shrink-0">
-                      {formatFileSize(attachment.size)}
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 mt-1">
-                  <input
-                    type="range"
-                    min={10}
-                    max={200}
-                    step={5}
-                    value={m.scale}
-                    onChange={(e) => updateScale(idx, parseInt(e.target.value, 10))}
-                    className="flex-1 accent-[#0055dc]"
-                    aria-label={`Scale for ${m.displayName}`}
-                  />
-                  <span className="text-[11px] text-neutral-700 font-mono w-10 text-right">
-                    {m.scale}%
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => removeMarker(idx)}
-                className="shrink-0 size-7 grid place-items-center rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 text-base leading-none"
-                aria-label={`Remove inline image ${m.displayName}`}
-                title="Remove this inline image"
-              >
-                ×
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
 /** Render the decrypted message text with inline images.
  *
  *  Splits `plaintext` into a sequence of plain-text and image segments by
- *  scanning for `![alt|NN%](envelope://filename)` markers. Each image
+ *  scanning for `![alt|NN%[@dx,dy]](envelope://filename)` markers. Each image
  *  segment is resolved to a `data:` URL by looking up `filename` in `files`,
- *  then rendered as an `<img>` with `width: NN%`.
+ *  then rendered as an `<img>` with `width: NN%` and `translate(dx, dy)`.
  *
  *  Plain-text segments preserve newlines via `whitespace-pre-wrap` so the
  *  rendered output matches what the sender typed.
@@ -1886,13 +1777,7 @@ function InlineImageControls({
  *  If a marker references a filename not present in `files`, a small
  *  "[missing image: NAME]" placeholder is rendered instead of a broken img.
  */
-function DecryptedMessageView({
-  plaintext,
-  files,
-}: {
-  plaintext: string;
-  files: EnvelopeFile[];
-}) {
+function DecryptedMessageView({ plaintext, files }: { plaintext: string; files: EnvelopeFile[] }) {
   // Build a filename → data URL map. First match wins (matching the
   // Encrypt-side behavior where deduplicated names are unique).
   const fileMap = useMemo(() => {
@@ -1909,7 +1794,14 @@ function DecryptedMessageView({
   const segments = useMemo(() => {
     const out: Array<
       | { type: "text"; content: string }
-      | { type: "image"; filename: string; displayName: string; scale: number }
+      | {
+          type: "image";
+          filename: string;
+          displayName: string;
+          scale: number;
+          dx: number;
+          dy: number;
+        }
     > = [];
     const markers = findInlineImageMarkers(plaintext);
     let lastIndex = 0;
@@ -1922,6 +1814,8 @@ function DecryptedMessageView({
         filename: m.filename,
         displayName: m.displayName,
         scale: m.scale,
+        dx: m.dx,
+        dy: m.dy,
       });
       lastIndex = m.endIndex;
     }
@@ -1959,13 +1853,18 @@ function DecryptedMessageView({
           );
         }
         return (
-          <img
+          <span
             key={i}
-            src={src}
-            alt={seg.displayName}
-            style={{ width: `${seg.scale}%`, maxWidth: "100%" }}
-            className="my-2 rounded border border-neutral-200 inline-block"
-          />
+            className="inline-block align-middle my-1"
+            style={{ transform: `translate(${seg.dx}px, ${seg.dy}px)` }}
+          >
+            <img
+              src={src}
+              alt={seg.displayName}
+              style={{ width: `${seg.scale}%`, maxWidth: "100%", minHeight: "20px" }}
+              className="my-1 rounded border border-neutral-200"
+            />
+          </span>
         );
       })}
     </div>
@@ -2109,6 +2008,7 @@ function OutputBlock({
   onNuke,
   onReset,
   zipBundle,
+  preview,
 }: {
   title: string;
   output: string;
@@ -2119,12 +2019,39 @@ function OutputBlock({
   /** If provided, renders a "Download as ZIP" button that bundles the output
    *  + files + signer metadata into a single .zip download. */
   zipBundle?: ZipBundleConfig;
+  /** When provided, shows a rendered preview of the message (with inline
+   *  images) as the primary view. A small, subtle toggle switches to the
+   *  raw `output` text. The Copy/ZIP buttons always act on `output`. */
+  preview?: {
+    plaintext: string;
+    files: EnvelopeFile[];
+  };
 }) {
+  const [showRaw, setShowRaw] = useState(false);
+
   return (
     <div className="space-y-3">
       <div>
-        <Label>{title}</Label>
-        <Textarea value={output} readOnly rows={12} />
+        <div className="flex items-center justify-between mb-1">
+          <Label>{title}</Label>
+          {preview && (
+            <button
+              type="button"
+              onClick={() => setShowRaw((v) => !v)}
+              className="text-[10px] text-neutral-400 hover:text-neutral-600 underline-offset-2 hover:underline"
+              title="Toggle between rendered preview and raw text (advanced)"
+            >
+              {showRaw ? "Show preview" : "Show raw text"}
+            </button>
+          )}
+        </div>
+        {preview && !showRaw ? (
+          <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
+            <DecryptedMessageView plaintext={preview.plaintext} files={preview.files} />
+          </div>
+        ) : (
+          <Textarea value={output} readOnly rows={12} />
+        )}
         <div className="mt-2 flex justify-end gap-2">
           {zipBundle && <ZipDownloadButton output={output} config={zipBundle} />}
           <CopyButton text={output} />
@@ -2264,14 +2191,10 @@ function PassphrasePrompt({
         setStage("Generating PDPKA signatures…");
         await new Promise((r) => setTimeout(r, 50));
         setStage("Logging in to Keybase…");
-        const { me, privateKey: decrypted } = await loginWithPassword(
-          config.username!,
-          passphrase,
-          {
-            getsaltUrl: proxies.getsaltProxy,
-            loginUrl: proxies.loginProxy,
-          },
-        );
+        const { privateKey: decrypted } = await loginWithPassword(config.username!, passphrase, {
+          getsaltUrl: proxies.getsaltProxy,
+          loginUrl: proxies.loginProxy,
+        });
         setStage("Decrypting private key…");
 
         const armored = decrypted.armor();

@@ -171,7 +171,10 @@ export async function derivePublicFromPrivate(
   if (!key.isPrivate()) {
     return key.armor();
   }
-  const unlocked = await unlockPrivateKey(key as openpgp.PrivateKey, passphrase);
+  const unlocked = await unlockPrivateKey(
+    key as openpgp.PrivateKey,
+    passphrase,
+  );
   return unlocked.toPublic().armor();
 }
 
@@ -192,7 +195,9 @@ export async function unlockPrivateKey(
 ): Promise<openpgp.PrivateKey> {
   if (!key.isDecrypted()) {
     if (!passphrase) {
-      throw new Error("This private key is passphrase-protected. Please provide the passphrase.");
+      throw new Error(
+        "This private key is passphrase-protected. Please provide the passphrase.",
+      );
     }
     try {
       return await openpgp.decryptKey({ privateKey: key, passphrase });
@@ -207,7 +212,9 @@ export async function describePublicKey(armored: Armored): Promise<PublicKeyInfo
   const key = await readKey(armored);
   const primary = key.getAlgorithmInfo();
   const fp = key.getFingerprint().toUpperCase();
-  const subkeyFPs = key.getSubkeys().map((s) => s.getFingerprint().toUpperCase());
+  const subkeyFPs = key
+    .getSubkeys()
+    .map((s) => s.getFingerprint().toUpperCase());
 
   // Try to find the most relevant encryption-capable subkey's expiration
   let expirationTime: Date | null = null;
@@ -219,7 +226,8 @@ export async function describePublicKey(armored: Armored): Promise<PublicKeyInfo
       // openpgp can return arrays of Dates or numbers for multi-key cases.
       const first = exp[0];
       if (first instanceof Date) expirationTime = first;
-      else if (typeof first === "number" && first > 0) expirationTime = new Date(first);
+      else if (typeof first === "number" && first > 0)
+        expirationTime = new Date(first);
     } else if (typeof exp === "number" && exp > 0) {
       expirationTime = new Date(exp);
     }
@@ -260,7 +268,9 @@ export async function describePrivateKey(
   };
 }
 
-export async function generateKeyPair(opts: GenerateKeyOptions): Promise<GeneratedKeyPair> {
+export async function generateKeyPair(
+  opts: GenerateKeyOptions,
+): Promise<GeneratedKeyPair> {
   const type = opts.type ?? "ecc";
   const userIDs = [
     {
@@ -296,7 +306,9 @@ export async function generateKeyPair(opts: GenerateKeyOptions): Promise<Generat
   };
 }
 
-export async function encryptAndSign(opts: EncryptAndSignOptions): Promise<string> {
+export async function encryptAndSign(
+  opts: EncryptAndSignOptions,
+): Promise<string> {
   if (!opts.plaintext) throw new Error("Plaintext is required.");
   if (!opts.recipientPublicKeys.length)
     throw new Error("At least one recipient public key is required.");
@@ -309,7 +321,10 @@ export async function encryptAndSign(opts: EncryptAndSignOptions): Promise<strin
 
   const signingKey =
     typeof opts.signerPrivateKey === "string"
-      ? await unlockPrivateKey(await readPrivateKey(opts.signerPrivateKey), opts.signerPassphrase)
+      ? await unlockPrivateKey(
+          await readPrivateKey(opts.signerPrivateKey),
+          opts.signerPassphrase,
+        )
       : opts.signerPrivateKey;
 
   const message = await openpgp.createMessage({ text: opts.plaintext });
@@ -328,7 +343,8 @@ export async function decryptAndVerify(
   opts: DecryptAndVerifyOptions,
 ): Promise<DecryptAndVerifyResult> {
   if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
-  if (!opts.decryptionPrivateKey) throw new Error("A decryption private key is required.");
+  if (!opts.decryptionPrivateKey)
+    throw new Error("A decryption private key is required.");
 
   // Accept either an armored string or an already-parsed PrivateKey object.
   const decryptionKey =
@@ -403,7 +419,9 @@ export async function decryptAndVerify(
  */
 export async function decryptAndAutoVerify(
   opts: DecryptAndVerifyOptions,
-  fetchKeysByKeyID: (keyIDs: string[]) => Promise<
+  fetchKeysByKeyID: (
+    keyIDs: string[],
+  ) => Promise<
     Array<{
       armored: string;
       keyID: string;
@@ -423,7 +441,8 @@ export async function decryptAndAutoVerify(
   }>;
 }> {
   if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
-  if (!opts.decryptionPrivateKey) throw new Error("A decryption private key is required.");
+  if (!opts.decryptionPrivateKey)
+    throw new Error("A decryption private key is required.");
 
   // Accept either an armored string or an already-parsed PrivateKey object.
   const decryptionKey =
@@ -453,7 +472,9 @@ export async function decryptAndAutoVerify(
   }
 
   // Collect unique key IDs.
-  const keyIDs = Array.from(new Set(initialSigs.map((s) => keyIDToHex(s.keyID)).filter(Boolean)));
+  const keyIDs = Array.from(
+    new Set(initialSigs.map((s) => keyIDToHex(s.keyID)).filter(Boolean)),
+  );
 
   // Fetch the corresponding public keys.
   const fetched = keyIDs.length > 0 ? await fetchKeysByKeyID(keyIDs) : [];
@@ -519,7 +540,9 @@ export async function decryptAndAutoVerify(
         error = msg;
       }
       // Find the matching fetched key for fingerprint + username.
-      const match = fetched.find((f) => f.allKeyIDs?.includes(keyID.toUpperCase()));
+      const match = fetched.find((f) =>
+        f.allKeyIDs?.includes(keyID.toUpperCase()),
+      );
       return {
         keyID,
         fingerprint: match?.fingerprint,
@@ -539,7 +562,10 @@ export async function signMessage(opts: SignOptions): Promise<string> {
 
   const signingKey =
     typeof opts.privateKey === "string"
-      ? await unlockPrivateKey(await readPrivateKey(opts.privateKey), opts.passphrase)
+      ? await unlockPrivateKey(
+          await readPrivateKey(opts.privateKey),
+          opts.passphrase,
+        )
       : opts.privateKey;
 
   if (opts.detached) {
@@ -616,13 +642,7 @@ export async function verifyMessage(opts: VerifyOptions): Promise<VerifyResult> 
 }
 
 async function buildVerifyResult(
-  result: {
-    signatures: {
-      keyID: openpgp.KeyID;
-      verified: Promise<true>;
-      signature: Promise<openpgp.Signature>;
-    }[];
-  },
+  result: { signatures: { keyID: openpgp.KeyID; verified: Promise<true>; signature: Promise<openpgp.Signature> }[] },
   verificationKeys: openpgp.PublicKey[],
 ): Promise<VerifyResult> {
   const fpByKeyID = new Map<string, string>();
@@ -656,11 +676,12 @@ async function buildVerifyResult(
     }),
   );
 
-  const overall = signatures.find((s) => s.verified === "valid")
-    ? "valid"
-    : signatures.find((s) => s.verified === "invalid")
-      ? "invalid"
-      : "unknown";
+  const overall =
+    signatures.find((s) => s.verified === "valid")
+      ? "valid"
+      : signatures.find((s) => s.verified === "invalid")
+        ? "invalid"
+        : "unknown";
 
   return { verified: overall, signatures };
 }
@@ -775,7 +796,9 @@ export async function verifyAutoDetect(
 export async function verifyAutoDetectWithKeyFetch(
   armored: string,
   plaintext: string | undefined,
-  fetchKeysByKeyID: (keyIDs: string[]) => Promise<
+  fetchKeysByKeyID: (
+    keyIDs: string[],
+  ) => Promise<
     Array<{
       armored: string;
       keyID: string;
@@ -813,17 +836,13 @@ export async function verifyAutoDetectWithKeyFetch(
   }
 
   if (format === "detached-signature" && !plaintext) {
-    throw new Error("A detached signature was detected. Please paste the original plaintext too.");
+    throw new Error(
+      "A detached signature was detected. Please paste the original plaintext too.",
+    );
   }
 
   // First pass: parse + extract signature key IDs without verification.
-  let initialResult: {
-    signatures: {
-      keyID: openpgp.KeyID;
-      verified: Promise<true>;
-      signature: Promise<openpgp.Signature>;
-    }[];
-  };
+  let initialResult: { signatures: { keyID: openpgp.KeyID; verified: Promise<true>; signature: Promise<openpgp.Signature> }[] };
   if (format === "detached-signature") {
     const message = await openpgp.createMessage({ text: plaintext as string });
     const signature = await openpgp.readSignature({ armoredSignature: armored });
@@ -864,12 +883,7 @@ export async function verifyAutoDetectWithKeyFetch(
       // If verification throws because no keys were provided, fall back to
       // extracting signature key IDs from the cleartext message's signature
       // packets directly.
-      const sigs =
-        (
-          cleartext as unknown as {
-            signatures?: Array<{ keyID: openpgp.KeyID; signature: Promise<openpgp.Signature> }>;
-          }
-        ).signatures ?? [];
+      const sigs = (cleartext as unknown as { signatures?: Array<{ keyID: openpgp.KeyID; signature: Promise<openpgp.Signature> }> }).signatures ?? [];
       initialResult = {
         signatures: sigs.map((s) => ({
           keyID: s.keyID,
@@ -886,7 +900,9 @@ export async function verifyAutoDetectWithKeyFetch(
   }
 
   // Collect unique key IDs and fetch the corresponding public keys.
-  const keyIDs = Array.from(new Set(initialSigs.map((s) => keyIDToHex(s.keyID)).filter(Boolean)));
+  const keyIDs = Array.from(
+    new Set(initialSigs.map((s) => keyIDToHex(s.keyID)).filter(Boolean)),
+  );
   const fetched = keyIDs.length > 0 ? await fetchKeysByKeyID(keyIDs) : [];
 
   if (fetched.length === 0) {
@@ -910,13 +926,7 @@ export async function verifyAutoDetectWithKeyFetch(
     }
   }
 
-  let verifiedResult: {
-    signatures: {
-      keyID: openpgp.KeyID;
-      verified: Promise<true>;
-      signature: Promise<openpgp.Signature>;
-    }[];
-  };
+  let verifiedResult: { signatures: { keyID: openpgp.KeyID; verified: Promise<true>; signature: Promise<openpgp.Signature> }[] };
   if (format === "detached-signature") {
     const message = await openpgp.createMessage({ text: plaintext as string });
     const signature = await openpgp.readSignature({ armoredSignature: armored });
@@ -952,7 +962,9 @@ export async function verifyAutoDetectWithKeyFetch(
         }
         error = msg;
       }
-      const match = fetched.find((f) => f.allKeyIDs?.includes(keyID.toUpperCase()));
+      const match = fetched.find((f) =>
+        f.allKeyIDs?.includes(keyID.toUpperCase()),
+      );
       return {
         keyID,
         fingerprint: match?.fingerprint,
@@ -963,11 +975,12 @@ export async function verifyAutoDetectWithKeyFetch(
     }),
   );
 
-  const overall = finalSigs.find((s) => s.verified === "valid")
-    ? "valid"
-    : finalSigs.find((s) => s.verified === "invalid")
-      ? "invalid"
-      : "unknown";
+  const overall =
+    finalSigs.find((s) => s.verified === "valid")
+      ? "valid"
+      : finalSigs.find((s) => s.verified === "invalid")
+        ? "invalid"
+        : "unknown";
 
   return { verified: overall, signatures: finalSigs };
 }

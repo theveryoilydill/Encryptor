@@ -1,11 +1,11 @@
 allowBuilds:
-  "@parcel/watcher": true
-  "@prisma/engines": true
-  "@swc/core": true
+  '@parcel/watcher': true
+  '@prisma/engines': true
+  '@swc/core': true
   esbuild: set this to true or false
   prisma: true
   sharp: true
   unrs-resolver: true
   workerd: set this to true or false
 minimumReleaseAgeExclude:
-  - "@hookform/resolvers@5.7.0"
+  - '@hookform/resolvers@5.7.0'

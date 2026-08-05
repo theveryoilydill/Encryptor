@@ -31,15 +31,15 @@ does not set CORS headers. The Worker is stateless and caches responses for
 
 ## Tech stack
 
-| Library                  | Version | Purpose                                    |
-| ------------------------ | ------- | ------------------------------------------ |
-| react-router             | ^8.3    | File-based routes + SSR loaders on Workers |
-| @react-router/cloudflare | ^8.3    | Cloudflare Workers adapter                 |
-| @cloudflare/vite-plugin  | ^1.49   | Workers build pipeline                     |
-| openpgp                  | ^6.3    | PGP crypto (browser + Worker)              |
-| tailwindcss              | ^4      | Styling                                    |
-| vite                     | ^8      | Build tool                                 |
-| wrangler                 | ^4.116  | Cloudflare Workers CLI                     |
+| Library | Version | Purpose |
+| ------- | ------- | ------- |
+| react-router | ^8.3 | File-based routes + SSR loaders on Workers |
+| @react-router/cloudflare | ^8.3 | Cloudflare Workers adapter |
+| @cloudflare/vite-plugin | ^1.49 | Workers build pipeline |
+| openpgp | ^6.3 | PGP crypto (browser + Worker) |
+| tailwindcss | ^4 | Styling |
+| vite | ^8 | Build tool |
+| wrangler | ^4.116 | Cloudflare Workers CLI |
 
 ## Develop
 

@@ -27,6 +27,9 @@ export async function GET(req: NextRequest) {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 502 });
+    return NextResponse.json(
+      { error: (e as Error).message },
+      { status: 502 },
+    );
   }
 }

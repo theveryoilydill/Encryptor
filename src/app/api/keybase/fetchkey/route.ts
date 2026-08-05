@@ -16,7 +16,10 @@ export async function GET(req: NextRequest) {
     .filter(Boolean);
 
   if (keyIDs.length === 0) {
-    return NextResponse.json({ error: "Missing 'key_id' query parameter" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing 'key_id' query parameter" },
+      { status: 400 },
+    );
   }
   if (keyIDs.length > 50) {
     return NextResponse.json(
@@ -32,6 +35,9 @@ export async function GET(req: NextRequest) {
       { headers: { "Cache-Control": "public, max-age=300, s-maxage=600" } },
     );
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 502 });
+    return NextResponse.json(
+      { error: (e as Error).message },
+      { status: 502 },
+    );
   }
 }

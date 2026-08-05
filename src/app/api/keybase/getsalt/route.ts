@@ -34,7 +34,10 @@ export async function POST(req: NextRequest) {
       headers: { Accept: "application/json", "User-Agent": "encryptor/1.0" },
     });
     if (!res.ok) {
-      return NextResponse.json({ error: `Keybase returned HTTP ${res.status}` }, { status: 502 });
+      return NextResponse.json(
+        { error: `Keybase returned HTTP ${res.status}` },
+        { status: 502 },
+      );
     }
     const data = (await res.json()) as {
       status: { code: number; name: string; desc?: string };

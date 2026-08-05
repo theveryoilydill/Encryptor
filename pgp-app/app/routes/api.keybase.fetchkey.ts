@@ -17,7 +17,10 @@ export async function loader({ request }: Route.LoaderArgs) {
     .filter(Boolean);
 
   if (keyIDs.length === 0) {
-    return Response.json({ error: "Missing 'key_id' query parameter" }, { status: 400 });
+    return Response.json(
+      { error: "Missing 'key_id' query parameter" },
+      { status: 400 },
+    );
   }
   if (keyIDs.length > 50) {
     return Response.json(
@@ -33,6 +36,9 @@ export async function loader({ request }: Route.LoaderArgs) {
       { headers: { "Cache-Control": "public, max-age=300, s-maxage=600" } },
     );
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 502 });
+    return Response.json(
+      { error: (e as Error).message },
+      { status: 502 },
+    );
   }
 }

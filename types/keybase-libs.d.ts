@@ -12,10 +12,7 @@ declare module "kbpgp" {
         cb: (err: Error | null, km: KeyManager) => void,
       ): void;
       make_sig_eng(): SigEng;
-      export_public(
-        opts: unknown,
-        cb: (err: Error | null, kid: string) => void,
-      ): void;
+      export_public(opts: unknown, cb: (err: Error | null, kid: string) => void): void;
       get_pgp_fingerprint(): string;
     }
     interface SigEng {
@@ -66,7 +63,7 @@ declare module "triplesec" {
     length: number;
   }
   export class Encryptor {
-    constructor(opts: { key: Buffer });
+    constructor(opts: { key: Buffer; version?: number });
     set_key(key: Buffer): void;
     resalt(
       opts: {
@@ -77,8 +74,22 @@ declare module "triplesec" {
       cb: (err: Error | null, keys: { extra: Buffer }) => void,
     ): void;
   }
-  export function scrypt(
-    opts: unknown,
-    cb: (err: Error | null, result: unknown) => void,
-  ): void;
+  export function scrypt(opts: unknown, cb: (err: Error | null, result: unknown) => void): void;
+}
+
+/**
+ * Ambient OpenPGP namespace so existing call sites can reference
+ * `OpenPGP.PrivateKey` / `OpenPGP.PublicKey` / `OpenPGP.Key` as types
+ * without an explicit `import * as OpenPGP from "openpgp"` at the top of
+ * every file. The actual runtime values still come from the real openpgp
+ * module imported by `@/lib/pgp/pgp`.
+ */
+declare namespace OpenPGP {
+  type PrivateKey = import("openpgp").PrivateKey;
+  type PublicKey = import("openpgp").PublicKey;
+  type Key = import("openpgp").Key;
+  type KeyID = import("openpgp").KeyID;
+  type Signature = import("openpgp").Signature;
+  type CleartextMessage = import("openpgp").CleartextMessage;
+  type Message<T extends string | Uint8Array = string | Uint8Array> = import("openpgp").Message<T>;
 }

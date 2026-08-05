@@ -67,14 +67,10 @@ async function fetchKeysFromAllSources(
   opgProxy: string,
 ): Promise<KeybaseKeyByIDResult[]> {
   // Try Keybase first.
-  const keybaseResults = await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(
-    () => [],
-  );
+  const keybaseResults = await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(() => []);
 
   // Find key IDs that Keybase didn't resolve.
-  const foundKeyIDs = new Set(
-    keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]),
-  );
+  const foundKeyIDs = new Set(keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]));
   const missingKeyIDs = keyIDs.filter((id) => {
     const upper = id.toUpperCase();
     return !foundKeyIDs.has(upper) && !foundKeyIDs.has(upper.toLowerCase());
@@ -83,9 +79,7 @@ async function fetchKeysFromAllSources(
   // Try keys.openpgp.org for the missing ones.
   const opgResults =
     missingKeyIDs.length > 0
-      ? await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(
-          () => [],
-        )
+      ? await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(() => [])
       : [];
 
   // Merge and deduplicate by fingerprint.
@@ -210,10 +204,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 
   return (
     <div className="min-h-screen flex flex-col bg-white text-neutral-900">
-      <Header
-        onConfigure={() => setConfigOpen(true)}
-        privateKey={privateKey}
-      />
+      <Header onConfigure={() => setConfigOpen(true)} privateKey={privateKey} />
 
       <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
         <Tabs value={tab} onChange={setTab} />
@@ -238,10 +229,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             />
           )}
           {tab === "sign" && (
-            <SignTab
-              privateKey={privateKey}
-              requestDecryptedKey={requestDecryptedKey}
-            />
+            <SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
           )}
           {tab === "verify" && <VerifyTab proxies={proxies} />}
         </div>
@@ -311,9 +299,7 @@ function Header({
           <KeyIcon />
           {privateKey ? (
             <span>
-              {privateKey.source === "keybase"
-                ? `@${privateKey.username}`
-                : privateKey.label}
+              {privateKey.source === "keybase" ? `@${privateKey.username}` : privateKey.label}
             </span>
           ) : (
             <span>Configure private key</span>
@@ -346,8 +332,8 @@ function Footer() {
   return (
     <footer className="mt-auto border-t border-neutral-200 bg-white">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-3 text-[11px] text-neutral-500">
-        All crypto runs in your browser. Keys and plaintext never touch our
-        servers — only Keybase username lookups are proxied.
+        All crypto runs in your browser. Keys and plaintext never touch our servers — only Keybase
+        username lookups are proxied.
       </div>
     </footer>
   );
@@ -363,11 +349,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
     { id: "verify", label: "Verify" },
   ];
   return (
-    <nav
-      className="flex border-b border-neutral-200"
-      role="tablist"
-      aria-label="Mode"
-    >
+    <nav className="flex border-b border-neutral-200" role="tablist" aria-label="Mode">
       {tabs.map((t) => {
         const active = t.id === value;
         return (
@@ -453,7 +435,9 @@ function EncryptTab({
       return;
     }
     if (!privateKey) {
-      setError("Configure your private key first (top-right button) to sign the encrypted message.");
+      setError(
+        "Configure your private key first (top-right button) to sign the encrypted message.",
+      );
       return;
     }
 
@@ -605,10 +589,7 @@ function RecipientPicker({
   // Click-outside to close suggestions
   useEffect(() => {
     function onClick(e: MouseEvent) {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setShowSuggestions(false);
       }
     }
@@ -623,10 +604,7 @@ function RecipientPicker({
       try {
         if (result.source === "keybase" && result.username) {
           // Fetch the full public key from Keybase
-          const r = await lookupKeybaseUsersClient(
-            [result.username],
-            keybaseProxy,
-          );
+          const r = await lookupKeybaseUsersClient([result.username], keybaseProxy);
           if (r.found.length === 0) {
             setError(`No Keybase key found for @${result.username}.`);
             return;
@@ -673,9 +651,7 @@ function RecipientPicker({
             ...prev,
             {
               source: "local",
-              label: result.fullName
-                ? `${result.fullName} <${result.email}>`
-                : result.label,
+              label: result.fullName ? `${result.fullName} <${result.email}>` : result.label,
               armored: k.armored,
               fingerprint: k.fingerprint,
               keyID: k.keyID,
@@ -747,9 +723,7 @@ function RecipientPicker({
               className="inline-flex items-center gap-1.5 rounded-full border border-[#0055dc]/30 bg-[#0055dc]/5 pl-2.5 pr-1.5 py-1 text-xs"
               title={`${selfRecipient.label}\n${formatFingerprint(selfRecipient.fingerprint)}`}
             >
-              <span className="font-medium text-[#0055dc]">
-                {selfRecipient.label}
-              </span>
+              <span className="font-medium text-[#0055dc]">{selfRecipient.label}</span>
               <span className="text-[10px] text-[#0055dc]/70">auto</span>
             </li>
           )}
@@ -763,9 +737,7 @@ function RecipientPicker({
               <button
                 type="button"
                 onClick={() =>
-                  setRecipients((prev) =>
-                    prev.filter((p) => p.fingerprint !== r.fingerprint),
-                  )
+                  setRecipients((prev) => prev.filter((p) => p.fingerprint !== r.fingerprint))
                 }
                 className="ml-1 rounded-full text-neutral-400 hover:text-neutral-700"
                 aria-label={`Remove ${r.label}`}
@@ -819,31 +791,19 @@ function RecipientPicker({
                     }`}
                   >
                     {s.pictureUrl ? (
-                      <img
-                        src={s.pictureUrl}
-                        alt=""
-                        className="size-6 rounded-full object-cover"
-                      />
+                      <img src={s.pictureUrl} alt="" className="size-6 rounded-full object-cover" />
                     ) : (
                       <div className="size-6 rounded-full bg-neutral-200 grid place-items-center text-[10px] text-neutral-600 font-medium">
-                        {(s.username || s.fullName || s.label)
-                          .slice(0, 2)
-                          .toUpperCase()}
+                        {(s.username || s.fullName || s.label).slice(0, 2).toUpperCase()}
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium text-neutral-900 truncate">
-                        {s.label}
-                      </div>
+                      <div className="font-medium text-neutral-900 truncate">{s.label}</div>
                       {s.fullName && s.username && (
-                        <div className="text-[11px] text-neutral-500 truncate">
-                          {s.fullName}
-                        </div>
+                        <div className="text-[11px] text-neutral-500 truncate">{s.fullName}</div>
                       )}
                       {s.email && !s.username && (
-                        <div className="text-[11px] text-neutral-500 truncate">
-                          {s.email}
-                        </div>
+                        <div className="text-[11px] text-neutral-500 truncate">{s.email}</div>
                       )}
                     </div>
                     <span
@@ -851,9 +811,7 @@ function RecipientPicker({
                     >
                       {s.source}
                     </span>
-                    {alreadyAdded && (
-                      <span className="text-[10px] text-neutral-400">added</span>
-                    )}
+                    {alreadyAdded && <span className="text-[10px] text-neutral-400">added</span>}
                   </button>
                 </li>
               );
@@ -865,16 +823,14 @@ function RecipientPicker({
       {error && <p className="mt-1.5 text-[11px] text-red-600">{error}</p>}
 
       <p className="mt-1.5 text-[11px] text-neutral-500">
-        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name,
-        email, or Keybase username.
+        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name, email, or Keybase
+        username.
       </p>
 
       <ManualRecipientAdd
         onAdd={(r) =>
           setRecipients((prev) =>
-            prev.some((p) => p.fingerprint === r.fingerprint)
-              ? prev
-              : [...prev, r],
+            prev.some((p) => p.fingerprint === r.fingerprint) ? prev : [...prev, r],
           )
         }
       />
@@ -882,11 +838,7 @@ function RecipientPicker({
   );
 }
 
-function ManualRecipientAdd({
-  onAdd,
-}: {
-  onAdd: (r: Recipient) => void;
-}) {
+function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
   const [open, setOpen] = useState(false);
   const [armored, setArmored] = useState("");
   const [busy, setBusy] = useState(false);
@@ -911,10 +863,7 @@ function ManualRecipientAdd({
       }
       onAdd({
         source: "local",
-        label:
-          v.info.userIDs[0]?.name ||
-          v.info.userIDs[0]?.email ||
-          "Pasted key",
+        label: v.info.userIDs[0]?.name || v.info.userIDs[0]?.email || "Pasted key",
         armored: armored.trim(),
         fingerprint: v.info.fingerprint,
         keyID: v.info.keyID,
@@ -944,7 +893,9 @@ function ManualRecipientAdd({
           <Textarea
             value={armored}
             onChange={setArmored}
-            placeholder={"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"}
+            placeholder={
+              "-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"
+            }
             rows={5}
           />
           {error && <ErrorBanner message={error} />}
@@ -1057,9 +1008,7 @@ function DecryptTab({
 
       {output && (
         <div className="space-y-4">
-          {output.signatures.length > 0 && (
-            <SignerBadges signatures={output.signatures} />
-          )}
+          {output.signatures.length > 0 && <SignerBadges signatures={output.signatures} />}
           <OutputBlock
             title="Decrypted message"
             output={output.plaintext}
@@ -1122,9 +1071,7 @@ function SignerBadges({
               >
                 {label}
               </span>
-              <span className="text-[11px] text-neutral-500 font-mono ml-auto">
-                {s.keyID}
-              </span>
+              <span className="text-[11px] text-neutral-500 font-mono ml-auto">{s.keyID}</span>
             </li>
           );
         })}
@@ -1250,11 +1197,7 @@ function SignTab({
 
 /* ---------------------------------- Verify --------------------------------- */
 
-function VerifyTab({
-  proxies,
-}: {
-  proxies: { fetchkeyProxy: string; fetchkeyOpgProxy: string };
-}) {
+function VerifyTab({ proxies }: { proxies: { fetchkeyProxy: string; fetchkeyOpgProxy: string } }) {
   const [armored, setArmored] = useState("");
   const [plaintext, setPlaintext] = useState("");
   const [detected, setDetected] = useState<string | null>(null);
@@ -1333,18 +1276,14 @@ function VerifyTab({
         />
         {detected && (
           <p className="mt-1.5 text-[11px] text-neutral-500">
-            Detected format:{" "}
-            <span className="font-medium text-neutral-700">{detected}</span>
+            Detected format: <span className="font-medium text-neutral-700">{detected}</span>
             {detected === "encrypted-message" && (
-              <span className="ml-1">
-                — switch to the Decrypt tab to decrypt and verify.
-              </span>
+              <span className="ml-1">— switch to the Decrypt tab to decrypt and verify.</span>
             )}
           </p>
         )}
         <p className="mt-1.5 text-[11px] text-neutral-500">
-          The signer's public key is fetched automatically from Keybase by the
-          signature's key ID.
+          The signer's public key is fetched automatically from Keybase by the signature's key ID.
         </p>
       </div>
 
@@ -1390,9 +1329,7 @@ function VerifyTab({
             ) : result.verified === "invalid" ? (
               <span className="text-red-700">✗ Signature is invalid</span>
             ) : (
-              <span className="text-neutral-700">
-                ? Signature could not be verified
-              </span>
+              <span className="text-neutral-700">? Signature could not be verified</span>
             )}
           </div>
           {result.signatures.length > 0 && (
@@ -1461,8 +1398,7 @@ function OutputBlock({
         {!nukeConfirmed ? (
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-amber-800">
-              Your input is still in memory. Nuke it now to make sure only the
-              output remains.
+              Your input is still in memory. Nuke it now to make sure only the output remains.
             </p>
             <button
               onClick={onNuke}
@@ -1557,10 +1493,7 @@ function PassphrasePrompt({
         if (info.ok && info.info && onKeyUpdated) {
           const oldInfo = config.info;
           const newInfo = info.info;
-          if (
-            oldInfo.fingerprint !== newInfo.fingerprint ||
-            oldInfo.keyID !== newInfo.keyID
-          ) {
+          if (oldInfo.fingerprint !== newInfo.fingerprint || oldInfo.keyID !== newInfo.keyID) {
             onKeyUpdated({ ...config, info: newInfo });
           }
         }
@@ -1574,10 +1507,7 @@ function PassphrasePrompt({
         if (!key.isPrivate()) {
           throw new Error("Stored key is not a private key.");
         }
-        const decrypted = await unlockPrivateKey(
-          key as OpenPGP.PrivateKey,
-          passphrase,
-        );
+        const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
         onResolve(decrypted);
       }
     } catch (e) {
@@ -1629,9 +1559,7 @@ function PassphrasePrompt({
               disabled={busy}
             />
             {error && <ErrorBanner message={error} />}
-            {busy && stage && (
-              <p className="text-[11px] text-neutral-500">{stage}</p>
-            )}
+            {busy && stage && <p className="text-[11px] text-neutral-500">{stage}</p>}
             <div className="flex gap-2 pt-1">
               <Button onClick={handleSubmit} disabled={busy} variant="primary" full>
                 {busy ? "Working…" : "Decrypt & continue"}
@@ -1647,13 +1575,7 @@ function PassphrasePrompt({
   );
 }
 
-function ConfigureModal({
-  onClose,
-  privateKey,
-  onSave,
-  onClear,
-  proxies,
-}: ConfigureModalProps) {
+function ConfigureModal({ onClose, privateKey, onSave, onClear, proxies }: ConfigureModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 sm:p-8 overflow-auto">
       <div className="w-full max-w-lg rounded-lg bg-white shadow-xl my-8">
@@ -1671,9 +1593,7 @@ function ConfigureModal({
         <div className="px-5 py-4 max-h-[80vh] overflow-y-auto">
           {privateKey && (
             <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-              <div className="text-xs font-medium text-emerald-800 mb-1">
-                Currently configured
-              </div>
+              <div className="text-xs font-medium text-emerald-800 mb-1">Currently configured</div>
               <div className="text-sm text-emerald-900">
                 {privateKey.source === "keybase"
                   ? `@${privateKey.username} (via Keybase login)`
@@ -1684,19 +1604,13 @@ function ConfigureModal({
                   {formatFingerprint(privateKey.info.fingerprint)}
                 </div>
               )}
-              <button
-                onClick={onClear}
-                className="mt-2 text-[11px] text-red-600 hover:underline"
-              >
+              <button onClick={onClear} className="mt-2 text-[11px] text-red-600 hover:underline">
                 Clear / log out
               </button>
             </div>
           )}
 
-          <KeybaseLoginForm
-            proxies={proxies}
-            onLoaded={(cfg) => onSave(cfg)}
-          />
+          <KeybaseLoginForm proxies={proxies} onLoaded={(cfg) => onSave(cfg)} />
 
           <hr className="my-4 border-neutral-200" />
 
@@ -1748,14 +1662,10 @@ function KeybaseLoginForm({
       await new Promise((r) => setTimeout(r, 50));
 
       setStage("Logging in to Keybase…");
-      const { me, privateKey: decrypted } = await loginWithPassword(
-        username,
-        password,
-        {
-          getsaltUrl: proxies.getsaltProxy,
-          loginUrl: proxies.loginProxy,
-        },
-      );
+      const { me, privateKey: decrypted } = await loginWithPassword(username, password, {
+        getsaltUrl: proxies.getsaltProxy,
+        loginUrl: proxies.loginProxy,
+      });
 
       if (!me.private_key_bundle) {
         throw new Error(
@@ -1789,14 +1699,12 @@ function KeybaseLoginForm({
 
   return (
     <div>
-      <div className="text-sm font-semibold text-neutral-900 mb-1">
-        Log in with Keybase
-      </div>
+      <div className="text-sm font-semibold text-neutral-900 mb-1">Log in with Keybase</div>
       <p className="text-[11px] text-neutral-500 mb-3">
-        Your password is used to derive the PGP passphrase via scrypt and never
-        leaves your browser. We fetch your private key bundle from{" "}
-        <code className="text-neutral-700">keybase.io/_/api/1.0/me.json</code>{" "}
-        and decrypt it locally.
+        Your password is used to derive the PGP passphrase via scrypt and never leaves your browser.
+        We fetch your private key bundle from{" "}
+        <code className="text-neutral-700">keybase.io/_/api/1.0/me.json</code> and decrypt it
+        locally.
       </p>
       <div className="space-y-2">
         <input
@@ -1818,9 +1726,7 @@ function KeybaseLoginForm({
           disabled={busy}
         />
         {error && <ErrorBanner message={error} />}
-        {busy && stage && (
-          <p className="text-[11px] text-neutral-500">{stage}</p>
-        )}
+        {busy && stage && <p className="text-[11px] text-neutral-500">{stage}</p>}
         <Button onClick={handleLogin} disabled={busy} variant="primary" full>
           {busy ? "Working…" : "Log in & load private key"}
         </Button>
@@ -1829,11 +1735,7 @@ function KeybaseLoginForm({
   );
 }
 
-function ManualKeyForm({
-  onLoaded,
-}: {
-  onLoaded: (cfg: PrivateKeyConfig) => void;
-}) {
+function ManualKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void }) {
   const [armored, setArmored] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1859,10 +1761,7 @@ function ManualKeyForm({
       // Store ONLY the ENCRYPTED armored key. The passphrase is NOT stored.
       onLoaded({
         source: "manual",
-        label:
-          v.info.userIDs[0]?.name ||
-          v.info.userIDs[0]?.email ||
-          "Pasted private key",
+        label: v.info.userIDs[0]?.name || v.info.userIDs[0]?.email || "Pasted private key",
         encryptedArmored: armored.trim(),
         info: v.info,
       });
@@ -1875,9 +1774,7 @@ function ManualKeyForm({
 
   return (
     <div>
-      <div className="text-sm font-semibold text-neutral-900 mb-1">
-        Paste a private key
-      </div>
+      <div className="text-sm font-semibold text-neutral-900 mb-1">Paste a private key</div>
       <p className="text-[11px] text-neutral-500 mb-3">
         Use this if you already have an armored PGP private key block.
       </p>
@@ -1885,7 +1782,9 @@ function ManualKeyForm({
         <Textarea
           value={armored}
           onChange={setArmored}
-          placeholder={"-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"}
+          placeholder={
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"
+          }
           rows={5}
         />
         <input
@@ -1905,11 +1804,7 @@ function ManualKeyForm({
   );
 }
 
-function GenerateKeyForm({
-  onLoaded,
-}: {
-  onLoaded: (cfg: PrivateKeyConfig) => void;
-}) {
+function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -1932,8 +1827,7 @@ function GenerateKeyForm({
         rsaBits: type === "rsa" ? bits : undefined,
         expirationSeconds: 0,
       });
-      const label =
-        name || email || (type === "ecc" ? "ECC key" : "RSA key");
+      const label = name || email || (type === "ecc" ? "ECC key" : "RSA key");
       // Store ONLY the ENCRYPTED armored private key. The passphrase is
       // NOT stored — it will be re-requested at operation time.
       onLoaded({
@@ -1953,9 +1847,7 @@ function GenerateKeyForm({
     <details className="group">
       <summary className="cursor-pointer text-sm font-semibold text-neutral-900 select-none">
         Generate a new local key{" "}
-        <span className="text-[11px] text-neutral-500 font-normal">
-          (advanced)
-        </span>
+        <span className="text-[11px] text-neutral-500 font-normal">(advanced)</span>
       </summary>
       <div className="mt-3 space-y-2">
         <div className="grid grid-cols-2 gap-2">
@@ -2006,9 +1898,7 @@ function GenerateKeyForm({
           ) : (
             <select
               value={bits}
-              onChange={(e) =>
-                setBits(Number(e.target.value) as 2048 | 3072 | 4096)
-              }
+              onChange={(e) => setBits(Number(e.target.value) as 2048 | 3072 | 4096)}
               className="rounded-md border border-neutral-300 bg-white px-2 py-1.5"
             >
               <option value={2048}>2048</option>

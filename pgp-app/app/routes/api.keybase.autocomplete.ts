@@ -18,9 +18,6 @@ export async function loader({ request }: Route.LoaderArgs) {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (e) {
-    return Response.json(
-      { error: (e as Error).message },
-      { status: 502 },
-    );
+    return Response.json({ error: (e as Error).message }, { status: 502 });
   }
 }

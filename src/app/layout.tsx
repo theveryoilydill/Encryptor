@@ -14,24 +14,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Encryptor - AI-Powered Development",
+  title: "Encryptor",
   description: "Use public PGP registries to encrypt messages to friends.",
-  keywords: ["PGP", "encryption", "gyatt"],
-  authors: [{ name: "Z.ai Team" }],
-  /*icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
-  },*/
+  keywords: ["PGP", "encryption", "encryptor"],
+  authors: [{ name: "Encryptor" }],
+  icons: {
+    icon: "/logo.svg",
+  },
   openGraph: {
     title: "Encryptor",
-    description: "AI-powered development with modern React stack",
+    description: "Browser-based PGP encryption with Keybase lookup.",
     url: "https://example.com",
-    siteName: "Z.ai",
+    siteName: "Encryptor",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
+    title: "Encryptor",
+    description: "Browser-based PGP encryption with Keybase lookup.",
   },
 };
 

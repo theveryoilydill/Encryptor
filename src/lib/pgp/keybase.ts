@@ -203,9 +203,7 @@ export async function lookupKeybaseUsersClient(
   usernames: string[],
   proxyUrl = "/api/keybase",
 ): Promise<KeybaseLookupResult> {
-  const cleaned = usernames
-    .map((u) => u.trim().toLowerCase())
-    .filter((u) => u.length > 0);
+  const cleaned = usernames.map((u) => u.trim().toLowerCase()).filter((u) => u.length > 0);
 
   if (cleaned.length === 0) {
     return { found: [], missing: [], errors: [] };
@@ -296,9 +294,7 @@ export async function fetchKeyByKeyIDServer(
   keyIDs: string[],
   fetchImpl: typeof fetch = fetch,
 ): Promise<KeybaseKeyByIDResult[]> {
-  const cleaned = keyIDs
-    .map((k) => k.trim().toLowerCase())
-    .filter((k) => k.length > 0);
+  const cleaned = keyIDs.map((k) => k.trim().toLowerCase()).filter((k) => k.length > 0);
   if (cleaned.length === 0) return [];
 
   const url = `https://keybase.io/_/api/1.0/key/fetch.json?pgp_key_ids=${encodeURIComponent(
@@ -329,9 +325,7 @@ export async function fetchKeyByKeyIDServer(
       const fp = (k.fingerprint ?? "").toUpperCase();
       const primaryKID = fp.length >= 16 ? fp.slice(fp.length - 16) : fp;
       // Collect all key IDs: primary key ID + all subkey IDs.
-      const subkeyIDs = k.subkeys
-        ? Object.keys(k.subkeys).map((sk) => sk.toUpperCase())
-        : [];
+      const subkeyIDs = k.subkeys ? Object.keys(k.subkeys).map((sk) => sk.toUpperCase()) : [];
       return {
         armored: k.bundle as string,
         fingerprint: fp,
@@ -396,9 +390,7 @@ export async function fetchKeyFromOpenPGP_orgServer(
   keyIDs: string[],
   fetchImpl: typeof fetch = fetch,
 ): Promise<KeybaseKeyByIDResult[]> {
-  const cleaned = keyIDs
-    .map((k) => k.trim().toUpperCase())
-    .filter((k) => k.length > 0);
+  const cleaned = keyIDs.map((k) => k.trim().toUpperCase()).filter((k) => k.length > 0);
   if (cleaned.length === 0) return [];
 
   const results: KeybaseKeyByIDResult[] = [];
@@ -433,10 +425,7 @@ export async function fetchKeyFromOpenPGP_orgServer(
       results.push({
         armored,
         fingerprint: fingerprint || keyID,
-        keyID:
-          fingerprint.length >= 16
-            ? fingerprint.slice(fingerprint.length - 16)
-            : keyID,
+        keyID: fingerprint.length >= 16 ? fingerprint.slice(fingerprint.length - 16) : keyID,
         allKeyIDs: Array.from(allKeyIDs),
         // keys.openpgp.org doesn't provide usernames — caller should show
         // the fingerprint/key ID instead.
@@ -628,13 +617,15 @@ async function searchOpenPGPOrg(
     if (!armored.includes("-----BEGIN PGP PUBLIC KEY BLOCK-----")) return [];
     const fpMatch = armored.match(/:fingerprint:\s*([0-9A-Fa-f]{40})/);
     const fp = fpMatch ? fpMatch[1].toUpperCase() : "";
-    return [{
-      source: "openpgp.org",
-      label: q,
-      email: q,
-      fingerprint: fp || undefined,
-      keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : undefined,
-    }];
+    return [
+      {
+        source: "openpgp.org",
+        label: q,
+        email: q,
+        fingerprint: fp || undefined,
+        keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : undefined,
+      },
+    ];
   } catch {
     return [];
   }

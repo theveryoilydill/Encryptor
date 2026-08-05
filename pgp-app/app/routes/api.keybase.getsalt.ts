@@ -35,10 +35,7 @@ export async function action({ request }: Route.ActionArgs) {
       headers: { Accept: "application/json", "User-Agent": "pgp-keybase-cloudflare/1.0" },
     });
     if (!res.ok) {
-      return Response.json(
-        { error: `Keybase returned HTTP ${res.status}` },
-        { status: 502 },
-      );
+      return Response.json({ error: `Keybase returned HTTP ${res.status}` }, { status: 502 });
     }
     const data = (await res.json()) as {
       status: { code: number; name: string; desc?: string };

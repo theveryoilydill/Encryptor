@@ -17,12 +17,29 @@ import {
   encryptAndSign,
   formatFingerprint,
   generateKeyPair,
+  readKey,
   signMessage,
+  unlockPrivateKey,
   validateArmoredKey,
   verifyAutoDetectWithKeyFetch,
   type AnyKeyInfo,
   type GeneratedKeyPair,
 } from "@/lib/pgp/pgp";
+import {
+  buildPlaintextForEncryption,
+  envelopeFileToDataUrl,
+  formatFileSize,
+  parseDecryptedPlaintext,
+  readFileAsBase64,
+  type EnvelopeFile,
+} from "@/lib/pgp/envelope";
+import { formatTimestamp, type SignerInfo } from "@/lib/pgp/signer-info";
+import {
+  base64ToUint8Array,
+  buildZipBundle,
+  downloadBlob,
+  zipFilename,
+} from "@/lib/pgp/zip-bundle";
 
 // In the Next.js preview, the Keybase proxies live under /api/keybase/*
 const PROXIES = {
@@ -53,14 +70,10 @@ async function fetchKeysFromAllSources(
   opgProxy: string,
 ): Promise<KeybaseKeyByIDResult[]> {
   // Try Keybase first.
-  const keybaseResults = await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(
-    () => [],
-  );
+  const keybaseResults = await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(() => []);
 
   // Find key IDs that Keybase didn't resolve.
-  const foundKeyIDs = new Set(
-    keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]),
-  );
+  const foundKeyIDs = new Set(keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]));
   const missingKeyIDs = keyIDs.filter((id) => {
     const upper = id.toUpperCase();
     return !foundKeyIDs.has(upper) && !foundKeyIDs.has(upper.toLowerCase());
@@ -69,9 +82,7 @@ async function fetchKeysFromAllSources(
   // Try keys.openpgp.org for the missing ones.
   const opgResults =
     missingKeyIDs.length > 0
-      ? await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(
-          () => [],
-        )
+      ? await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(() => [])
       : [];
 
   // Merge and deduplicate by fingerprint.
@@ -107,6 +118,22 @@ interface PrivateKeyConfig {
   encryptedArmored?: string;
   /** Key metadata for display (fingerprint, key ID, algorithm). */
   info: AnyKeyInfo;
+}
+
+/** Rich signer info extracted from a verified signature. Shared between
+ *  the Decrypt, Verify, and SignerBadges components. */
+interface SignatureInfo {
+  keyID: string;
+  fingerprint?: string;
+  username?: string;
+  verified: "valid" | "invalid" | "unknown";
+  error?: string;
+  name?: string;
+  email?: string;
+  comment?: string;
+  userID?: string;
+  allUserIDs?: string[];
+  timestampIso?: string;
 }
 
 const LS_KEY = "encryptor.config.v1";
@@ -188,10 +215,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col bg-white text-neutral-900">
-      <Header
-        onConfigure={() => setConfigOpen(true)}
-        privateKey={privateKey}
-      />
+      <Header onConfigure={() => setConfigOpen(true)} privateKey={privateKey} />
 
       <main className="flex-1 w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
         <Tabs value={tab} onChange={setTab} />
@@ -216,10 +240,7 @@ export default function Home() {
             />
           )}
           {tab === "sign" && (
-            <SignTab
-              privateKey={privateKey}
-              requestDecryptedKey={requestDecryptedKey}
-            />
+            <SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
           )}
           {tab === "verify" && <VerifyTab proxies={proxies} />}
         </div>
@@ -289,9 +310,7 @@ function Header({
           <KeyIcon />
           {privateKey ? (
             <span>
-              {privateKey.source === "keybase"
-                ? `@${privateKey.username}`
-                : privateKey.label}
+              {privateKey.source === "keybase" ? `@${privateKey.username}` : privateKey.label}
             </span>
           ) : (
             <span>Configure private key</span>
@@ -324,8 +343,8 @@ function Footer() {
   return (
     <footer className="mt-auto border-t border-neutral-200 bg-white">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-3 text-[11px] text-neutral-500">
-        All crypto runs in your browser. Keys and plaintext never touch our
-        servers — only Keybase username lookups are proxied.
+        All crypto runs in your browser. Keys and plaintext never touch our servers — only Keybase
+        username lookups are proxied.
       </div>
     </footer>
   );
@@ -341,11 +360,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
     { id: "verify", label: "Verify" },
   ];
   return (
-    <nav
-      className="flex border-b border-neutral-200"
-      role="tablist"
-      aria-label="Mode"
-    >
+    <nav className="flex border-b border-neutral-200" role="tablist" aria-label="Mode">
       {tabs.map((t) => {
         const active = t.id === value;
         return (
@@ -398,10 +413,12 @@ function EncryptTab({
   requestDecryptedKey,
 }: EncryptTabProps) {
   const [plaintext, setPlaintext] = useState("");
+  const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nukeConfirmed, setNukeConfirmed] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Derive the user's own public key from the configured private key.
   // Shown as a recipient chip when "Include me" is checked.
@@ -422,16 +439,67 @@ function EncryptTab({
     };
   }, [privateKey]);
 
+  const addFiles = useCallback(async (fileList: FileList | File[]) => {
+    setError(null);
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+    const MAX_SIZE = 25 * 1024 * 1024; // 25 MB hard limit per file
+    const newOnes: EnvelopeFile[] = [];
+    for (const f of files) {
+      if (f.size > MAX_SIZE) {
+        setError(`"${f.name}" is ${formatFileSize(f.size)} — max 25 MB per file.`);
+        continue;
+      }
+      try {
+        const data = await readFileAsBase64(f);
+        newOnes.push({
+          name: f.name || "unnamed",
+          type: f.type || "application/octet-stream",
+          data,
+          size: f.size,
+        });
+      } catch (e) {
+        setError(`Failed to read "${f.name}": ${(e as Error).message}`);
+      }
+    }
+    if (newOnes.length > 0) {
+      setAttachments((prev) => [...prev, ...newOnes]);
+    }
+  }, []);
+
+  // Image paste handler — intercepts pasted images and converts them to
+  // attachments instead of letting the binary leak into the textarea.
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageItems: DataTransferItem[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "file" && it.type.startsWith("image/")) {
+          imageItems.push(it);
+        }
+      }
+      if (imageItems.length === 0) return;
+      e.preventDefault();
+      const files = imageItems.map((it) => it.getAsFile()).filter((f): f is File => f !== null);
+      if (files.length > 0) void addFiles(files);
+    },
+    [addFiles],
+  );
+
   const handleEncrypt = useCallback(async () => {
     setError(null);
     setOutput("");
     setNukeConfirmed(false);
-    if (!plaintext.trim()) {
-      setError("Enter the message to encrypt.");
+    if (!plaintext.trim() && attachments.length === 0) {
+      setError("Enter a message to encrypt, or attach a file.");
       return;
     }
     if (!privateKey) {
-      setError("Configure your private key first (top-right button) to sign the encrypted message.");
+      setError(
+        "Configure your private key first (top-right button) to sign the encrypted message.",
+      );
       return;
     }
 
@@ -454,10 +522,13 @@ function EncryptTab({
         }
       }
 
+      // Wrap plaintext + attachments in the envelope wire format.
+      const plaintextForEncryption = buildPlaintextForEncryption(plaintext, attachments);
+
       // Pass the PrivateKey object directly to avoid re-armoring +
       // re-parsing, which can lose key material for Keybase P3SKB keys.
       const armored = await encryptAndSign({
-        plaintext,
+        plaintext: plaintextForEncryption,
         recipientPublicKeys: recipientKeys,
         signerPrivateKey: decryptedKey,
       });
@@ -467,7 +538,7 @@ function EncryptTab({
     } finally {
       setBusy(false);
     }
-  }, [plaintext, recipients, privateKey, includeSelf, requestDecryptedKey]);
+  }, [plaintext, attachments, recipients, privateKey, includeSelf, requestDecryptedKey]);
 
   return (
     <section className="space-y-4">
@@ -487,21 +558,40 @@ function EncryptTab({
         <Textarea
           value={plaintext}
           onChange={setPlaintext}
-          placeholder="Type the message you want to encrypt + sign."
+          onPaste={handlePaste}
+          placeholder="Type the message you want to encrypt + sign. You can paste images directly (Ctrl/Cmd+V)."
           rows={8}
-          disabled={!!output}
         />
+        <p className="mt-1.5 text-[11px] text-neutral-500">
+          Paste images directly into the box, or use “Add files” below to attach any file.
+          Attachments are encrypted alongside the message text.
+        </p>
       </div>
+
+      <AttachmentList
+        attachments={attachments}
+        onRemove={(idx) => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
+        onAddClick={() => fileInputRef.current?.click()}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files) void addFiles(e.target.files);
+          // reset so selecting the same file again still fires onChange
+          e.target.value = "";
+        }}
+      />
 
       {error && <ErrorBanner message={error} />}
 
-      {!output && (
-        <div className="flex gap-2">
-          <Button onClick={handleEncrypt} disabled={busy} variant="primary">
-            {busy ? "Encrypting…" : "Encrypt & sign"}
-          </Button>
-        </div>
-      )}
+      <div className="flex gap-2">
+        <Button onClick={handleEncrypt} disabled={busy} variant="primary">
+          {busy ? "Encrypting…" : output ? "Re-encrypt & sign" : "Encrypt & sign"}
+        </Button>
+      </div>
 
       {output && (
         <OutputBlock
@@ -511,13 +601,19 @@ function EncryptTab({
           nukeConfirmed={nukeConfirmed}
           onNuke={() => {
             setPlaintext("");
+            setAttachments([]);
             setNukeConfirmed(true);
           }}
           onReset={() => {
             setOutput("");
             setPlaintext("");
+            setAttachments([]);
             setNukeConfirmed(false);
             setError(null);
+          }}
+          zipBundle={{
+            operation: "encrypt",
+            files: attachments,
           }}
         />
       )}
@@ -583,10 +679,7 @@ function RecipientPicker({
   // Click-outside to close suggestions
   useEffect(() => {
     function onClick(e: MouseEvent) {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setShowSuggestions(false);
       }
     }
@@ -601,10 +694,7 @@ function RecipientPicker({
       try {
         if (result.source === "keybase" && result.username) {
           // Fetch the full public key from Keybase
-          const r = await lookupKeybaseUsersClient(
-            [result.username],
-            keybaseProxy,
-          );
+          const r = await lookupKeybaseUsersClient([result.username], keybaseProxy);
           if (r.found.length === 0) {
             setError(`No Keybase key found for @${result.username}.`);
             return;
@@ -651,9 +741,7 @@ function RecipientPicker({
             ...prev,
             {
               source: "local",
-              label: result.fullName
-                ? `${result.fullName} <${result.email}>`
-                : result.label,
+              label: result.fullName ? `${result.fullName} <${result.email}>` : result.label,
               armored: k.armored,
               fingerprint: k.fingerprint,
               keyID: k.keyID,
@@ -725,9 +813,7 @@ function RecipientPicker({
               className="inline-flex items-center gap-1.5 rounded-full border border-[#0055dc]/30 bg-[#0055dc]/5 pl-2.5 pr-1.5 py-1 text-xs"
               title={`${selfRecipient.label}\n${formatFingerprint(selfRecipient.fingerprint)}`}
             >
-              <span className="font-medium text-[#0055dc]">
-                {selfRecipient.label}
-              </span>
+              <span className="font-medium text-[#0055dc]">{selfRecipient.label}</span>
               <span className="text-[10px] text-[#0055dc]/70">auto</span>
             </li>
           )}
@@ -741,9 +827,7 @@ function RecipientPicker({
               <button
                 type="button"
                 onClick={() =>
-                  setRecipients((prev) =>
-                    prev.filter((p) => p.fingerprint !== r.fingerprint),
-                  )
+                  setRecipients((prev) => prev.filter((p) => p.fingerprint !== r.fingerprint))
                 }
                 className="ml-1 rounded-full text-neutral-400 hover:text-neutral-700"
                 aria-label={`Remove ${r.label}`}
@@ -797,31 +881,19 @@ function RecipientPicker({
                     }`}
                   >
                     {s.pictureUrl ? (
-                      <img
-                        src={s.pictureUrl}
-                        alt=""
-                        className="size-6 rounded-full object-cover"
-                      />
+                      <img src={s.pictureUrl} alt="" className="size-6 rounded-full object-cover" />
                     ) : (
                       <div className="size-6 rounded-full bg-neutral-200 grid place-items-center text-[10px] text-neutral-600 font-medium">
-                        {(s.username || s.fullName || s.label)
-                          .slice(0, 2)
-                          .toUpperCase()}
+                        {(s.username || s.fullName || s.label).slice(0, 2).toUpperCase()}
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="font-medium text-neutral-900 truncate">
-                        {s.label}
-                      </div>
+                      <div className="font-medium text-neutral-900 truncate">{s.label}</div>
                       {s.fullName && s.username && (
-                        <div className="text-[11px] text-neutral-500 truncate">
-                          {s.fullName}
-                        </div>
+                        <div className="text-[11px] text-neutral-500 truncate">{s.fullName}</div>
                       )}
                       {s.email && !s.username && (
-                        <div className="text-[11px] text-neutral-500 truncate">
-                          {s.email}
-                        </div>
+                        <div className="text-[11px] text-neutral-500 truncate">{s.email}</div>
                       )}
                     </div>
                     <span
@@ -829,9 +901,7 @@ function RecipientPicker({
                     >
                       {s.source}
                     </span>
-                    {alreadyAdded && (
-                      <span className="text-[10px] text-neutral-400">added</span>
-                    )}
+                    {alreadyAdded && <span className="text-[10px] text-neutral-400">added</span>}
                   </button>
                 </li>
               );
@@ -843,16 +913,14 @@ function RecipientPicker({
       {error && <p className="mt-1.5 text-[11px] text-red-600">{error}</p>}
 
       <p className="mt-1.5 text-[11px] text-neutral-500">
-        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name,
-        email, or Keybase username.
+        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name, email, or Keybase
+        username.
       </p>
 
       <ManualRecipientAdd
         onAdd={(r) =>
           setRecipients((prev) =>
-            prev.some((p) => p.fingerprint === r.fingerprint)
-              ? prev
-              : [...prev, r],
+            prev.some((p) => p.fingerprint === r.fingerprint) ? prev : [...prev, r],
           )
         }
       />
@@ -860,11 +928,7 @@ function RecipientPicker({
   );
 }
 
-function ManualRecipientAdd({
-  onAdd,
-}: {
-  onAdd: (r: Recipient) => void;
-}) {
+function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
   const [open, setOpen] = useState(false);
   const [armored, setArmored] = useState("");
   const [busy, setBusy] = useState(false);
@@ -889,10 +953,7 @@ function ManualRecipientAdd({
       }
       onAdd({
         source: "local",
-        label:
-          v.info.userIDs[0]?.name ||
-          v.info.userIDs[0]?.email ||
-          "Pasted key",
+        label: v.info.userIDs[0]?.name || v.info.userIDs[0]?.email || "Pasted key",
         armored: armored.trim(),
         fingerprint: v.info.fingerprint,
         keyID: v.info.keyID,
@@ -922,7 +983,9 @@ function ManualRecipientAdd({
           <Textarea
             value={armored}
             onChange={setArmored}
-            placeholder={"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"}
+            placeholder={
+              "-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"
+            }
             rows={5}
           />
           {error && <ErrorBanner message={error} />}
@@ -949,13 +1012,8 @@ function DecryptTab({
   const [armored, setArmored] = useState("");
   const [output, setOutput] = useState<{
     plaintext: string;
-    signatures: Array<{
-      keyID: string;
-      fingerprint?: string;
-      username?: string;
-      verified: "valid" | "invalid" | "unknown";
-      error?: string;
-    }>;
+    files: EnvelopeFile[];
+    signatures: SignatureInfo[];
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1002,7 +1060,15 @@ function DecryptTab({
           }));
         },
       );
-      setOutput(result);
+
+      // Detect whether the decrypted plaintext is an envelope (text + files)
+      // or a plain-text message from an older client.
+      const parsed = parseDecryptedPlaintext(result.plaintext);
+      setOutput({
+        plaintext: parsed.kind === "envelope" ? parsed.envelope.text : parsed.text,
+        files: parsed.kind === "envelope" ? parsed.envelope.files : [],
+        signatures: result.signatures,
+      });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1019,25 +1085,21 @@ function DecryptTab({
           onChange={setArmored}
           placeholder={"-----BEGIN PGP MESSAGE-----\n...\n-----END PGP MESSAGE-----"}
           rows={10}
-          disabled={!!output}
         />
       </div>
 
       {error && <ErrorBanner message={error} />}
 
-      {!output && (
-        <div className="flex gap-2">
-          <Button onClick={handleDecrypt} disabled={busy} variant="primary">
-            {busy ? "Decrypting…" : "Decrypt"}
-          </Button>
-        </div>
-      )}
+      <div className="flex gap-2">
+        <Button onClick={handleDecrypt} disabled={busy} variant="primary">
+          {busy ? "Decrypting…" : output ? "Re-decrypt" : "Decrypt"}
+        </Button>
+      </div>
 
       {output && (
         <div className="space-y-4">
-          {output.signatures.length > 0 && (
-            <SignerBadges signatures={output.signatures} />
-          )}
+          {output.signatures.length > 0 && <SignerBadges signatures={output.signatures} />}
+          {output.files.length > 0 && <FileDownloadList files={output.files} />}
           <OutputBlock
             title="Decrypted message"
             output={output.plaintext}
@@ -1053,6 +1115,11 @@ function DecryptTab({
               setNukeConfirmed(false);
               setError(null);
             }}
+            zipBundle={{
+              operation: "decrypt",
+              signers: output.signatures,
+              files: output.files,
+            }}
           />
         </div>
       )}
@@ -1060,23 +1127,13 @@ function DecryptTab({
   );
 }
 
-function SignerBadges({
-  signatures,
-}: {
-  signatures: Array<{
-    keyID: string;
-    fingerprint?: string;
-    username?: string;
-    verified: "valid" | "invalid" | "unknown";
-    error?: string;
-  }>;
-}) {
+function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
   return (
     <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2.5">
       <div className="text-[11px] font-medium uppercase tracking-wide text-neutral-500 mb-1.5">
         Signed by
       </div>
-      <ul className="space-y-1.5">
+      <ul className="space-y-2">
         {signatures.map((s, i) => {
           const color =
             s.verified === "valid"
@@ -1090,19 +1147,71 @@ function SignerBadges({
               : s.verified === "invalid"
                 ? "invalid signature"
                 : "unknown signer";
+          // Build the display name: prefer Keybase username, then full name,
+          // then email, then raw userID, then fall back to "Unknown key".
+          const displayName = s.username
+            ? `@${s.username}`
+            : s.name
+              ? s.name
+              : s.email
+                ? s.email
+                : s.userID
+                  ? s.userID
+                  : "Unknown key";
           return (
-            <li key={i} className="flex items-center gap-2 text-sm">
-              <span className="font-medium text-[#0055dc]">
-                {s.username ? `@${s.username}` : "Unknown key"}
-              </span>
-              <span
-                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${color}`}
-              >
-                {label}
-              </span>
-              <span className="text-[11px] text-neutral-500 font-mono ml-auto">
-                {s.keyID}
-              </span>
+            <li key={i} className="text-sm">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium text-[#0055dc]">{displayName}</span>
+                <span
+                  className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${color}`}
+                >
+                  {label}
+                </span>
+                <span className="text-[11px] text-neutral-500 font-mono ml-auto">{s.keyID}</span>
+              </div>
+              {/* Secondary info line: name + email + comment (if available and
+                  not already used as the display name). */}
+              {(s.name || s.email || s.comment) && !s.username && (
+                <div className="mt-0.5 text-[11px] text-neutral-600 flex flex-wrap gap-x-3">
+                  {s.name && <span>Name: {s.name}</span>}
+                  {s.email && (
+                    <span>
+                      Email:{" "}
+                      <a href={`mailto:${s.email}`} className="text-[#0055dc] hover:underline">
+                        {s.email}
+                      </a>
+                    </span>
+                  )}
+                  {s.comment && <span>Comment: {s.comment}</span>}
+                </div>
+              )}
+              {/* All user IDs (if the key has more than one). */}
+              {s.allUserIDs && s.allUserIDs.length > 1 && (
+                <details className="mt-1">
+                  <summary className="text-[10px] text-neutral-500 cursor-pointer hover:text-neutral-700">
+                    All user IDs ({s.allUserIDs.length})
+                  </summary>
+                  <ul className="mt-1 space-y-0.5 text-[11px] text-neutral-600 font-mono">
+                    {s.allUserIDs.map((uid, j) => (
+                      <li key={j} className="break-all">
+                        {uid}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {/* High-precision signing timestamp from the signature notation. */}
+              {s.timestampIso && (
+                <div className="mt-0.5 text-[11px] text-neutral-600">
+                  Signed at: <span className="font-mono">{formatTimestamp(s.timestampIso)}</span>
+                </div>
+              )}
+              {/* Fingerprint (if available). */}
+              {s.fingerprint && (
+                <div className="mt-0.5 text-[10px] text-neutral-500 font-mono break-all">
+                  {s.fingerprint}
+                </div>
+              )}
             </li>
           );
         })}
@@ -1125,12 +1234,10 @@ function SignTab({
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [nukeConfirmed, setNukeConfirmed] = useState(false);
 
   const handleSign = useCallback(async () => {
     setError(null);
     setOutput("");
-    setNukeConfirmed(false);
     if (!plaintext.trim()) {
       setError("Enter the text to sign.");
       return;
@@ -1169,7 +1276,6 @@ function SignTab({
           onChange={setPlaintext}
           placeholder="Paste the text you want to sign."
           rows={8}
-          disabled={!!output}
         />
       </div>
 
@@ -1196,29 +1302,23 @@ function SignTab({
 
       {error && <ErrorBanner message={error} />}
 
-      {!output && (
-        <div className="flex gap-2">
-          <Button onClick={handleSign} disabled={busy} variant="primary">
-            {busy ? "Signing…" : "Sign message"}
-          </Button>
-        </div>
-      )}
+      <div className="flex gap-2">
+        <Button onClick={handleSign} disabled={busy} variant="primary">
+          {busy ? "Signing…" : output ? "Re-sign message" : "Sign message"}
+        </Button>
+      </div>
 
       {output && (
         <OutputBlock
           title={detached ? "Detached signature" : "Cleartext signed message"}
           output={output}
-          nukeLabel="Nuke plaintext"
-          nukeConfirmed={nukeConfirmed}
-          onNuke={() => {
-            setPlaintext("");
-            setNukeConfirmed(true);
-          }}
           onReset={() => {
             setOutput("");
             setPlaintext("");
-            setNukeConfirmed(false);
             setError(null);
+          }}
+          zipBundle={{
+            operation: detached ? "sign-detached" : "sign-cleartext",
           }}
         />
       )}
@@ -1228,24 +1328,14 @@ function SignTab({
 
 /* ---------------------------------- Verify --------------------------------- */
 
-function VerifyTab({
-  proxies,
-}: {
-  proxies: { fetchkeyProxy: string; fetchkeyOpgProxy: string };
-}) {
+function VerifyTab({ proxies }: { proxies: { fetchkeyProxy: string; fetchkeyOpgProxy: string } }) {
   const [armored, setArmored] = useState("");
   const [plaintext, setPlaintext] = useState("");
   const [detected, setDetected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{
     verified: "valid" | "invalid" | "unknown";
-    signatures: Array<{
-      keyID: string;
-      fingerprint?: string;
-      username?: string;
-      verified: "valid" | "invalid" | "unknown";
-      error?: string;
-    }>;
+    signatures: SignatureInfo[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -1311,18 +1401,14 @@ function VerifyTab({
         />
         {detected && (
           <p className="mt-1.5 text-[11px] text-neutral-500">
-            Detected format:{" "}
-            <span className="font-medium text-neutral-700">{detected}</span>
+            Detected format: <span className="font-medium text-neutral-700">{detected}</span>
             {detected === "encrypted-message" && (
-              <span className="ml-1">
-                — switch to the Decrypt tab to decrypt and verify.
-              </span>
+              <span className="ml-1">— switch to the Decrypt tab to decrypt and verify.</span>
             )}
           </p>
         )}
         <p className="mt-1.5 text-[11px] text-neutral-500">
-          The signer's public key is fetched automatically from Keybase by the
-          signature's key ID.
+          The signer's public key is fetched automatically from Keybase by the signature's key ID.
         </p>
       </div>
 
@@ -1345,63 +1431,126 @@ function VerifyTab({
           {busy ? "Verifying…" : "Verify"}
         </Button>
         {(result || error) && (
-          <Button
-            onClick={() => {
-              setArmored("");
-              setPlaintext("");
-              setResult(null);
-              setError(null);
-              setDetected(null);
-            }}
-            variant="ghost"
-          >
-            Reset
-          </Button>
+          <>
+            <Button
+              onClick={() => {
+                setArmored("");
+                setPlaintext("");
+                setResult(null);
+                setError(null);
+                setDetected(null);
+              }}
+              variant="ghost"
+            >
+              Reset
+            </Button>
+            {result && (
+              <ZipDownloadButton
+                output={armored}
+                config={{
+                  operation: "verify",
+                  signers: result.signatures,
+                  verificationResult: result.verified,
+                }}
+              />
+            )}
+          </>
         )}
       </div>
 
       {result && (
-        <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3">
-          <div className="text-sm font-medium mb-2">
-            {result.verified === "valid" ? (
-              <span className="text-emerald-700">✓ Signature is valid</span>
-            ) : result.verified === "invalid" ? (
-              <span className="text-red-700">✗ Signature is invalid</span>
-            ) : (
-              <span className="text-neutral-700">
-                ? Signature could not be verified
-              </span>
+        <div className="space-y-3">
+          <div className="rounded-md border border-neutral-200 bg-neutral-50 px-4 py-3">
+            <div className="text-sm font-medium mb-2">
+              {result.verified === "valid" ? (
+                <span className="text-emerald-700">✓ Signature is valid</span>
+              ) : result.verified === "invalid" ? (
+                <span className="text-red-700">✗ Signature is invalid</span>
+              ) : (
+                <span className="text-neutral-700">? Signature could not be verified</span>
+              )}
+            </div>
+            {result.signatures.length > 0 && (
+              <ul className="space-y-2 text-xs">
+                {result.signatures.map((s, i) => {
+                  const color =
+                    s.verified === "valid"
+                      ? "text-emerald-700"
+                      : s.verified === "invalid"
+                        ? "text-red-700"
+                        : "text-neutral-600";
+                  const label =
+                    s.verified === "valid"
+                      ? "verified"
+                      : s.verified === "invalid"
+                        ? "invalid signature"
+                        : "unknown signer";
+                  const displayName = s.username
+                    ? `@${s.username}`
+                    : s.name
+                      ? s.name
+                      : s.email
+                        ? s.email
+                        : s.userID
+                          ? s.userID
+                          : "Unknown key";
+                  return (
+                    <li key={i} className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-[#0055dc]">{displayName}</span>
+                        <span className={`font-medium ${color}`}>{label}</span>
+                        <span className="text-[11px] text-neutral-500 font-mono ml-auto">
+                          {s.keyID}
+                        </span>
+                      </div>
+                      {(s.name || s.email || s.comment) && !s.username && (
+                        <div className="text-[11px] text-neutral-600 flex flex-wrap gap-x-3">
+                          {s.name && <span>Name: {s.name}</span>}
+                          {s.email && (
+                            <span>
+                              Email:{" "}
+                              <a
+                                href={`mailto:${s.email}`}
+                                className="text-[#0055dc] hover:underline"
+                              >
+                                {s.email}
+                              </a>
+                            </span>
+                          )}
+                          {s.comment && <span>Comment: {s.comment}</span>}
+                        </div>
+                      )}
+                      {s.allUserIDs && s.allUserIDs.length > 1 && (
+                        <details className="mt-0.5">
+                          <summary className="text-[10px] text-neutral-500 cursor-pointer hover:text-neutral-700">
+                            All user IDs ({s.allUserIDs.length})
+                          </summary>
+                          <ul className="mt-1 space-y-0.5 text-[11px] text-neutral-600 font-mono">
+                            {s.allUserIDs.map((uid, j) => (
+                              <li key={j} className="break-all">
+                                {uid}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
+                      {s.timestampIso && (
+                        <div className="text-[11px] text-neutral-600">
+                          Signed at:{" "}
+                          <span className="font-mono">{formatTimestamp(s.timestampIso)}</span>
+                        </div>
+                      )}
+                      {s.fingerprint && (
+                        <div className="text-[10px] text-neutral-500 font-mono break-all">
+                          {s.fingerprint}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             )}
           </div>
-          {result.signatures.length > 0 && (
-            <ul className="space-y-1.5 text-xs">
-              {result.signatures.map((s, i) => {
-                const color =
-                  s.verified === "valid"
-                    ? "text-emerald-700"
-                    : s.verified === "invalid"
-                      ? "text-red-700"
-                      : "text-neutral-600";
-                const label =
-                  s.verified === "valid"
-                    ? "verified"
-                    : s.verified === "invalid"
-                      ? "invalid signature"
-                      : "unknown signer";
-                return (
-                  <li key={i} className="flex items-center gap-2">
-                    <span className="font-medium text-[#0055dc]">
-                      {s.username ? `@${s.username}` : "Unknown key"}
-                    </span>
-                    <span className={`font-medium ${color}`}>{label}</span>
-                    <span className="text-[11px] text-neutral-500 font-mono ml-auto">
-                      {s.keyID}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
         </div>
       )}
     </section>
@@ -1410,6 +1559,135 @@ function VerifyTab({
 
 /* --------------------------- Output + nuke block --------------------------- */
 
+/** Render the list of files attached to an outgoing encrypted message. */
+function AttachmentList({
+  attachments,
+  onRemove,
+  onAddClick,
+}: {
+  attachments: EnvelopeFile[];
+  onRemove: (idx: number) => void;
+  onAddClick: () => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Button onClick={onAddClick} variant="default">
+          + Add files
+        </Button>
+        {attachments.length > 0 && (
+          <span className="text-[11px] text-neutral-500">
+            {attachments.length} file{attachments.length === 1 ? "" : "s"} ·{" "}
+            {formatFileSize(attachments.reduce((sum, f) => sum + f.size, 0))}
+          </span>
+        )}
+      </div>
+      {attachments.length > 0 && (
+        <ul className="flex flex-wrap gap-2">
+          {attachments.map((f, idx) => {
+            const isImage = f.type.startsWith("image/");
+            const previewUrl = isImage ? `data:${f.type};base64,${f.data}` : null;
+            return (
+              <li
+                key={`${f.name}-${idx}`}
+                className="group relative flex items-center gap-2 rounded-md border border-neutral-300 bg-white pl-2 pr-7 py-1.5 text-xs"
+                title={f.name}
+              >
+                {previewUrl ? (
+                  <img src={previewUrl} alt="" className="size-6 rounded object-cover" />
+                ) : (
+                  <div className="size-6 rounded bg-neutral-100 grid place-items-center text-[10px] font-medium text-neutral-500">
+                    {f.name.split(".").pop()?.toUpperCase().slice(0, 4) || "FILE"}
+                  </div>
+                )}
+                <div className="min-w-0 max-w-[180px]">
+                  <div className="truncate font-medium text-neutral-900">{f.name}</div>
+                  <div className="text-[10px] text-neutral-500">{formatFileSize(f.size)}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRemove(idx)}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-red-600 text-base leading-none"
+                  aria-label={`Remove ${f.name}`}
+                >
+                  ×
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Render the list of files extracted from a decrypted envelope. */
+function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
+  return (
+    <div className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2.5">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-neutral-500 mb-1.5">
+        Attached files ({files.length})
+      </div>
+      <ul className="space-y-1.5">
+        {files.map((f, i) => {
+          const isImage = f.type.startsWith("image/");
+          const url = envelopeFileToDataUrl(f);
+          return (
+            <li key={i} className="flex items-center gap-2.5 text-sm">
+              {isImage ? (
+                <a
+                  href={url}
+                  download={f.name}
+                  className="flex items-center gap-2.5 hover:underline"
+                >
+                  <img
+                    src={url}
+                    alt={f.name}
+                    className="size-8 rounded object-cover border border-neutral-200"
+                  />
+                  <span className="font-medium text-[#0055dc]">{f.name}</span>
+                </a>
+              ) : (
+                <a
+                  href={url}
+                  download={f.name}
+                  className="flex items-center gap-2.5 hover:underline"
+                >
+                  <div className="size-8 rounded bg-white border border-neutral-200 grid place-items-center text-[9px] font-medium text-neutral-500">
+                    {f.name.split(".").pop()?.toUpperCase().slice(0, 4) || "FILE"}
+                  </div>
+                  <span className="font-medium text-[#0055dc]">{f.name}</span>
+                </a>
+              )}
+              <span className="text-[11px] text-neutral-500">{formatFileSize(f.size)}</span>
+              <a
+                href={url}
+                download={f.name}
+                className="ml-auto text-[11px] rounded px-2 py-1 bg-white border border-neutral-300 hover:bg-neutral-100 text-neutral-700"
+              >
+                Download
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** Configuration for the "Download as ZIP" button on the OutputBlock. */
+interface ZipBundleConfig {
+  /** Operation type for the metadata + filename (e.g. "encrypt", "sign"). */
+  operation: string;
+  /** Signer info to include in metadata.json (for decrypt/verify). */
+  signers?: SignatureInfo[];
+  /** Files to include in the ZIP (extracted files for decrypt, attached
+   *  files for encrypt). Each entry is the file name + base64 data. */
+  files?: EnvelopeFile[];
+  /** Verification result for metadata (e.g. "valid", "invalid"). */
+  verificationResult?: string;
+}
+
 function OutputBlock({
   title,
   output,
@@ -1417,50 +1695,103 @@ function OutputBlock({
   nukeConfirmed,
   onNuke,
   onReset,
+  zipBundle,
 }: {
   title: string;
   output: string;
-  nukeLabel: string;
-  nukeConfirmed: boolean;
-  onNuke: () => void;
+  nukeLabel?: string;
+  nukeConfirmed?: boolean;
+  onNuke?: () => void;
   onReset: () => void;
+  /** If provided, renders a "Download as ZIP" button that bundles the output
+   *  + files + signer metadata into a single .zip download. */
+  zipBundle?: ZipBundleConfig;
 }) {
   return (
     <div className="space-y-3">
       <div>
         <Label>{title}</Label>
         <Textarea value={output} readOnly rows={12} />
-        <div className="mt-2 flex justify-end">
+        <div className="mt-2 flex justify-end gap-2">
+          {zipBundle && <ZipDownloadButton output={output} config={zipBundle} />}
           <CopyButton text={output} />
         </div>
       </div>
 
-      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
-        {!nukeConfirmed ? (
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-amber-800">
-              Your input is still in memory. Nuke it now to make sure only the
-              output remains.
+      {onNuke && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
+          {!nukeConfirmed ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-amber-800">
+                Your input is still in memory. Nuke it now to make sure only the output remains.
+              </p>
+              <button
+                onClick={onNuke}
+                className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+              >
+                {nukeLabel ?? "Nuke input"}
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-emerald-700">
+              ✓ Input nuked. Only the output remains in memory.
             </p>
-            <button
-              onClick={onNuke}
-              className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
-            >
-              {nukeLabel}
-            </button>
-          </div>
-        ) : (
-          <p className="text-xs text-emerald-700">
-            ✓ Input nuked. Only the output remains in memory.
-          </p>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       <div className="flex gap-2">
         <Button onClick={onReset} variant="ghost">
           Start over
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** Button that bundles the current output + files + metadata into a ZIP
+ *  download. Uses jszip (loaded dynamically so it doesn't bloat the initial
+ *  client bundle). */
+function ZipDownloadButton({ output, config }: { output: string; config: ZipBundleConfig }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleDownload = useCallback(async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      // Convert EnvelopeFile[] (base64 data) to ZipFileEntry[] (Uint8Array).
+      const entries = (config.files ?? []).map((f) => ({
+        name: f.name,
+        data: base64ToUint8Array(f.data),
+      }));
+      const blob = await buildZipBundle(entries, {
+        operation: config.operation,
+        generatedAt: new Date().toISOString(),
+        output,
+        signers: config.signers,
+        verificationResult: config.verificationResult,
+        fileCount: entries.length,
+      });
+      downloadBlob(blob, zipFilename(config.operation));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [output, config]);
+
+  return (
+    <div className="flex items-center gap-2">
+      {error && <span className="text-[10px] text-red-600">{error}</span>}
+      <button
+        onClick={handleDownload}
+        disabled={busy}
+        className="text-[11px] rounded px-2 py-1 bg-white border border-neutral-300 hover:bg-neutral-50 text-neutral-700 disabled:opacity-50 inline-flex items-center gap-1"
+        title="Download the output + attachments + metadata as a ZIP file"
+      >
+        {busy ? "Zipping…" : "⬇ ZIP"}
+      </button>
     </div>
   );
 }
@@ -1535,10 +1866,7 @@ function PassphrasePrompt({
         if (info.ok && info.info && onKeyUpdated) {
           const oldInfo = config.info;
           const newInfo = info.info;
-          if (
-            oldInfo.fingerprint !== newInfo.fingerprint ||
-            oldInfo.keyID !== newInfo.keyID
-          ) {
+          if (oldInfo.fingerprint !== newInfo.fingerprint || oldInfo.keyID !== newInfo.keyID) {
             onKeyUpdated({ ...config, info: newInfo });
           }
         }
@@ -1552,10 +1880,7 @@ function PassphrasePrompt({
         if (!key.isPrivate()) {
           throw new Error("Stored key is not a private key.");
         }
-        const decrypted = await unlockPrivateKey(
-          key as OpenPGP.PrivateKey,
-          passphrase,
-        );
+        const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
         onResolve(decrypted);
       }
     } catch (e) {
@@ -1607,9 +1932,7 @@ function PassphrasePrompt({
               disabled={busy}
             />
             {error && <ErrorBanner message={error} />}
-            {busy && stage && (
-              <p className="text-[11px] text-neutral-500">{stage}</p>
-            )}
+            {busy && stage && <p className="text-[11px] text-neutral-500">{stage}</p>}
             <div className="flex gap-2 pt-1">
               <Button onClick={handleSubmit} disabled={busy} variant="primary" full>
                 {busy ? "Working…" : "Decrypt & continue"}
@@ -1625,13 +1948,7 @@ function PassphrasePrompt({
   );
 }
 
-function ConfigureModal({
-  onClose,
-  privateKey,
-  onSave,
-  onClear,
-  proxies,
-}: ConfigureModalProps) {
+function ConfigureModal({ onClose, privateKey, onSave, onClear, proxies }: ConfigureModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 sm:p-8 overflow-auto">
       <div className="w-full max-w-lg rounded-lg bg-white shadow-xl my-8">
@@ -1649,9 +1966,7 @@ function ConfigureModal({
         <div className="px-5 py-4 max-h-[80vh] overflow-y-auto">
           {privateKey && (
             <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-              <div className="text-xs font-medium text-emerald-800 mb-1">
-                Currently configured
-              </div>
+              <div className="text-xs font-medium text-emerald-800 mb-1">Currently configured</div>
               <div className="text-sm text-emerald-900">
                 {privateKey.source === "keybase"
                   ? `@${privateKey.username} (via Keybase login)`
@@ -1662,19 +1977,13 @@ function ConfigureModal({
                   {formatFingerprint(privateKey.info.fingerprint)}
                 </div>
               )}
-              <button
-                onClick={onClear}
-                className="mt-2 text-[11px] text-red-600 hover:underline"
-              >
+              <button onClick={onClear} className="mt-2 text-[11px] text-red-600 hover:underline">
                 Clear / log out
               </button>
             </div>
           )}
 
-          <KeybaseLoginForm
-            proxies={proxies}
-            onLoaded={(cfg) => onSave(cfg)}
-          />
+          <KeybaseLoginForm proxies={proxies} onLoaded={(cfg) => onSave(cfg)} />
 
           <hr className="my-4 border-neutral-200" />
 
@@ -1726,14 +2035,10 @@ function KeybaseLoginForm({
       await new Promise((r) => setTimeout(r, 50));
 
       setStage("Logging in to Keybase…");
-      const { me, privateKey: decrypted } = await loginWithPassword(
-        username,
-        password,
-        {
-          getsaltUrl: proxies.getsaltProxy,
-          loginUrl: proxies.loginProxy,
-        },
-      );
+      const { me, privateKey: decrypted } = await loginWithPassword(username, password, {
+        getsaltUrl: proxies.getsaltProxy,
+        loginUrl: proxies.loginProxy,
+      });
 
       if (!me.private_key_bundle) {
         throw new Error(
@@ -1767,14 +2072,12 @@ function KeybaseLoginForm({
 
   return (
     <div>
-      <div className="text-sm font-semibold text-neutral-900 mb-1">
-        Log in with Keybase
-      </div>
+      <div className="text-sm font-semibold text-neutral-900 mb-1">Log in with Keybase</div>
       <p className="text-[11px] text-neutral-500 mb-3">
-        Your password is used to derive the PGP passphrase via scrypt and never
-        leaves your browser. We fetch your private key bundle from{" "}
-        <code className="text-neutral-700">keybase.io/_/api/1.0/me.json</code>{" "}
-        and decrypt it locally.
+        Your password is used to derive the PGP passphrase via scrypt and never leaves your browser.
+        We fetch your private key bundle from{" "}
+        <code className="text-neutral-700">keybase.io/_/api/1.0/me.json</code> and decrypt it
+        locally.
       </p>
       <div className="space-y-2">
         <input
@@ -1796,9 +2099,7 @@ function KeybaseLoginForm({
           disabled={busy}
         />
         {error && <ErrorBanner message={error} />}
-        {busy && stage && (
-          <p className="text-[11px] text-neutral-500">{stage}</p>
-        )}
+        {busy && stage && <p className="text-[11px] text-neutral-500">{stage}</p>}
         <Button onClick={handleLogin} disabled={busy} variant="primary" full>
           {busy ? "Working…" : "Log in & load private key"}
         </Button>
@@ -1807,11 +2108,7 @@ function KeybaseLoginForm({
   );
 }
 
-function ManualKeyForm({
-  onLoaded,
-}: {
-  onLoaded: (cfg: PrivateKeyConfig) => void;
-}) {
+function ManualKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void }) {
   const [armored, setArmored] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1837,10 +2134,7 @@ function ManualKeyForm({
       // Store ONLY the ENCRYPTED armored key. The passphrase is NOT stored.
       onLoaded({
         source: "manual",
-        label:
-          v.info.userIDs[0]?.name ||
-          v.info.userIDs[0]?.email ||
-          "Pasted private key",
+        label: v.info.userIDs[0]?.name || v.info.userIDs[0]?.email || "Pasted private key",
         encryptedArmored: armored.trim(),
         info: v.info,
       });
@@ -1853,9 +2147,7 @@ function ManualKeyForm({
 
   return (
     <div>
-      <div className="text-sm font-semibold text-neutral-900 mb-1">
-        Paste a private key
-      </div>
+      <div className="text-sm font-semibold text-neutral-900 mb-1">Paste a private key</div>
       <p className="text-[11px] text-neutral-500 mb-3">
         Use this if you already have an armored PGP private key block.
       </p>
@@ -1863,7 +2155,9 @@ function ManualKeyForm({
         <Textarea
           value={armored}
           onChange={setArmored}
-          placeholder={"-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"}
+          placeholder={
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n...\n-----END PGP PRIVATE KEY BLOCK-----"
+          }
           rows={5}
         />
         <input
@@ -1883,11 +2177,7 @@ function ManualKeyForm({
   );
 }
 
-function GenerateKeyForm({
-  onLoaded,
-}: {
-  onLoaded: (cfg: PrivateKeyConfig) => void;
-}) {
+function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -1910,8 +2200,7 @@ function GenerateKeyForm({
         rsaBits: type === "rsa" ? bits : undefined,
         expirationSeconds: 0,
       });
-      const label =
-        name || email || (type === "ecc" ? "ECC key" : "RSA key");
+      const label = name || email || (type === "ecc" ? "ECC key" : "RSA key");
       // Store ONLY the ENCRYPTED armored private key. The passphrase is
       // NOT stored — it will be re-requested at operation time.
       onLoaded({
@@ -1931,9 +2220,7 @@ function GenerateKeyForm({
     <details className="group">
       <summary className="cursor-pointer text-sm font-semibold text-neutral-900 select-none">
         Generate a new local key{" "}
-        <span className="text-[11px] text-neutral-500 font-normal">
-          (advanced)
-        </span>
+        <span className="text-[11px] text-neutral-500 font-normal">(advanced)</span>
       </summary>
       <div className="mt-3 space-y-2">
         <div className="grid grid-cols-2 gap-2">
@@ -1984,9 +2271,7 @@ function GenerateKeyForm({
           ) : (
             <select
               value={bits}
-              onChange={(e) =>
-                setBits(Number(e.target.value) as 2048 | 3072 | 4096)
-              }
+              onChange={(e) => setBits(Number(e.target.value) as 2048 | 3072 | 4096)}
               className="rounded-md border border-neutral-300 bg-white px-2 py-1.5"
             >
               <option value={2048}>2048</option>
@@ -2017,6 +2302,7 @@ function Label({ children }: { children: React.ReactNode }) {
 function Textarea({
   value,
   onChange,
+  onPaste,
   placeholder,
   rows,
   readOnly,
@@ -2024,6 +2310,7 @@ function Textarea({
 }: {
   value: string;
   onChange?: (v: string) => void;
+  onPaste?: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   placeholder?: string;
   rows?: number;
   readOnly?: boolean;
@@ -2033,6 +2320,7 @@ function Textarea({
     <textarea
       value={value}
       onChange={onChange ? (e) => onChange(e.target.value) : undefined}
+      onPaste={onPaste}
       placeholder={placeholder}
       rows={rows ?? 6}
       readOnly={readOnly}

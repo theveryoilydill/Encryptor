@@ -12,10 +12,7 @@ declare module "kbpgp" {
         cb: (err: Error | null, km: KeyManager) => void,
       ): void;
       make_sig_eng(): SigEng;
-      export_public(
-        opts: unknown,
-        cb: (err: Error | null, kid: string) => void,
-      ): void;
+      export_public(opts: unknown, cb: (err: Error | null, kid: string) => void): void;
       get_pgp_fingerprint(): string;
     }
     interface SigEng {
@@ -77,8 +74,5 @@ declare module "triplesec" {
       cb: (err: Error | null, keys: { extra: Buffer }) => void,
     ): void;
   }
-  export function scrypt(
-    opts: unknown,
-    cb: (err: Error | null, result: unknown) => void,
-  ): void;
+  export function scrypt(opts: unknown, cb: (err: Error | null, result: unknown) => void): void;
 }

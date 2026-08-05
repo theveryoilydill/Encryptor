@@ -37,8 +37,7 @@ export async function POST(req: NextRequest) {
   if (!username || !pdpka4 || !pdpka5 || !csrfToken || !loginSession) {
     return NextResponse.json(
       {
-        error:
-          "Missing required fields (username, pdpka4, pdpka5, csrf_token, login_session)",
+        error: "Missing required fields (username, pdpka4, pdpka5, csrf_token, login_session)",
       },
       { status: 400 },
     );
@@ -123,10 +122,7 @@ export async function POST(req: NextRequest) {
     if (!meData.status || meData.status.code !== 0 || !meData.me) {
       return NextResponse.json(
         {
-          error:
-            meData.status?.desc ||
-            meData.status?.name ||
-            "Keybase me.json call failed",
+          error: meData.status?.desc || meData.status?.name || "Keybase me.json call failed",
         },
         { status: 502 },
       );

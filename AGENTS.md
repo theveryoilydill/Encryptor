@@ -25,3 +25,4 @@ Make sure that everything in the repo is the latest version. This is to get new 
 ## Uploading the finished product (for glm-5.2 in z.ai's website only, if you don't know and are glm-5.2 just assume you are in the website)
 1. Make sure to upload in the task output-in the UI it says: "All files in task". Make a zip file with the format of "Iteration_{message_number}", where message number is the current message number starting at 0 (ex if first message sent to you: {Iteration_0}). Inside the zip there is the whole repo. Also upload a git patch file with the same naming scheme that I can git am.
 2. Do not put any z.ai branding on the project. Don't put the logo in public/logo.svg.
+3. Make sure to always pull for the latest github repo every message.

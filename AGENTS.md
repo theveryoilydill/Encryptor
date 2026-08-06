@@ -1,5 +1,8 @@
 # For agents 
 
+## Theme
+Keep it keybase colors, blue accent color, white background color, and black text. Try to keep things minimal and clean.
+
 ## Security
 This is a high security project where it is critical that everything stays secure. Please make sure that there is no way anything can go wrong. Use these rules to help.
 

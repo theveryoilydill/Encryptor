@@ -1,0 +1,52 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e12]:
+    - banner [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e16]: E
+          - generic [ref=e17]: Encryptor
+        - button "Configure private key" [ref=e18]
+    - main [ref=e22]:
+      - tablist "Mode" [ref=e23]:
+        - tab "Encrypt" [selected] [ref=e24]
+        - tab "Decrypt" [ref=e25]
+        - tab "Sign" [ref=e26]
+        - tab "Verify" [ref=e27]
+      - generic [ref=e29]:
+        - tablist "Content mode" [ref=e30]:
+          - tab "Plaintext" [ref=e31]
+          - tab "Rich text" [ref=e32]
+          - tab "Graph" [selected] [ref=e33]
+        - generic [ref=e34]:
+          - generic [ref=e35]: Recipients
+          - textbox "Search by name, email, or Keybase username…" [ref=e37]
+          - paragraph [ref=e38]: Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name, email, or Keybase username.
+          - button "+ Paste a public key manually" [ref=e40]
+        - generic [ref=e56]:
+          - generic [ref=e57]: Whiteboard
+          - generic [ref=e58]:
+            - generic [ref=e59]:
+              - button "▲ Select" [ref=e60]
+              - button "🟪 Sticky" [ref=e61]
+              - button "□ Rect" [ref=e62]
+              - button "◯ Ellipse" [ref=e63]
+              - button "T Text" [ref=e64]
+              - button "🖼 Image" [ref=e65]
+              - button "⟶ Connect" [ref=e66]
+              - button "🗑 Delete" [disabled] [ref=e68]
+              - generic [ref=e69]: Drag empty canvas to pan · wheel to zoom · double-click a node to edit text · paste an image to add it
+            - generic [ref=e70]:
+              - generic: Pick a tool above and click the canvas to add a node.
+              - generic [ref=e72]:
+                - button "−" [ref=e73]
+                - button "100%" [ref=e74]
+                - button "+" [ref=e75]
+        - paragraph [ref=e76]: Pick a shape (S/R/E/T) and click to place it, press C to connect nodes, or choose the image tool (I) to embed an attachment. Paste an image (Ctrl/Cmd+V) on the board, or drop a file onto it, to add it as an image node. Resize by dragging the corner handle or scale with Alt+↑/↓.
+        - button "+ Add files" [ref=e50]
+        - button "Encrypt & sign" [ref=e52]
+    - contentinfo [ref=e53]:
+      - generic [ref=e54]: All crypto runs in your browser. Keys and plaintext never touch our servers — only Keybase username lookups are proxied.
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e8] [cursor=pointer]
+  - alert [ref=e55]

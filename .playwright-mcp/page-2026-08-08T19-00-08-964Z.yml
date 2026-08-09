@@ -1,0 +1,39 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e12]:
+    - banner [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e16]: E
+          - generic [ref=e17]: Encryptor
+        - button "Configure private key" [ref=e18]
+    - main [ref=e22]:
+      - tablist "Mode" [ref=e23]:
+        - tab "Encrypt" [selected] [ref=e24]
+        - tab "Decrypt" [ref=e25]
+        - tab "Sign" [ref=e26]
+        - tab "Verify" [ref=e27]
+      - generic [ref=e29]:
+        - tablist "Content mode" [ref=e30]:
+          - tab "Plaintext" [selected] [ref=e31]
+          - tab "Rich text" [ref=e32]
+          - tab "Graph" [ref=e33]
+        - generic [ref=e34]:
+          - generic [ref=e35]: Recipients
+          - textbox "Search by name, email, or Keybase username…" [ref=e37]
+          - paragraph [ref=e38]: Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name, email, or Keybase username.
+          - button "+ Paste a public key manually" [ref=e40]
+        - generic [ref=e41]:
+          - generic [ref=e42]: Message
+          - textbox "Type the message you want to encrypt + sign. You can paste images directly (Ctrl/Cmd+V) — they'll appear inline and you can resize/move them below." [ref=e43]
+          - paragraph [ref=e44]: Paste images directly into the box, or use “Add files” below to attach any file. Pasted images appear in the preview below — drag them with the mouse or use arrow keys (Shift = micro-move, Alt = scale) to position and resize.
+        - generic [ref=e45]:
+          - generic [ref=e46]: Preview
+          - generic [ref=e47]: Type a message or paste an image (Ctrl/Cmd+V) to see the preview.
+        - button "+ Add files" [ref=e50]
+        - button "Encrypt & sign" [ref=e52]
+    - contentinfo [ref=e53]:
+      - generic [ref=e54]: All crypto runs in your browser. Keys and plaintext never touch our servers — only Keybase username lookups are proxied.
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e8] [cursor=pointer]
+  - alert [ref=e55]

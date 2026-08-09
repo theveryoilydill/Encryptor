@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchKeyByKeyIDClient,
@@ -27,11 +28,14 @@ import {
 } from "@/lib/pgp/pgp";
 import {
   buildPlaintextForEncryption,
+  buildPlaintextForEncryptionV2,
   envelopeFileToDataUrl,
   formatFileSize,
   parseDecryptedPlaintext,
   readFileAsBase64,
   type EnvelopeFile,
+  type GraphBoard,
+  type ParsedContent,
 } from "@/lib/pgp/envelope";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import {
@@ -45,7 +49,22 @@ import {
   DEFAULT_INLINE_IMAGE_SCALE,
   findInlineImageMarkers,
 } from "@/lib/pgp/inline-image";
-import { InteractiveMessagePreview } from "@/components/pgp/InteractiveMessagePreview";
+import {
+  InteractiveMessagePreview,
+  getEditableSelectionOffset,
+} from "@/components/pgp/InteractiveMessagePreview";
+// Rich-text + graph editors are lazy-loaded (ssr:false) so the heavy
+// @mdxeditor bundle only ships when the user picks those modes — matches the
+// keybase-auth lazy-import discipline for a lean initial client bundle.
+const RichTextEditor = dynamic(() =>
+  import("@/components/pgp/modes/RichTextEditor").then((m) => m.RichTextEditor),
+);
+const RichTextViewer = dynamic(() =>
+  import("@/components/pgp/modes/RichTextViewer").then((m) => m.RichTextViewer),
+);
+const GraphBoardEditor = dynamic(() =>
+  import("@/components/pgp/modes/GraphBoard").then((m) => m.GraphBoard),
+);
 
 // In the Next.js preview, the Keybase proxies live under /api/keybase/*
 const PROXIES = {
@@ -59,6 +78,28 @@ const PROXIES = {
 } as const;
 
 type Tab = "encrypt" | "decrypt" | "sign" | "verify";
+
+/**
+ * Encryption modes (a second-level selector on the Encrypt/Decrypt tabs).
+ * `plaintext` is the default and byte-identical to the pre-modes app, so it
+ * interops with gpg/Keybase and keeps existing E2E tests passing.
+ */
+type ModeId = "plaintext" | "rich" | "graph";
+const MODES: { id: ModeId; label: string; hint: string }[] = [
+  { id: "plaintext", label: "Plaintext", hint: "Raw text — interops with Keybase/gpg" },
+  { id: "rich", label: "Rich text", hint: "Google-Docs-style formatting (Markdown)" },
+  { id: "graph", label: "Graph", hint: "Miro-style whiteboard with nodes + connectors" },
+];
+const LS_MODE = "encryptor.mode.v1";
+function loadModeDefault(): ModeId {
+  try {
+    const v = localStorage.getItem(LS_MODE);
+    if (v === "rich" || v === "graph" || v === "plaintext") return v;
+  } catch {
+    // ignore
+  }
+  return "plaintext";
+}
 
 /**
  * Fetch public keys for signature verification from BOTH Keybase and
@@ -161,10 +202,20 @@ export default function Home() {
   const proxies = PROXIES;
 
   const [tab, setTab] = useState<Tab>("encrypt");
+  const [mode, setMode] = useState<ModeId>(loadModeDefault);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [privateKey, setPrivateKey] = useState<PrivateKeyConfig | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
+
+  const handleSetMode = useCallback((next: ModeId) => {
+    setMode(next);
+    try {
+      localStorage.setItem(LS_MODE, next);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const handleSetIncludeSelf = useCallback((next: boolean) => {
     setIncludeSelf(next);
@@ -236,6 +287,8 @@ export default function Home() {
               includeSelf={includeSelf}
               setIncludeSelf={handleSetIncludeSelf}
               requestDecryptedKey={requestDecryptedKey}
+              mode={mode}
+              onModeChange={handleSetMode}
             />
           )}
           {tab === "decrypt" && (
@@ -389,6 +442,38 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
   );
 }
 
+/**
+ * Segmented control for the three encryption content modes (Plaintext /
+ * Rich text / Graph). Rendered only on the Encrypt tab — Decrypt auto-detects
+ * the content kind from the envelope, so a manual mode choice there is moot.
+ * Styled to match `Tabs`: #0055dc accent on the active option.
+ */
+function ModeSelector({ value, onChange }: { value: ModeId; onChange: (m: ModeId) => void }) {
+  return (
+    <nav className="flex flex-wrap gap-1" role="tablist" aria-label="Content mode">
+      {MODES.map((m) => {
+        const active = m.id === value;
+        return (
+          <button
+            key={m.id}
+            role="tab"
+            aria-selected={active}
+            title={m.hint}
+            onClick={() => onChange(m.id)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium border transition-colors ${
+              active
+                ? "border-[#0055dc] bg-[#0055dc]/10 text-[#0055dc]"
+                : "border-neutral-300 bg-white text-neutral-600 hover:border-neutral-400"
+            }`}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 /* --------------------------------- Encrypt --------------------------------- */
 
 interface EncryptTabProps {
@@ -407,6 +492,9 @@ interface EncryptTabProps {
   includeSelf: boolean;
   setIncludeSelf: (v: boolean) => void;
   requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
+  /** Encryption content mode (Plaintext / Rich / Graph). */
+  mode: ModeId;
+  onModeChange: (m: ModeId) => void;
 }
 
 function EncryptTab({
@@ -417,14 +505,28 @@ function EncryptTab({
   includeSelf,
   setIncludeSelf,
   requestDecryptedKey,
+  mode,
+  onModeChange,
 }: EncryptTabProps) {
-  const [plaintext, setPlaintext] = useState("");
+  // Three independent content states — switching modes preserves each mode's
+  // own content (toggle back → restore). `attachments` is shared across all
+  // three modes (graph image nodes + rich inline images both draw from it).
+  const [plainText, setPlainText] = useState("");
+  const [richMarkdown, setRichMarkdown] = useState("");
+  const [board, setBoard] = useState<GraphBoard>({ nodes: [], edges: [] });
   const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nukeConfirmed, setNukeConfirmed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Mirror of `attachments` for synchronous reads inside event handlers (e.g.
+  // to dedupe pasted-image filenames). State updater functions are deferred
+  // under React's batching/concurrent rendering, so we can't rely on a
+  // side-effect inside `setAttachments(updater)` to populate a local before
+  // we call `setPlainText` on the next line — the updater hasn't run yet.
+  const attachmentsRef = useRef<EnvelopeFile[]>([]);
+  attachmentsRef.current = attachments;
 
   // Derive the user's own public key from the configured private key.
   // Shown as a recipient chip when "Include me" is checked.
@@ -473,16 +575,23 @@ function EncryptTab({
     }
   }, []);
 
-  // Image paste handler — intercepts pasted images and:
+  // Image paste handler (plaintext mode) — intercepts pasted images and:
   //   1. Adds the image bytes to `attachments` (so they're encrypted into the
   //      envelope and downloadable by the recipient).
-  //   2. Inserts an inline image marker at the cursor position in the textarea
-  //      so the image renders inline in the message body (not just as a
-  //      separate attachment chip). The marker uses the syntax:
-  //        ![filename.png|50%](envelope://filename.png)
-  //      where `50%` is the rendered-width scale (default 50%, since pasted
-  //      screenshots are usually much larger than the message column).
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  //   2. Inserts an inline image marker into `plainText` at the caret position
+  //      in the editable rendered surface so the image renders inline in the
+  //      message body (not just as a separate attachment chip). The marker
+  //      syntax: ![filename.png|50%](envelope://filename.png) where `50%` is
+  //      the rendered-width scale (default 50%, since pasted screenshots are
+  //      usually much larger than the message column).
+  //
+  // The surface is a contentEditable box (not a <textarea>), so we capture the
+  // live text caret + the surface element BEFORE the async file read. After
+  // reading, we splice the marker into `plainText` at the captured offset and
+  // let the prop change reconcile the DOM (the surface re-renders the new chip
+  // when unfocused, or on blur). We can't rely on a Range staying valid across
+  // the await, so we convert the caret to a string index in `plainText`.
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
     const imageItems: DataTransferItem[] = [];
@@ -495,20 +604,17 @@ function EncryptTab({
     if (imageItems.length === 0) return;
     e.preventDefault();
 
-    // Capture the cursor position BEFORE the (async) addFiles call —
-    // otherwise the textarea will have lost focus/selection by the time
-    // we want to insert the marker.
-    const textarea = e.currentTarget;
-    const cursorStart = textarea.selectionStart;
-    const cursorEnd = textarea.selectionEnd;
-
     const files = imageItems.map((it) => it.getAsFile()).filter((f): f is File => f !== null);
     if (files.length === 0) return;
 
-    // Resolve a unique filename for each pasted image so the inline marker
-    // always references the correct attachment (no duplicate-name ambiguity).
-    // We can't read `attachments` here (it's stale in this closure), so we
-    // generate the unique name inside the setAttachments updater.
+    // Capture the caret as a character offset into the editable surface's text
+    // BEFORE the async read (the selection will have collapsed by the time we
+    // want to insert). `getEditableCaretOffset` walks child nodes, summing
+    // text-node lengths + chip markers, until it reaches the anchor.
+    const surface = (e.currentTarget.querySelector("[data-content-root]") ??
+      e.currentTarget) as HTMLElement;
+    const caretOffset = getEditableSelectionOffset(surface);
+
     const defaultNames = files.map((f) => f.name || `pasted-image.png`);
     const defaultTypes = files.map((f) => f.type || "image/png");
 
@@ -541,87 +647,169 @@ function EncryptTab({
         }
       }
 
-      // Generate unique filenames + insert inline markers.
-      // We do both inside the setAttachments updater so we can deduplicate
-      // against the existing attachment list atomically.
-      let insertedMarkers: string[] = [];
-      setAttachments((prev) => {
-        const existing = prev;
-        const usedNames = new Set(existing.map((a) => a.name));
-        const added: EnvelopeFile[] = [];
-        const newMarkers: string[] = [];
-        for (const r of readResults) {
-          if ("error" in r) {
-            setError(r.error);
-            continue;
-          }
-          // Deduplicate: if "cat.png" already exists, try "cat-1.png", "cat-2.png", etc.
-          let uniqueName = r.name;
-          let counter = 1;
-          const dot = r.name.lastIndexOf(".");
-          while (usedNames.has(uniqueName)) {
-            if (dot > 0) {
-              uniqueName = `${r.name.slice(0, dot)}-${counter}${r.name.slice(dot)}`;
-            } else {
-              uniqueName = `${r.name}-${counter}`;
-            }
-            counter++;
-          }
-          usedNames.add(uniqueName);
-          added.push({
-            name: uniqueName,
-            type: r.type,
-            data: r.data,
-            size: r.size,
-          });
-          // Default scale 50% — pasted screenshots are typically 2x–4x the
-          // message column width, so 50% is a sensible starting size that
-          // the user can fine-tune by dragging or using arrow keys.
-          newMarkers.push(
-            buildInlineImageMarker(uniqueName, DEFAULT_INLINE_IMAGE_SCALE, 0, 0, r.name),
-          );
+      // Generate unique filenames + inline markers SYNCHRONOUSLY against the
+      // current attachments (read via a ref, since useState updaters are
+      // deferred and we can't read their result on the next line). We then
+      // make two independent state updates from the precomputed values.
+      const existing = attachmentsRef.current;
+      const usedNames = new Set(existing.map((a) => a.name));
+      const added: EnvelopeFile[] = [];
+      const insertedMarkers: string[] = [];
+      for (const r of readResults) {
+        if ("error" in r) {
+          setError(r.error);
+          continue;
         }
-        insertedMarkers = newMarkers;
-        return [...existing, ...added];
-      });
+        let uniqueName = r.name;
+        let counter = 1;
+        const dot = r.name.lastIndexOf(".");
+        while (usedNames.has(uniqueName)) {
+          if (dot > 0) {
+            uniqueName = `${r.name.slice(0, dot)}-${counter}${r.name.slice(dot)}`;
+          } else {
+            uniqueName = `${r.name}-${counter}`;
+          }
+          counter++;
+        }
+        usedNames.add(uniqueName);
+        added.push({
+          name: uniqueName,
+          type: r.type,
+          data: r.data,
+          size: r.size,
+        });
+        // Default scale 50% — pasted screenshots are typically 2x–4x the
+        // message column width, so 50% is a sensible starting size.
+        insertedMarkers.push(
+          buildInlineImageMarker(uniqueName, DEFAULT_INLINE_IMAGE_SCALE, 0, 0, r.name),
+        );
+      }
 
-      // Insert the markers at the captured cursor position.
+      if (added.length > 0) setAttachments((prev) => [...prev, ...added]);
+
+      // Splice the markers into `plainText` at the captured caret offset. The
+      // editable surface reconciles from this prop (it re-renders the chips).
       if (insertedMarkers.length > 0) {
         const insert = insertedMarkers.join("\n\n");
-        setPlaintext((prev) => {
-          const before = prev.slice(0, cursorStart);
-          const after = prev.slice(cursorEnd);
-          // Ensure the marker is on its own line — pad with newlines if
-          // the cursor was in the middle of a paragraph.
+        setPlainText((prev) => {
+          const before = prev.slice(0, caretOffset);
+          const after = prev.slice(caretOffset);
           const needsLeadingNL = before.length > 0 && !before.endsWith("\n");
           const needsTrailingNL = after.length > 0 && !after.startsWith("\n");
           const paddedInsert =
             (needsLeadingNL ? "\n\n" : "") + insert + (needsTrailingNL ? "\n\n" : "");
           return before + paddedInsert + after;
         });
-        // Restore focus + move cursor to just after the inserted markers.
-        queueMicrotask(() => {
-          textarea.focus();
-          const insertLen = insertedMarkers.join("\n\n").length;
-          // Account for any padding newlines we added.
-          const before = textarea.value.slice(0, cursorStart);
-          const after = textarea.value.slice(cursorEnd);
-          const needsLeadingNL = before.length > 0 && !before.endsWith("\n");
-          const needsTrailingNL = after.length > 0 && !after.startsWith("\n");
-          const paddedLen = (needsLeadingNL ? 2 : 0) + insertLen + (needsTrailingNL ? 2 : 0);
-          const newPos = cursorStart + paddedLen;
-          textarea.setSelectionRange(newPos, newPos);
-        });
       }
     })();
   }, []);
+
+  // Rich-mode image paste — mirrors `handlePaste` but targets the Markdown
+  // state instead of a textarea selection. The MDXEditor owns its own cursor,
+  // so we can't reliably insert at the caret; instead we append the image
+  // marker to the end of the Markdown (the user can drag it into place). As
+  // in plaintext mode, pasted images are also added to `attachments` so they
+  // encrypt into the envelope and download as files.
+  const handlePasteRich = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageItems: DataTransferItem[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "file" && it.type.startsWith("image/")) imageItems.push(it);
+      }
+      if (imageItems.length === 0) return; // let the editor's own paste proceed (text)
+      e.preventDefault();
+
+      const files = imageItems
+        .map((it) => it.getAsFile())
+        .filter((f): f is File => f !== null);
+      if (files.length === 0) return;
+
+      void (async () => {
+        const MAX_SIZE = 25 * 1024 * 1024;
+        const readResults: Array<
+          { name: string; type: string; data: string; size: number } | { error: string }
+        > = [];
+        for (const f of files) {
+          if (f.size > MAX_SIZE) {
+            readResults.push({ error: `"${f.name}" is ${formatFileSize(f.size)} — max 25 MB.` });
+            continue;
+          }
+          try {
+            readResults.push({
+              name: f.name || "pasted-image.png",
+              type: f.type || "image/png",
+              data: await readFileAsBase64(f),
+              size: f.size,
+            });
+          } catch (err) {
+            readResults.push({ error: `Failed to read "${f.name}": ${(err as Error).message}` });
+          }
+        }
+
+        // Dedup against existing attachments SYNCHRONOUSLY (via the ref —
+        // useState updaters are deferred so we can't read their result here),
+        // then append both the file and a Markdown image marker (50% scale).
+        const existing = attachmentsRef.current;
+        const usedNames = new Set(existing.map((a) => a.name));
+        const added: EnvelopeFile[] = [];
+        const markers: string[] = [];
+        for (const r of readResults) {
+          if ("error" in r) {
+            setError(r.error);
+            continue;
+          }
+          let uniqueName = r.name;
+          let counter = 1;
+          const dot = r.name.lastIndexOf(".");
+          while (usedNames.has(uniqueName)) {
+            if (dot > 0) uniqueName = `${r.name.slice(0, dot)}-${counter}${r.name.slice(dot)}`;
+            else uniqueName = `${r.name}-${counter}`;
+            counter++;
+          }
+          usedNames.add(uniqueName);
+          added.push({ name: uniqueName, type: r.type, data: r.data, size: r.size });
+          markers.push(
+            buildInlineImageMarker(uniqueName, DEFAULT_INLINE_IMAGE_SCALE, 0, 0, r.name),
+          );
+        }
+
+        if (added.length > 0) setAttachments((prev) => [...prev, ...added]);
+
+        if (markers.length > 0) {
+          const insert = markers.join("\n\n");
+          setRichMarkdown((prev) => {
+            const sep = prev.length > 0 && !prev.endsWith("\n") ? "\n\n" : prev.endsWith("\n") ? "" : "";
+            return prev + sep + insert;
+          });
+        }
+      })();
+    },
+    [],
+  );
 
   const handleEncrypt = useCallback(async () => {
     setError(null);
     setOutput("");
     setNukeConfirmed(false);
-    if (!plaintext.trim() && attachments.length === 0) {
-      setError("Enter a message to encrypt, or attach a file.");
+
+    // Per-mode "is there anything to encrypt?" check. Graph counts nodes/edges
+    // (text is irrelevant); rich counts Markdown + attachments; plaintext counts
+    // text + attachments. The message field is shared but each mode validates it.
+    const hasContent =
+      mode === "graph"
+        ? board.nodes.length > 0 || board.edges.length > 0
+        : mode === "rich"
+          ? richMarkdown.trim().length > 0 || attachments.length > 0
+          : plainText.trim().length > 0 || attachments.length > 0;
+    if (!hasContent) {
+      setError(
+        mode === "graph"
+          ? "Add at least one node or connector to the whiteboard."
+          : "Enter a message to encrypt, or attach a file.",
+      );
       return;
     }
     if (!privateKey) {
@@ -650,8 +838,18 @@ function EncryptTab({
         }
       }
 
-      // Wrap plaintext + attachments in the envelope wire format.
-      const plaintextForEncryption = buildPlaintextForEncryption(plaintext, attachments);
+      // Build the wire-format payload for the selected mode:
+      //   plaintext → V1 envelope (raw text when no files), byte-identical to
+      //               the pre-modes app for Keybase/gpg interop + legacy E2E.
+      //   rich      → V2 envelope with kind:"rich" (when files present) carrying
+      //               the Markdown in `text`.
+      //   graph     → V2 envelope with kind:"graph" carrying the board.
+      const plaintextForEncryption =
+        mode === "plaintext"
+          ? buildPlaintextForEncryption(plainText, attachments)
+          : mode === "rich"
+            ? buildPlaintextForEncryptionV2({ mode: "rich", text: richMarkdown, files: attachments })
+            : buildPlaintextForEncryptionV2({ mode: "graph", text: "", files: attachments, board });
 
       // Pass the PrivateKey object directly to avoid re-armoring +
       // re-parsing, which can lose key material for Keybase P3SKB keys.
@@ -666,10 +864,12 @@ function EncryptTab({
     } finally {
       setBusy(false);
     }
-  }, [plaintext, attachments, recipients, privateKey, includeSelf, requestDecryptedKey]);
+  }, [mode, plainText, richMarkdown, board, attachments, recipients, privateKey, includeSelf, requestDecryptedKey]);
 
   return (
     <section className="space-y-4">
+      <ModeSelector value={mode} onChange={onModeChange} />
+
       <RecipientPicker
         recipients={recipients}
         setRecipients={setRecipients}
@@ -680,34 +880,80 @@ function EncryptTab({
         selfRecipient={selfRecipient}
       />
 
-      <div>
-        <Label>Message</Label>
-        <Textarea
-          value={plaintext}
-          onChange={setPlaintext}
-          onPaste={handlePaste}
-          placeholder="Type the message you want to encrypt + sign. You can paste images directly (Ctrl/Cmd+V) — they'll appear inline and you can resize/move them below."
-          rows={8}
-        />
-        <p className="mt-1.5 text-[11px] text-neutral-500">
-          Paste images directly into the box, or use “Add files” below to attach any file. Pasted
-          images appear in the preview below — drag them with the mouse or use arrow keys (Shift =
-          micro-move, Alt = scale) to position and resize.
-        </p>
-      </div>
+      {mode === "plaintext" && (
+        <>
+          {/* The message box IS the preview: a single editable rendered surface.
+              The user types text directly and pasted images live as inline chips
+              in the same surface (move with mouse/arrows, scale with Alt+arrows,
+              delete with Del). There is no separate "Preview" box anymore. */}
+          <div onPaste={handlePaste}>
+            <Label>Message</Label>
+            <InteractiveMessagePreview
+              plaintext={plainText}
+              files={attachments}
+              onChange={setPlainText}
+              editable
+              emptyPlaceholder="Type the message you want to encrypt + sign. Paste an image (Ctrl/Cmd+V) to embed it inline."
+            />
+            <p className="mt-1.5 text-[11px] text-neutral-500">
+              Type your message above — it renders live as the recipient will see it. Paste images
+              directly (Ctrl/Cmd+V) to embed them inline, then drag or use arrow keys (Shift =
+              micro-move, Alt = scale) to position and resize. Use “Add files” below to attach any
+              other file.
+            </p>
+          </div>
+        </>
+      )}
 
-      {/* Interactive message preview: renders the message with inline images
-          and lets the user drag/scale/move each image with the mouse and
-          keyboard. This is the primary "what your message looks like" view. */}
-      <div>
-        <Label>Preview</Label>
-        <InteractiveMessagePreview
-          plaintext={plaintext}
-          files={attachments}
-          onChange={setPlaintext}
-          emptyPlaceholder="Type a message or paste an image (Ctrl/Cmd+V) to see the preview."
-        />
-      </div>
+      {mode === "rich" && (
+        <>
+          {/* The MDXEditor is a live WYSIWYG preview — the message box itself
+              renders the rich text as you type, so there is no separate
+              "Preview" box (the editor IS the preview). This wrapper div hosts
+              the paste handler so pasted images become envelope:// markers in
+              the Markdown (the same scheme plaintext uses), preserving the
+              pastable + scale requirement for rich mode. Free-canvas
+              positioning isn't possible in Markdown, so scale lives in the
+              `|NN%` marker suffix (editable in the rendered tree). */}
+          <div onPaste={handlePasteRich}>
+            <Label>Message</Label>
+            <RichTextEditor
+              value={richMarkdown}
+              onChange={setRichMarkdown}
+              placeholder="Write a richly-formatted message… paste an image (Ctrl/Cmd+V) to embed it inline."
+            />
+            <p className="mt-1.5 text-[11px] text-neutral-500">
+              Paste an image (Ctrl/Cmd+V) to embed it inline, or attach one with the “Add files”
+              button and use the toolbar’s image tool. Scale an inline image via the
+              <span className="font-mono"> |NN% </span> marker (e.g. <span className="font-mono">![pic.png|50%](envelope://pic.png)</span>).
+              Free-canvas drag isn’t available in Markdown.
+            </p>
+          </div>
+        </>
+      )}
+
+      {mode === "graph" && (
+        <>
+          <div>
+            <Label>Whiteboard</Label>
+            <GraphBoardEditor
+              board={board}
+              onChange={setBoard}
+              minHeight={360}
+              files={attachments}
+              onAddImageFile={(file) => {
+                void addFiles([file]);
+              }}
+            />
+          </div>
+          <p className="text-[11px] text-neutral-500 -mt-1">
+            Pick a shape (S/R/E/T) and click to place it, press C to connect nodes, or choose the
+            image tool (I) to embed an attachment. Paste an image (Ctrl/Cmd+V) on the board, or
+            drop a file onto it, to add it as an image node. Resize by dragging the corner handle or
+            scale with Alt+↑/↓.
+          </p>
+        </>
+      )}
 
       <AttachmentList
         attachments={attachments}
@@ -741,13 +987,17 @@ function EncryptTab({
           nukeLabel="Nuke plaintext"
           nukeConfirmed={nukeConfirmed}
           onNuke={() => {
-            setPlaintext("");
+            setPlainText("");
+            setRichMarkdown("");
+            setBoard({ nodes: [], edges: [] });
             setAttachments([]);
             setNukeConfirmed(true);
           }}
           onReset={() => {
             setOutput("");
-            setPlaintext("");
+            setPlainText("");
+            setRichMarkdown("");
+            setBoard({ nodes: [], edges: [] });
             setAttachments([]);
             setNukeConfirmed(false);
             setError(null);
@@ -756,10 +1006,13 @@ function EncryptTab({
             operation: "encrypt",
             files: attachments,
           }}
-          preview={{
-            plaintext: buildPlaintextForEncryption(plaintext, attachments),
-            files: attachments,
-          }}
+          preview={
+            mode === "graph"
+              ? { kind: "graph", files: attachments, board }
+              : mode === "rich"
+                ? { kind: "rich", text: richMarkdown, files: attachments }
+                : { kind: "text", text: buildPlaintextForEncryption(plainText, attachments), files: attachments }
+          }
         />
       )}
     </section>
@@ -1153,9 +1406,19 @@ function DecryptTab({
   requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
 }) {
   const [armored, setArmored] = useState("");
+  // `output` carries the parsed message branched on `kind`:
+  //   text/rich → `text` holds the body (Markdown for rich, with `envelope://`
+  //               inline-image markers for text); `files` carries attachments.
+  //   graph     → `board` holds the whiteboard; `files` carries image nodes'
+  //               referenced attachments.
+  // `raw` is the unprocessed decrypted plaintext (for the "Show raw text"
+  // advanced view). `signatures` are the verification results.
   const [output, setOutput] = useState<{
-    plaintext: string;
+    kind: ParsedContent["kind"];
+    text?: string;
     files: EnvelopeFile[];
+    board?: GraphBoard;
+    raw: string;
     signatures: SignatureInfo[];
   } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1209,12 +1472,17 @@ function DecryptTab({
         },
       );
 
-      // Detect whether the decrypted plaintext is an envelope (text + files)
-      // or a plain-text message from an older client.
+      // Branch the decrypted payload on its content kind.
+      // `parseDecryptedPlaintext` already handles V2 (rich/graph), V1, and raw
+      // text uniformly and falls back to `kind:"text"` + raw text on any
+      // malformed payload — so the user always sees something.
       const parsed = parseDecryptedPlaintext(result.plaintext);
       setOutput({
-        plaintext: parsed.kind === "envelope" ? parsed.envelope.text : parsed.text,
-        files: parsed.kind === "envelope" ? parsed.envelope.files : [],
+        kind: parsed.kind,
+        text: parsed.kind === "text" || parsed.kind === "rich" ? parsed.text : undefined,
+        files: parsed.files,
+        board: parsed.kind === "graph" ? parsed.board : undefined,
+        raw: result.plaintext,
         signatures: result.signatures,
       });
     } catch (e) {
@@ -1249,12 +1517,18 @@ function DecryptTab({
           {output.signatures.length > 0 && <SignerBadges signatures={output.signatures} />}
           {output.files.length > 0 && <FileDownloadList files={output.files} />}
 
-          {/* Always show the rendered preview as the primary view.
-              The raw-text textarea is hidden behind a subtle toggle
-              ("Show raw text") — it's an advanced feature. */}
+          {/* Always show the rendered preview as the primary view, branched on
+              the auto-detected content kind. The raw decrypted text (markers +
+              envelope JSON for graph) is hidden behind a subtle toggle. */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <Label>Decrypted message</Label>
+              <Label>
+                {output.kind === "graph"
+                  ? "Decrypted whiteboard"
+                  : output.kind === "rich"
+                    ? "Decrypted rich text"
+                    : "Decrypted message"}
+              </Label>
               <button
                 type="button"
                 onClick={() => setShowRaw((v) => !v)}
@@ -1265,10 +1539,23 @@ function DecryptTab({
               </button>
             </div>
             {showRaw ? (
-              <Textarea value={output.plaintext} readOnly rows={10} />
+              <Textarea value={output.raw} readOnly rows={10} />
+            ) : output.kind === "graph" ? (
+              <div className="rounded-md border border-neutral-200 bg-white overflow-hidden">
+                <GraphBoardEditor
+                  board={output.board ?? { nodes: [], edges: [] }}
+                  readOnly
+                  minHeight={360}
+                  files={output.files}
+                />
+              </div>
+            ) : output.kind === "rich" ? (
+              <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
+                <RichTextViewer text={output.text ?? ""} files={output.files} />
+              </div>
             ) : (
               <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
-                <DecryptedMessageView plaintext={output.plaintext} files={output.files} />
+                <DecryptedMessageView plaintext={output.text ?? ""} files={output.files} />
               </div>
             )}
           </div>
@@ -2019,12 +2306,20 @@ function OutputBlock({
   /** If provided, renders a "Download as ZIP" button that bundles the output
    *  + files + signer metadata into a single .zip download. */
   zipBundle?: ZipBundleConfig;
-  /** When provided, shows a rendered preview of the message (with inline
-   *  images) as the primary view. A small, subtle toggle switches to the
-   *  raw `output` text. The Copy/ZIP buttons always act on `output`. */
+  /** When provided, shows a rendered preview of the message as the primary
+   *  view (branched on `kind`: text/rich render the message body with inline
+   *  images; graph renders a read-only whiteboard). A subtle toggle switches
+   *  to the raw `output` text. The Copy/ZIP buttons always act on `output`. */
   preview?: {
-    plaintext: string;
+    kind: "text" | "rich" | "graph";
+    /** Markdown/text body for `kind:"text"` or `kind:"rich"` (may contain
+     *  `envelope://` inline-image markers). Unused for `kind:"graph"`. */
+    text?: string;
+    /** Envelope attachments — shared across kinds (inline images in
+     *  text/rich, image nodes in graph both reference these by filename). */
     files: EnvelopeFile[];
+    /** The whiteboard — only meaningful when `kind:"graph"`. */
+    board?: GraphBoard;
   };
 }) {
   const [showRaw, setShowRaw] = useState(false);
@@ -2046,9 +2341,24 @@ function OutputBlock({
           )}
         </div>
         {preview && !showRaw ? (
-          <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
-            <DecryptedMessageView plaintext={preview.plaintext} files={preview.files} />
-          </div>
+          preview.kind === "graph" ? (
+            <div className="rounded-md border border-neutral-200 bg-white overflow-hidden">
+              <GraphBoardEditor
+                board={preview.board ?? { nodes: [], edges: [] }}
+                readOnly
+                minHeight={360}
+                files={preview.files}
+              />
+            </div>
+          ) : preview.kind === "rich" ? (
+            <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
+              <RichTextViewer text={preview.text ?? ""} files={preview.files} />
+            </div>
+          ) : (
+            <div className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 min-h-[100px]">
+              <DecryptedMessageView plaintext={preview.text ?? ""} files={preview.files} />
+            </div>
+          )
         ) : (
           <Textarea value={output} readOnly rows={12} />
         )}

@@ -120,3 +120,11 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Editable message surface (plaintext mode "the message box IS the preview").
+ * Shows the placeholder when the content root is empty. */
+.editable-message [data-content-root]:empty:before {
+  content: attr(data-placeholder);
+  color: rgb(163 163 163); /* neutral-400 */
+  pointer-events: none;
+}

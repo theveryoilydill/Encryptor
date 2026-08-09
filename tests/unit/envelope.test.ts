@@ -75,18 +75,19 @@ describe("envelope", () => {
       }
     });
 
-    it("parses a well-formed envelope", () => {
+    it("parses a well-formed V1 envelope as plain text + files", () => {
       const envelope = {
         text: "the message",
         files: [{ name: "x.bin", type: "application/octet-stream", data: "AA==", size: 1 }],
       };
       const raw = `${ENVELOPE_MARKER}\n${JSON.stringify(envelope)}`;
       const result = parseDecryptedPlaintext(raw);
-      expect(result.kind).toBe("envelope");
-      if (result.kind === "envelope") {
-        expect(result.envelope.text).toBe("the message");
-        expect(result.envelope.files).toHaveLength(1);
-        expect(result.envelope.files[0].name).toBe("x.bin");
+      // V1 envelopes carry no kind — they always parse as plain text.
+      expect(result.kind).toBe("text");
+      if (result.kind === "text") {
+        expect(result.text).toBe("the message");
+        expect(result.files).toHaveLength(1);
+        expect(result.files[0].name).toBe("x.bin");
       }
     });
 
@@ -111,9 +112,9 @@ describe("envelope", () => {
         files: [{ name: "x" }], // missing type, data, size
       })}`;
       const result = parseDecryptedPlaintext(raw);
-      expect(result.kind).toBe("envelope");
-      if (result.kind === "envelope") {
-        expect(result.envelope.files[0]).toMatchObject({
+      expect(result.kind).toBe("text");
+      if (result.kind === "text") {
+        expect(result.files[0]).toMatchObject({
           name: "x",
           type: "application/octet-stream",
           data: "",
@@ -122,7 +123,7 @@ describe("envelope", () => {
       }
     });
 
-    it("round-trips through build + parse", () => {
+    it("round-trips a V1 envelope through build + parse", () => {
       const text = "round trip text";
       const files = [
         { name: "a.png", type: "image/png", data: "iVBOR=", size: 5 },
@@ -130,10 +131,10 @@ describe("envelope", () => {
       ];
       const wire = buildPlaintextForEncryption(text, files);
       const parsed = parseDecryptedPlaintext(wire);
-      expect(parsed.kind).toBe("envelope");
-      if (parsed.kind === "envelope") {
-        expect(parsed.envelope.text).toBe(text);
-        expect(parsed.envelope.files).toEqual(files);
+      expect(parsed.kind).toBe("text");
+      if (parsed.kind === "text") {
+        expect(parsed.text).toBe(text);
+        expect(parsed.files).toEqual(files);
       }
     });
   });

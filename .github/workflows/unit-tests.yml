@@ -2,9 +2,9 @@ name: Unit tests
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, develop]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, develop]
   # Allow manual runs from the Actions tab (useful for testing with creds).
   workflow_dispatch:
 

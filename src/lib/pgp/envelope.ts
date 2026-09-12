@@ -107,6 +107,35 @@ export function envelopeFileToDataUrl(file: EnvelopeFile): string {
   return `data:${file.type};base64,${file.data}`;
 }
 
+/**
+ * Strict allow-list for any file- or message-derived URL that reaches an
+ * <img src> (defense in depth against CodeQL js/xss-through-dom on the URL
+ * sink). Permitted, and only rendered:
+ *   - `data:image/<png|jpeg|jpg|gif|webp|bmp|avif|svg+xml>;base64,<b64>`
+ *     with the payload charset enforced (a decrypted, attacker-controlled
+ *     message can therefore never inject e.g. data:text/html or a
+ *     javascript: URL into an <img>),
+ *   - `blob:` URLs (same-document object URLs minted by URL.createObjectURL),
+ *   - `https:` URLs (remote avatars, e.g. Keybase profile pictures).
+ * Everything else - and anything that is not an absolute URL - returns null
+ * so the caller can render a non-image fallback instead.
+ */
+export function isSafeImageUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol === "https:" || parsed.protocol === "blob:") return url;
+  if (parsed.protocol === "data:") {
+    return /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(url)
+      ? url
+      : null;
+  }
+  return null;
+}
+
 /** Human-readable file size, e.g. "1.4 MB". */
 export function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

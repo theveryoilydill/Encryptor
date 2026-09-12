@@ -217,29 +217,112 @@ export async function unlockPrivateKey(
   return key;
 }
 
+/**
+ * Runtime-only per-subkey metadata attached to describePublicKey output via a
+ * spread cast (like subkeyFingerprints below — deliberately NOT part of the
+ * exported PublicKeyInfo type, so every consumer that serializes the info
+ * keeps working untouched). Shape (R11):
+ *   { keyID: string (uppercase hex), algorithm: string (RAW openpgp value,
+ *   e.g. "ecdhX25519" / "rsaEncryptSign"), created: Date, expiresAt:
+ *   number | null (epoch-ms; null = never/unknown) }
+ * Consumers must read it defensively — describeSubkeyDetails in
+ * key-details.ts is the canonical display-side parser.
+ */
+interface SubkeyRuntimeDetail {
+  keyID: string;
+  algorithm: string;
+  created: Date;
+  expiresAt: number | null;
+}
+
+/**
+ * Subkey expiration → epoch-ms with the SAME guard posture as the primary
+ * key's expiration in describePublicKey below: a valid Date → getTime(); an
+ * Array → first valid element (openpgp can return arrays for multi-key
+ * cases); a number → only when finite and > 0 (openpgp v6 returns Infinity
+ * for keys it considers non-expiring — Infinity must NEVER become
+ * new Date(Infinity), which is an Invalid Date → NaN epoch-ms). Any throw,
+ * null, or invalid value → null (treated as "never/unknown", never fatal).
+ */
+async function subkeyExpirationMs(subkey: openpgp.Subkey): Promise<number | null> {
+  try {
+    const exp = await subkey.getExpirationTime();
+    if (exp instanceof Date) {
+      return Number.isNaN(exp.getTime()) ? null : exp.getTime();
+    }
+    if (Array.isArray(exp)) {
+      const first = exp[0];
+      if (first instanceof Date && !Number.isNaN(first.getTime())) {
+        return first.getTime();
+      }
+      if (typeof first === "number" && Number.isFinite(first) && first > 0) {
+        return first;
+      }
+      return null;
+    }
+    if (typeof exp === "number" && Number.isFinite(exp) && exp > 0) {
+      return exp;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function describePublicKey(armored: Armored): Promise<PublicKeyInfo> {
   const key = await readKey(armored);
   const primary = key.getAlgorithmInfo();
   const fp = key.getFingerprint().toUpperCase();
-  const subkeyFPs = key.getSubkeys().map((s) => s.getFingerprint().toUpperCase());
+  const subkeys = key.getSubkeys();
+  const subkeyFPs = subkeys.map((s) => s.getFingerprint().toUpperCase());
 
   // Try to find the most relevant encryption-capable subkey's expiration
   let expirationTime: Date | null = null;
   try {
     const exp = await key.getExpirationTime();
     if (exp instanceof Date) {
-      expirationTime = exp;
+      // Guard against clock-skew garbage: an invalid Date would flow through
+      // as NaN epoch-ms downstream (badges/timestamps). Treat as unknown.
+      expirationTime = Number.isNaN(exp.getTime()) ? null : exp;
     } else if (Array.isArray(exp)) {
       // openpgp can return arrays of Dates or numbers for multi-key cases.
       const first = exp[0];
-      if (first instanceof Date) expirationTime = first;
-      else if (typeof first === "number" && first > 0) expirationTime = new Date(first);
-    } else if (typeof exp === "number" && exp > 0) {
+      if (first instanceof Date && !Number.isNaN(first.getTime())) {
+        expirationTime = first;
+      } else if (typeof first === "number" && Number.isFinite(first) && first > 0) {
+        expirationTime = new Date(first);
+      }
+    } else if (typeof exp === "number" && Number.isFinite(exp) && exp > 0) {
+      // openpgp v6 returns Infinity (a number) for keys it considers
+      // non-expiring — Infinity must NOT become new Date(Infinity) (Invalid
+      // Date → NaN epoch-ms), so require a finite value here.
       expirationTime = new Date(exp);
     }
   } catch {
     expirationTime = null;
   }
+
+  // Per-subkey details (R11): captured alongside subkeyFingerprints. Each
+  // subkey is fully isolated in try/catch so one malformed subkey can never
+  // break the whole describe — it just yields no entry (or expiresAt: null
+  // via subkeyExpirationMs' guard posture). Promise.all over a map keeps the
+  // result in packet order (deterministic display order).
+  const describedSubkeys = await Promise.all(
+    subkeys.map(async (s): Promise<SubkeyRuntimeDetail | null> => {
+      try {
+        return {
+          keyID: keyIDToHex(s.getKeyID()),
+          algorithm: s.getAlgorithmInfo().algorithm,
+          created: s.getCreationTime(),
+          expiresAt: await subkeyExpirationMs(s),
+        };
+      } catch {
+        // One bad subkey never breaks describe — skip it entirely.
+        return null;
+      }
+    }),
+  );
+  const subkeyDetails = describedSubkeys.filter((d): d is SubkeyRuntimeDetail => d !== null);
 
   return {
     armored,
@@ -256,8 +339,11 @@ export async function describePublicKey(armored: Armored): Promise<PublicKeyInfo
     bitSize: (primary as { bits?: number }).bits,
     curve: (primary as { curve?: string }).curve,
     isRevoked: key.revocationSignatures.length > 0,
-    // include subkey fingerprints for debugging/visibility (not part of type but useful)
-    ...({ subkeyFingerprints: subkeyFPs } as object),
+    // include subkey fingerprints + per-subkey details for
+    // debugging/visibility (not part of the exported type but useful —
+    // consumers read these spread-cast fields defensively, e.g.
+    // describeSubkeyDetails in key-details.ts)
+    ...({ subkeyFingerprints: subkeyFPs, subkeyDetails } as object),
   };
 }
 
@@ -494,6 +580,11 @@ export async function decryptAndAutoVerify(
       fingerprint: string;
       username?: string;
       allKeyIDs?: string[];
+      /** True when the record came from the caller's own configured key. */
+      self?: boolean;
+      /** Expiration of the record's key as epoch-ms, when known (R9: only
+       *  locally-resolved records carry it). */
+      expiresAt?: number | null;
     }>
   >,
 ): Promise<{
@@ -510,6 +601,10 @@ export async function decryptAndAutoVerify(
     userID?: string;
     allUserIDs?: string[];
     timestampIso?: string;
+    /** True when the signer is the user's own locally-configured key. */
+    self?: boolean;
+    /** Expiration of the signer's key as epoch-ms, when known. */
+    expiresAt?: number | null;
   }>;
 }> {
   if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
@@ -673,6 +768,8 @@ export async function decryptAndAutoVerify(
         keyID,
         fingerprint: match?.fingerprint,
         username: match?.username,
+        self: match?.self,
+        expiresAt: match?.expiresAt,
         verified: verifiedStatus,
         error,
         name: info?.name,
@@ -944,6 +1041,95 @@ export function detectArmoredFormat(armored: string): ArmoredFormat {
   return "unknown";
 }
 
+/* --------------------------- Message metadata (R9) ------------------------- */
+
+/**
+ * Inputs longer than this are skipped by describeEncryptedMessage. The
+ * helper is called per keystroke from the Decrypt tab (no debounce, no
+ * effect), so parsing is bounded: past this size the armor is likely a
+ * huge batch job rather than an interactive paste, and the metadata strip
+ * silently shows nothing (same as "not an encrypted message").
+ */
+export const MAX_ENCRYPTED_MESSAGE_META_CHARS = 200_000;
+
+/** Human-friendly labels for the public-key algorithms a PKESK packet can
+ *  reference (openpgp.enums.publicKey numeric values). Kept consistent with
+ *  the humanized names used in the key-details panel (key-details.ts):
+ *  e.g. "rsaEncryptSign" → "RSA", "eddsaLegacy" → "EdDSA (legacy)". Values
+ *  missing from this map fall back to openpgp.enums.read, then to the raw
+ *  number — display-only, never fed back into crypto. */
+const PKESK_ALGORITHM_LABELS: ReadonlyMap<number, string> = new Map<number, string>([
+  [openpgp.enums.publicKey.rsaEncryptSign, "RSA"],
+  [openpgp.enums.publicKey.rsaEncrypt, "RSA"],
+  [openpgp.enums.publicKey.rsaSign, "RSA"],
+  [openpgp.enums.publicKey.elgamal, "ElGamal"],
+  [openpgp.enums.publicKey.dsa, "DSA"],
+  [openpgp.enums.publicKey.ecdh, "ECDH"],
+  [openpgp.enums.publicKey.ecdsa, "ECDSA"],
+  [openpgp.enums.publicKey.eddsaLegacy, "EdDSA (legacy)"],
+  [openpgp.enums.publicKey.x25519, "X25519"],
+  [openpgp.enums.publicKey.x448, "X448"],
+  [openpgp.enums.publicKey.ed25519, "Ed25519"],
+  [openpgp.enums.publicKey.ed448, "Ed448"],
+  [openpgp.enums.publicKey.aedh, "AEDH"],
+  [openpgp.enums.publicKey.aedsa, "AEDSA"],
+]);
+
+function describePkeskAlgorithm(value: number): string {
+  const label = PKESK_ALGORITHM_LABELS.get(value);
+  if (label) return label;
+  try {
+    return openpgp.enums.read(openpgp.enums.publicKey, value);
+  } catch {
+    return String(value);
+  }
+}
+
+export interface EncryptedMessageMeta {
+  /** How many PKESK (public-key encrypted session key) packets the message
+   *  carries — i.e. how many recipient keys it is encrypted to. */
+  recipientKeyCount: number;
+  /** Unique humanized public-key algorithm names across those packets, in
+   *  first-appearance order (e.g. ["ECDH"] or ["ECDH", "RSA"]). */
+  publicKeyAlgorithms: string[];
+}
+
+/**
+ * Describe an armored encrypted message WITHOUT decrypting it (no key, no
+ * passphrase, no secret material — only the packet headers are parsed).
+ *
+ * Returns null (never throws) whenever the metadata cannot be determined:
+ * not an encrypted message, malformed armor, no PKESK packets (e.g. a
+ * cleartext-signed block, which openpgp v6's readMessage happens to parse
+ * instead of rejecting — count 0 → null), or input over the
+ * MAX_ENCRYPTED_MESSAGE_META_CHARS size threshold.
+ *
+ * NOTE (verified against openpgp 6.3.1 at runtime): the PKESK packet's
+ * public-key algorithm lives on `.publicKeyAlgorithm` (a numeric
+ * enums.publicKey value); `.algorithm` is undefined on these packets.
+ */
+export async function describeEncryptedMessage(
+  armored: string,
+): Promise<EncryptedMessageMeta | null> {
+  if (armored.length > MAX_ENCRYPTED_MESSAGE_META_CHARS) return null;
+  try {
+    const msg = await openpgp.readMessage({ armoredMessage: armored });
+    const pkesks = msg.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
+    if (pkesks.length === 0) return null;
+    const publicKeyAlgorithms: string[] = [];
+    for (const pkesk of pkesks) {
+      const raw = (pkesk as { publicKeyAlgorithm?: unknown }).publicKeyAlgorithm;
+      if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+      const label = describePkeskAlgorithm(raw);
+      if (!publicKeyAlgorithms.includes(label)) publicKeyAlgorithms.push(label);
+    }
+    return { recipientKeyCount: pkesks.length, publicKeyAlgorithms };
+  } catch {
+    // Not an encrypted message / malformed — metadata is best-effort only.
+    return null;
+  }
+}
+
 /**
  * Verify any armored PGP block by auto-detecting its format.
  *
@@ -1012,6 +1198,11 @@ export async function verifyAutoDetectWithKeyFetch(
       fingerprint: string;
       username?: string;
       allKeyIDs?: string[];
+      /** True when the record came from the caller's own configured key. */
+      self?: boolean;
+      /** Expiration of the record's key as epoch-ms, when known (R9: only
+       *  locally-resolved records carry it). */
+      expiresAt?: number | null;
     }>
   >,
 ): Promise<{
@@ -1028,6 +1219,10 @@ export async function verifyAutoDetectWithKeyFetch(
     userID?: string;
     allUserIDs?: string[];
     timestampIso?: string;
+    /** True when the signer is the user's own locally-configured key. */
+    self?: boolean;
+    /** Expiration of the signer's key as epoch-ms, when known. */
+    expiresAt?: number | null;
   }>;
 }> {
   const format = detectArmoredFormat(armored);
@@ -1251,6 +1446,8 @@ export async function verifyAutoDetectWithKeyFetch(
         keyID,
         fingerprint: match?.fingerprint,
         username: match?.username,
+        self: match?.self,
+        expiresAt: match?.expiresAt,
         verified: verifiedStatus,
         error,
         name: info?.name,

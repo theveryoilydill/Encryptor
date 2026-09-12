@@ -30,5 +30,5 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "pgp-app", "mini-services", "examples", ".zscripts", "tests/e2e"]
+  "exclude": ["node_modules"]
 }

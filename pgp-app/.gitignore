@@ -1,8 +1,0 @@
-node_modules
-/.react-router
-/build
-/.wrangler
-.dev.vars
-.wrangler
-*.log
-.DS_Store

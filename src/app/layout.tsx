@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -16,22 +16,21 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Encryptor",
   description: "Use public PGP registries to encrypt messages to friends.",
-  keywords: ["PGP", "encryption", "encryptor"],
+  keywords: ["PGP", "encryption", "encryptor", "keybase"],
   authors: [{ name: "Encryptor" }],
   icons: {
     icon: "/logo.svg",
   },
   openGraph: {
     title: "Encryptor",
-    description: "Browser-based PGP encryption with Keybase lookup.",
-    url: "https://example.com",
+    description: "Use public PGP registries to encrypt messages to friends.",
     siteName: "Encryptor",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "Encryptor",
-    description: "Browser-based PGP encryption with Keybase lookup.",
+    description: "Use public PGP registries to encrypt messages to friends.",
   },
 };
 
@@ -43,10 +42,16 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen flex flex-col bg-background text-foreground font-sans`}
       >
-        {children}
-        <Toaster />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );

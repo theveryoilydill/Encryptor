@@ -159,15 +159,20 @@ export function RecipientPicker({
     });
   }, []);
 
+  // Suggestions only ever correspond to the CURRENT query: cleared input
+  // hides stale results instantly, even before the debounce timer fires.
+  // # Mr. AI Acting on s183173's Behalf
+  const visibleSuggestions = input.trim() === "" ? [] : suggestions;
+
   // Debounced multi-source search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = input.trim();
-    if (q.length < 1) {
-      setSuggestions([]);
-      return;
-    }
     debounceRef.current = setTimeout(async () => {
+      if (q.length < 1) {
+        setSuggestions([]);
+        return;
+      }
       setBusy(true);
       try {
         const results = await searchAllKeyserversClient(q, PROXIES.searchAllProxy);
@@ -338,14 +343,14 @@ export function RecipientPicker({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter" && suggestions.length > 0) {
+      if (e.key === "Enter" && visibleSuggestions.length > 0) {
         e.preventDefault();
-        addRecipient(suggestions[0]);
+        addRecipient(visibleSuggestions[0]);
       } else if (e.key === "Escape") {
         setShowSuggestions(false);
       }
     },
-    [suggestions, addRecipient],
+    [visibleSuggestions, addRecipient],
   );
 
   const sourceColors: Record<string, string> = {
@@ -453,7 +458,7 @@ export function RecipientPicker({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+          onFocus={() => visibleSuggestions.length > 0 && setShowSuggestions(true)}
           placeholder={
             recipients.length === 0
               ? "Search by name, email, or Keybase username…"
@@ -471,13 +476,13 @@ export function RecipientPicker({
         )}
 
         {/* Suggestions dropdown - BELOW the input */}
-        {showSuggestions && suggestions.length > 0 && (
+        {showSuggestions && visibleSuggestions.length > 0 && (
           <ul
             className="scrollbar-thin absolute inset-x-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg"
             role="listbox"
             aria-label="Recipient search results"
           >
-            {suggestions.map((s, i) => {
+            {visibleSuggestions.map((s, i) => {
               const alreadyAdded = recipients.some(
                 (p) =>
                   (s.username && p.username === s.username) ||
@@ -556,7 +561,7 @@ export function RecipientPicker({
           and no dropdown results are on screen. Clicking routes through the
           same addRecipient path as picking a search result. */}
       {input.trim() === "" &&
-        !(showSuggestions && suggestions.length > 0) &&
+        !(showSuggestions && visibleSuggestions.length > 0) &&
         recentRecipients.length > 0 && (
           <div className="mt-2">
             <p className="text-[10px] text-muted-foreground">Recent:</p>

@@ -20,6 +20,7 @@ import {
   type KeySearchResult,
 } from "@/lib/pgp/keybase";
 import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
+import { isSafeImageUrl } from "@/lib/pgp/envelope";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
@@ -500,9 +501,9 @@ export function RecipientPicker({
                         : ""
                     }`}
                   >
-                    {s.pictureUrl ? (
+                    {s.pictureUrl && isSafeImageUrl(s.pictureUrl) ? (
                       <img
-                        src={s.pictureUrl}
+                        src={isSafeImageUrl(s.pictureUrl) ?? undefined}
                         alt=""
                         className="size-8 rounded-full object-cover ring-1 ring-border"
                       />

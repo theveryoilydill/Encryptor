@@ -13,7 +13,12 @@ import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { envelopeFileToDataUrl, formatFileSize, type EnvelopeFile } from "@/lib/pgp/envelope";
+import {
+  envelopeFileToDataUrl,
+  formatFileSize,
+  isSafeImageUrl,
+  type EnvelopeFile,
+} from "@/lib/pgp/envelope";
 import { findInlineImageMarkers } from "@/lib/pgp/inline-image";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
@@ -446,7 +451,7 @@ export function AttachmentList({
         <ul className="flex flex-wrap gap-2">
           {attachments.map((f, idx) => {
             const isImage = f.type.startsWith("image/");
-            const previewUrl = isImage ? envelopeFileToDataUrl(f) : null;
+            const previewUrl = isImage ? isSafeImageUrl(envelopeFileToDataUrl(f)) : null;
             return (
               <li
                 key={`${f.name}-${idx}`}
@@ -573,7 +578,11 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
         if (seg.type === "text") {
           return <span key={i}>{seg.content}</span>;
         }
-        const src = fileMap.get(seg.filename);
+        const candidate = fileMap.get(seg.filename);
+        // Guard the <img src> URL sink: only strict image data:/blob:/https
+        // URLs may reach the DOM (see isSafeImageUrl) - unsafe values render
+        // the missing-image placeholder instead.
+        const src = candidate ? isSafeImageUrl(candidate) : null;
         if (!src) {
           return (
             <span
@@ -751,16 +760,17 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
         {files.map((f, i) => {
           const isImage = f.type.startsWith("image/");
           const url = envelopeFileToDataUrl(f);
+          const safeImgSrc = isImage ? isSafeImageUrl(url) : null;
           return (
             <li key={i} className="flex items-center gap-2.5 text-sm">
-              {isImage ? (
+              {safeImgSrc ? (
                 <a
                   href={url}
                   download={f.name}
                   className="flex items-center gap-2.5 hover:underline"
                 >
                   <img
-                    src={url}
+                    src={safeImgSrc}
                     alt={f.name}
                     className="size-8 rounded border border-border object-cover"
                   />

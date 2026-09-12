@@ -11,14 +11,14 @@ import {
   SCALE_STEP_NORMAL,
   type InlineImageMarker,
 } from "@/lib/pgp/inline-image";
-import type { EnvelopeFile } from "@/lib/pgp/envelope";
+import { isSafeImageUrl, type EnvelopeFile } from "@/lib/pgp/envelope";
 
 /**
  * InteractiveMessagePreview — renders a message with inline images and lets
  * the user scale/move each image with the mouse and keyboard.
  *
  * Mouse:
- *   - Click an image to select it (shown with a blue outline).
+ *   - Click an image to select it (shown with an accent outline).
  *   - Drag a selected image to move it (updates dx, dy in real time).
  *
  * Keyboard (when an image is selected):
@@ -238,7 +238,7 @@ export function InteractiveMessagePreview({
   if (!plaintext.trim() && markers.length === 0) {
     return (
       <div
-        className="rounded-md border border-neutral-200 bg-neutral-50 px-3.5 py-3 text-sm text-neutral-400"
+        className="rounded-xl border border-border bg-muted/40 px-3.5 py-3 text-sm text-muted-foreground"
         style={{ minHeight }}
       >
         {emptyPlaceholder}
@@ -249,7 +249,7 @@ export function InteractiveMessagePreview({
   return (
     <div
       ref={containerRef}
-      className="rounded-md border border-neutral-200 bg-white px-3.5 py-3 overflow-hidden"
+      className="rounded-xl border border-border bg-card px-3.5 py-3 shadow-sm overflow-hidden transition-colors duration-150"
       style={{ minHeight }}
       // Clicking the empty area deselects.
       onClick={(e) => {
@@ -258,21 +258,23 @@ export function InteractiveMessagePreview({
       // Make the container focusable so keyboard shortcuts work after click.
       tabIndex={readOnly ? -1 : 0}
     >
-      <div className="whitespace-pre-wrap break-words text-sm text-neutral-900 leading-relaxed">
+      <div className="whitespace-pre-wrap break-words text-sm text-foreground leading-relaxed">
         {segments.map((seg, i) => {
           if (seg.type === "text") {
             return <span key={i}>{seg.content}</span>;
           }
           const { marker, markerIndex } = seg;
           const file = fileMap.get(marker.filename);
-          const src = file ? `data:${file.type};base64,${file.data}` : null;
+          // Guard the <img src> URL sink (isSafeImageUrl) so a crafted
+          // message can never put a non-image URL into an <img>.
+          const src = file ? isSafeImageUrl(`data:${file.type};base64,${file.data}`) : null;
           const isSelected = selectedIndex === markerIndex && !readOnly;
 
           if (!src) {
             return (
               <span
                 key={i}
-                className="inline-block mx-1 px-2 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 text-[11px] italic"
+                className="inline-block mx-1 px-2 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 text-[11px] italic dark:bg-red-950/40 dark:border-red-900 dark:text-red-400"
               >
                 [missing image: {marker.displayName}]
               </span>
@@ -300,12 +302,12 @@ export function InteractiveMessagePreview({
                   // Keep a min height so tiny scales don't vanish.
                   minHeight: "20px",
                 }}
-                className={`rounded border-2 transition-colors ${
+                className={`rounded border-2 transition-colors duration-150 ${
                   isSelected
-                    ? "border-[#0055dc] shadow-md"
+                    ? "border-[#0055dc] shadow-md dark:border-[#5e94ff]"
                     : readOnly
-                      ? "border-neutral-200"
-                      : "border-neutral-300 hover:border-[#0055dc]/50 cursor-move"
+                      ? "border-border"
+                      : "border-neutral-300 dark:border-neutral-700 hover:border-[#0055dc]/50 dark:hover:border-[#5e94ff]/50 cursor-move"
                 }`}
                 onMouseDown={(e) => handleMouseDown(e, markerIndex)}
                 onClick={(e) => {
@@ -327,26 +329,28 @@ export function InteractiveMessagePreview({
 
       {/* Help text — only shown in edit mode when there's at least one image. */}
       {!readOnly && markers.length > 0 && (
-        <div className="mt-3 pt-2 border-t border-neutral-100 text-[10px] text-neutral-400">
+        <div className="mt-3 pt-2 border-t border-border/60 text-[10px] text-muted-foreground">
           {selectedIndex !== null ? (
             <span>
-              <kbd className="px-1 py-0.5 bg-neutral-100 rounded border border-neutral-200 font-mono">
+              {/* kbd chip family (R11-b): bg-muted/50 to match the PgpApp tab
+                  Alt+N chips exactly. */}
+              <kbd className="px-1 py-0.5 bg-muted/50 rounded border border-border font-mono">
                 ←↑↓→
               </kbd>{" "}
               move ·{" "}
-              <kbd className="px-1 py-0.5 bg-neutral-100 rounded border border-neutral-200 font-mono">
+              <kbd className="px-1 py-0.5 bg-muted/50 rounded border border-border font-mono">
                 Shift+←↑↓→
               </kbd>{" "}
               micro-move (1px) ·{" "}
-              <kbd className="px-1 py-0.5 bg-neutral-100 rounded border border-neutral-200 font-mono">
+              <kbd className="px-1 py-0.5 bg-muted/50 rounded border border-border font-mono">
                 Alt+←↑↓→
               </kbd>{" "}
               scale ·{" "}
-              <kbd className="px-1 py-0.5 bg-neutral-100 rounded border border-neutral-200 font-mono">
+              <kbd className="px-1 py-0.5 bg-muted/50 rounded border border-border font-mono">
                 Del
               </kbd>{" "}
               remove ·{" "}
-              <kbd className="px-1 py-0.5 bg-neutral-100 rounded border border-neutral-200 font-mono">
+              <kbd className="px-1 py-0.5 bg-muted/50 rounded border border-border font-mono">
                 Esc
               </kbd>{" "}
               deselect

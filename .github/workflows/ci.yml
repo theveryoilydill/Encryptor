@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   quality:
-    name: typecheck and lint 
+    name: typecheck and lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

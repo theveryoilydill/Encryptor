@@ -203,9 +203,7 @@ export async function lookupKeybaseUsersClient(
   usernames: string[],
   proxyUrl = "/api/keybase",
 ): Promise<KeybaseLookupResult> {
-  const cleaned = usernames
-    .map((u) => u.trim().toLowerCase())
-    .filter((u) => u.length > 0);
+  const cleaned = usernames.map((u) => u.trim().toLowerCase()).filter((u) => u.length > 0);
 
   if (cleaned.length === 0) {
     return { found: [], missing: [], errors: [] };
@@ -296,9 +294,7 @@ export async function fetchKeyByKeyIDServer(
   keyIDs: string[],
   fetchImpl: typeof fetch = fetch,
 ): Promise<KeybaseKeyByIDResult[]> {
-  const cleaned = keyIDs
-    .map((k) => k.trim().toLowerCase())
-    .filter((k) => k.length > 0);
+  const cleaned = keyIDs.map((k) => k.trim().toLowerCase()).filter((k) => k.length > 0);
   if (cleaned.length === 0) return [];
 
   const url = `https://keybase.io/_/api/1.0/key/fetch.json?pgp_key_ids=${encodeURIComponent(
@@ -329,9 +325,7 @@ export async function fetchKeyByKeyIDServer(
       const fp = (k.fingerprint ?? "").toUpperCase();
       const primaryKID = fp.length >= 16 ? fp.slice(fp.length - 16) : fp;
       // Collect all key IDs: primary key ID + all subkey IDs.
-      const subkeyIDs = k.subkeys
-        ? Object.keys(k.subkeys).map((sk) => sk.toUpperCase())
-        : [];
+      const subkeyIDs = k.subkeys ? Object.keys(k.subkeys).map((sk) => sk.toUpperCase()) : [];
       return {
         armored: k.bundle as string,
         fingerprint: fp,
@@ -361,6 +355,24 @@ export async function autocompleteKeybaseUsersClient(
 }
 
 /**
+ * Normalize a fetchkey proxy response body into a key result array.
+ *
+ * The canonical route shape is `{ keys: [...] }` (matching the original
+ * app). A bare array is also accepted for robustness — accessing `.keys`
+ * on a JSON array would return Array.prototype.keys (a function), which is
+ * exactly the trap `body.keys ?? []` cannot guard against. (DRY: one
+ * parser shared by both key-fetch clients.)
+ */
+function coerceKeyListResponse(body: unknown): KeybaseKeyByIDResult[] {
+  if (Array.isArray(body)) return body as KeybaseKeyByIDResult[];
+  if (body !== null && typeof body === "object") {
+    const keys = (body as { keys?: unknown }).keys;
+    if (Array.isArray(keys)) return keys as KeybaseKeyByIDResult[];
+  }
+  return [];
+}
+
+/**
  * Browser-side: fetch public key + owner username by PGP key ID.
  * GET /api/keybase/fetchkey?key_id=fbc07d6a97016cb3
  */
@@ -373,8 +385,7 @@ export async function fetchKeyByKeyIDClient(
   const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
   const res = await fetch(url, { headers: { Accept: "application/json" } });
   if (!res.ok) return [];
-  const body = (await res.json()) as { keys?: KeybaseKeyByIDResult[] };
-  return body.keys ?? [];
+  return coerceKeyListResponse(await res.json().catch(() => null));
 }
 
 /* ----------------------- keys.openpgp.org fallback ------------------------ */
@@ -396,9 +407,7 @@ export async function fetchKeyFromOpenPGP_orgServer(
   keyIDs: string[],
   fetchImpl: typeof fetch = fetch,
 ): Promise<KeybaseKeyByIDResult[]> {
-  const cleaned = keyIDs
-    .map((k) => k.trim().toUpperCase())
-    .filter((k) => k.length > 0);
+  const cleaned = keyIDs.map((k) => k.trim().toUpperCase()).filter((k) => k.length > 0);
   if (cleaned.length === 0) return [];
 
   const results: KeybaseKeyByIDResult[] = [];
@@ -433,10 +442,7 @@ export async function fetchKeyFromOpenPGP_orgServer(
       results.push({
         armored,
         fingerprint: fingerprint || keyID,
-        keyID:
-          fingerprint.length >= 16
-            ? fingerprint.slice(fingerprint.length - 16)
-            : keyID,
+        keyID: fingerprint.length >= 16 ? fingerprint.slice(fingerprint.length - 16) : keyID,
         allKeyIDs: Array.from(allKeyIDs),
         // keys.openpgp.org doesn't provide usernames — caller should show
         // the fingerprint/key ID instead.
@@ -463,8 +469,7 @@ export async function fetchKeyFromOpenPGP_orgClient(
   const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
   const res = await fetch(url, { headers: { Accept: "application/json" } });
   if (!res.ok) return [];
-  const body = (await res.json()) as { keys?: KeybaseKeyByIDResult[] };
-  return body.keys ?? [];
+  return coerceKeyListResponse(await res.json().catch(() => null));
 }
 
 /* --------------------- Multi-source keyserver search --------------------- */
@@ -628,13 +633,15 @@ async function searchOpenPGPOrg(
     if (!armored.includes("-----BEGIN PGP PUBLIC KEY BLOCK-----")) return [];
     const fpMatch = armored.match(/:fingerprint:\s*([0-9A-Fa-f]{40})/);
     const fp = fpMatch ? fpMatch[1].toUpperCase() : "";
-    return [{
-      source: "openpgp.org",
-      label: q,
-      email: q,
-      fingerprint: fp || undefined,
-      keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : undefined,
-    }];
+    return [
+      {
+        source: "openpgp.org",
+        label: q,
+        email: q,
+        fingerprint: fp || undefined,
+        keyID: fp.length >= 16 ? fp.slice(fp.length - 16) : undefined,
+      },
+    ];
   } catch {
     return [];
   }

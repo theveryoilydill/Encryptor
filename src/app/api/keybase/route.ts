@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { lookupKeybaseUsersServer } from "@/lib/pgp/keybase";
+import { CACHE, proxyCall, requireCsvParam } from "@/lib/api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,35 +15,13 @@ export const dynamic = "force-dynamic";
  * GET /api/keybase?usernames=alice,bob,carol
  */
 export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const usernames = (url.searchParams.get("usernames") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const gate = requireCsvParam(
+    new URL(req.url),
+    "usernames",
+    "Missing or empty 'usernames' query parameter.",
+    "A maximum of 50 usernames is allowed per request.",
+  );
+  if (!gate.ok) return gate.response;
 
-  if (usernames.length === 0) {
-    return NextResponse.json(
-      { error: "Missing or empty 'usernames' query parameter." },
-      { status: 400 },
-    );
-  }
-
-  if (usernames.length > 50) {
-    return NextResponse.json(
-      { error: "A maximum of 50 usernames is allowed per request." },
-      { status: 400 },
-    );
-  }
-
-  try {
-    const result = await lookupKeybaseUsersServer(usernames);
-    return NextResponse.json(result, {
-      headers: {
-        "Cache-Control": "public, max-age=300, s-maxage=600",
-      },
-    });
-  } catch (e) {
-    const msg = (e as Error).message;
-    return NextResponse.json({ error: msg }, { status: 502 });
-  }
+  return proxyCall(() => lookupKeybaseUsersServer(gate.values), CACHE.public);
 }

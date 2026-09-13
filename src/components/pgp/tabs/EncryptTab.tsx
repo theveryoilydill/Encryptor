@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+	Blocks,
 	BookmarkPlus,
 	FileDown,
 	FileUp,
@@ -9,6 +10,7 @@ import {
 	Loader2,
 	Lock,
 	ShieldCheck,
+	SquareCode,
 	Sparkles,
 	Trash2,
 	TriangleAlert,
@@ -65,7 +67,7 @@ import {
 	type EnvelopeFile,
 } from "@/lib/pgp/envelope";
 import { LIMITS } from "@/lib/constants";
-import type { AppSettings } from "@/lib/pgp/settings";
+import type { AppSettings, MarkdownEditorKind } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
 
@@ -384,6 +386,7 @@ export function EncryptTab({
 	onIncludeSelfChange,
 	requestDecryptedKey,
 	settings,
+	onEditorKindChange,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	recipients: Recipient[];
@@ -394,6 +397,10 @@ export function EncryptTab({
 	/** App preferences (compression + editor style) — owned by PgpApp so a
 	 *  settings change re-renders the open tab immediately. */
 	settings: AppSettings;
+	/** Live editor-style switch (round 12): the segmented control above the
+	 *  composer writes through to PgpApp's settings owner, so the choice
+	 *  persists and stays in sync with the Settings dialog. */
+	onEditorKindChange: (kind: MarkdownEditorKind) => void;
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
@@ -863,8 +870,29 @@ export function EncryptTab({
 			/>
 
 			<div className="rounded-xl">
-				{/* Composer utility row: starter templates (insert-only). */}
-				<div className="mb-1.5 flex items-center justify-end">
+				{/* Composer utility row: editor-style quick toggle (left, writes
+								through to app settings) + starter templates (right). */}
+				<div className="mb-1.5 flex items-center justify-between gap-2">
+					<div
+						role="group"
+						aria-label="Composer style"
+						className="flex items-center gap-0.5 rounded-lg border bg-muted/40 p-1"
+					>
+						<ComposerStyleButton
+							kind="notion"
+							active={settings.markdownEditor === "notion"}
+							icon={Blocks}
+							label="Notion-style block editor"
+							onSelect={onEditorKindChange}
+						/>
+						<ComposerStyleButton
+							kind="vscode"
+							active={settings.markdownEditor === "vscode"}
+							icon={SquareCode}
+							label="VS Code-style markdown editor"
+							onSelect={onEditorKindChange}
+						/>
+					</div>
 					<TemplateMenu onInsert={insertTemplate} currentMessage={plaintext} />
 				</div>
 				<MessageEditor
@@ -1027,5 +1055,42 @@ export function EncryptTab({
 				</section>
 			)}
 		</section>
+	);
+}
+
+/**
+ * One segment of the composer-style segmented control (round 12). Icon-led
+ * with a text label that collapses to icon-only on narrow screens so the
+ * control fits beside the template menu at 390 px. `aria-pressed` carries
+ * the active state; the active segment gets a raised background + shadow.
+ */
+function ComposerStyleButton({
+	kind,
+	active,
+	icon: Icon,
+	label,
+	onSelect,
+}: {
+	kind: MarkdownEditorKind;
+	active: boolean;
+	icon: typeof Blocks;
+	label: string;
+	onSelect: (kind: MarkdownEditorKind) => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={() => onSelect(kind)}
+			aria-pressed={active}
+			title={label}
+			className={`inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-all duration-150 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff] ${
+				active
+					? "bg-background text-foreground shadow-sm"
+					: "text-muted-foreground hover:text-foreground"
+			}`}
+		>
+			<Icon className="size-3.5 shrink-0" aria-hidden />
+			<span className="hidden min-[420px]:inline">{kind === "notion" ? "Notion" : "Code"}</span>
+		</button>
 	);
 }

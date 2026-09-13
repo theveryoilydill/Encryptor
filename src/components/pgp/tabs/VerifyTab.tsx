@@ -161,6 +161,18 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// tab's job). Dismissal is keyed to the input text, so clearing the field
 	// re-arms the hint.
 	const detectedBlock = detectPgpBlock(armored);
+	// Paste-kind pre-check (parity with the Decrypt tab's metadata strip):
+	// a cheap render-time read of the armor headers + the cleartext "Hash:"
+	// line — no openpgp parsing, no secret material. The chip only appears
+	// for content this tab can actually verify (cleartext-signed or a
+	// detached signature); wrong-block cases keep their amber/info hints.
+	const pastedKind = armored.includes("-----BEGIN PGP SIGNED MESSAGE-----")
+		? "cleartext"
+		: armored.includes("-----BEGIN PGP SIGNATURE-----")
+			? "detached"
+			: null;
+	const pastedHash =
+		pastedKind === "cleartext" ? (/^Hash:\s*(\S+)/m.exec(armored)?.[1] ?? null) : null;
 	const showVerifyHint =
 		armored.trim() !== "" &&
 		(detectedBlock === "encrypted" ||
@@ -244,6 +256,15 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					spellCheck={false}
 					className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
 				/>
+				{pastedKind && (
+					<p className="animate-fade-up mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+						<FileSearch aria-hidden="true" className="size-3 shrink-0" />
+						<span className="font-medium text-foreground/70">
+							{pastedKind === "cleartext" ? "Cleartext-signed message" : "Detached signature"}
+						</span>
+						{pastedHash ? <span className="font-mono">· hash {pastedHash}</span> : null}
+					</p>
+				)}
 				{showVerifyHint && detectedBlock && (
 					<InputHint
 						tone={detectedBlock === "encrypted" ? "info" : "amber"}

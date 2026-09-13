@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type ComponentProps } from "react";
 import { useTheme } from "next-themes";
 import {
 	Loader2,
@@ -50,7 +50,12 @@ import {
 	getCachedPassphrase,
 	getCachedPassphraseIfFresh,
 } from "@/lib/pgp/session-passphrase";
-import { loadSettings, saveSettings, type AppSettings } from "@/lib/pgp/settings";
+import {
+	loadSettings,
+	saveSettings,
+	type AppSettings,
+	type MarkdownEditorKind,
+} from "@/lib/pgp/settings";
 
 /** Last-active tab id, persisted so the app reopens on the mode the user
  *  was on. Only accepts the exact tab ids used below, else "encrypt". */
@@ -570,6 +575,15 @@ export default function PgpApp() {
 		},
 		[passphraseCached],
 	);
+	// Composer style quick-toggle (round 12): the Encrypt tab's segmented
+	// control writes through the same settings path as the Settings dialog
+	// (persists, and keeps the auto-lock deadline logic on one owner).
+	const handleEditorKindChange = useCallback(
+		(kind: MarkdownEditorKind) => {
+			handleSetSettings({ ...settings, markdownEditor: kind });
+		},
+		[handleSetSettings, settings],
+	);
 
 	// Alt+1..4 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
 	// key dialog stays on the header key button.
@@ -802,6 +816,7 @@ export default function PgpApp() {
 									onIncludeSelfChange={handleSetIncludeSelf}
 									requestDecryptedKey={requestDecryptedKey}
 									settings={settings}
+									onEditorKindChange={handleEditorKindChange}
 								/>
 							)}
 							{t.id === "decrypt" && (
@@ -896,6 +911,33 @@ function Header({
 	const autoLockMinutesLeft = passphraseCachedUntil
 		? Math.max(1, Math.ceil((passphraseCachedUntil - Date.now()) / 60000))
 		: null;
+	// Live 1-second tick while an auto-lock deadline is armed (round 12):
+	// the badge and tooltip read m:ss and shift tone as the deadline
+	// approaches. Render-only — real enforcement stays in the parent's 5s
+	// interval plus the freshness gate on every unlock attempt. The
+	// SR-facing aria-label keeps the coarse minute phrasing so it does not
+	// re-announce every second; the precise time lives in badge + tooltip.
+	const [, autoLockTick] = useReducer((c: number) => c + 1, 0);
+	useEffect(() => {
+		if (!passphraseCachedUntil) return;
+		const id = setInterval(autoLockTick, 1000);
+		return () => clearInterval(id);
+	}, [passphraseCachedUntil]);
+	const autoLockMsLeft = passphraseCachedUntil
+		? Math.max(0, passphraseCachedUntil - Date.now())
+		: null;
+	const autoLockLabel =
+		autoLockMsLeft !== null
+			? `${Math.floor(autoLockMsLeft / 60000)}:${String(Math.floor((autoLockMsLeft % 60000) / 1000)).padStart(2, "0")}`
+			: null;
+	const autoLockBadgeClass =
+		autoLockMsLeft === null
+			? ""
+			: autoLockMsLeft <= 30000
+				? "animate-pulse border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
+				: autoLockMsLeft <= 120000
+					? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+					: "border-border bg-background text-muted-foreground";
 	return (
 		<header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
 			<div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
@@ -919,20 +961,21 @@ function Header({
 							}
 							title={
 								autoLockMinutesLeft
-									? `Passphrase remembered for this session (memory only) — auto-locks in ${autoLockMinutesLeft} min — click to forget it now`
+									? `Passphrase remembered for this session (memory only) — auto-locks in ${autoLockLabel} — click to forget it now`
 									: "Passphrase remembered for this session (memory only) — click to forget it now"
 							}
 							className="relative size-8 text-muted-foreground transition-colors hover:text-[#0055dc] dark:hover:text-[#5e94ff]"
 						>
 							<Unlock className="size-4" aria-hidden />
-							{/* R9: tiny countdown badge next to the unlock glyph when an
-                  auto-lock is armed — glanceable without opening the tooltip. */}
-							{autoLockMinutesLeft !== null && (
+							{/* R9 countdown badge, upgraded (round 12): live m:ss readout that
+                  ticks every second and shifts tone — amber under 2 minutes,
+                  pulsing red under 30 s — as the auto-lock approaches. */}
+							{autoLockLabel !== null && (
 								<span
 									aria-hidden="true"
-									className="absolute -right-1.5 -bottom-1 rounded-full border border-border bg-background px-1 text-[8px] font-medium leading-[1.3] text-muted-foreground"
+									className={`absolute -right-1.5 -bottom-1 rounded-full border px-1 text-[8px] font-medium tabular-nums leading-[1.3] transition-colors duration-300 ${autoLockBadgeClass}`}
 								>
-									{autoLockMinutesLeft}m
+									{autoLockLabel}
 								</span>
 							)}
 						</Button>

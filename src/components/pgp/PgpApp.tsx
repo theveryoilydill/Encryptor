@@ -500,6 +500,31 @@ export default function PgpApp() {
 			setPassphraseCached(false);
 			setPassphraseCachedUntil(null);
 		}
+		// Unencrypted keys (generated with the optional passphrase left empty)
+		// need no unlock at all — resolve silently instead of showing a prompt
+		// whose non-empty requirement can never be satisfied. (PassphrasePrompt
+		// also tolerates empty input for already-decrypted keys, but skipping
+		// the modal entirely is the right UX.)
+		if (privateKey?.encryptedArmored) {
+			return (async () => {
+				try {
+					const key = await readKey(privateKey!.encryptedArmored!);
+					if (key.isPrivate() && (key as OpenPGP.PrivateKey).isDecrypted()) {
+						return { key: key as OpenPGP.PrivateKey, passphrase: null };
+					}
+				} catch {
+					// Unreadable armor falls through to the prompt, whose unlock
+					// attempt surfaces the real error message.
+				}
+				return new Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>(
+					(resolve, reject) =>
+						setKeyRequest({
+							resolve: (key, passphrase) => resolve({ key, passphrase: passphrase ?? null }),
+							reject,
+						}),
+				);
+			})();
+		}
 		return new Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>((resolve, reject) =>
 			setKeyRequest({
 				resolve: (key, passphrase) => resolve({ key, passphrase: passphrase ?? null }),

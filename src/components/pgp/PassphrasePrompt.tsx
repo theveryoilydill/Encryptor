@@ -120,7 +120,13 @@ export function PassphrasePrompt({
 	const handleSubmit = useCallback(async () => {
 		if (settledRef.current) return;
 		setError(null);
-		if (!passphrase) {
+		// Legacy armor-less Keybase login is the only branch that strictly
+		// requires input upfront (an account password is never empty). The
+		// local-unlock branch may legitimately run with an empty passphrase —
+		// keys generated with the optional passphrase left empty are stored
+		// already-decrypted — so its requirement is checked after reading the
+		// key, where the encrypted/unencrypted distinction is known.
+		if (!passphrase && isKeybase && !canUnlockLocally) {
 			setError(`Enter your ${promptLabel.toLowerCase()}.`);
 			return;
 		}
@@ -134,8 +140,17 @@ export function PassphrasePrompt({
 				if (!key.isPrivate()) {
 					throw new Error("Stored key is not a private key.");
 				}
+				// Already-decrypted key (empty optional passphrase at generation):
+				// empty input is valid — only a genuinely encrypted key requires
+				// something to type.
+				if (!(key as OpenPGP.PrivateKey).isDecrypted() && !passphrase) {
+					setError(`Enter your ${promptLabel.toLowerCase()}.`);
+					return;
+				}
 				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
-				if (remember) {
+				// Caching an empty passphrase is pointless and would light up the
+				// header "remembered" state misleadingly — skip it.
+				if (remember && passphrase) {
 					cachePassphrase(passphrase);
 					onPassphraseCached?.();
 				}

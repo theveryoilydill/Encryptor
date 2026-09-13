@@ -1,7 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LayoutTemplate, Loader2, Lock, ShieldCheck, TriangleAlert } from "lucide-react";
+import {
+	BookmarkPlus,
+	LayoutTemplate,
+	Loader2,
+	Lock,
+	ShieldCheck,
+	Sparkles,
+	Trash2,
+	TriangleAlert,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,8 +30,25 @@ import {
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuLabel,
+	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+	deleteUserTemplate,
+	loadUserTemplates,
+	MAX_TEMPLATE_BODY_CHARS,
+	saveUserTemplate,
+	type UserTemplate,
+} from "@/lib/pgp/user-templates";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "@/lib/pgp/composer-draft";
 import { encryptAndSign, encryptMessage } from "@/lib/pgp/pgp";
 import { sealForConfig } from "@/lib/pgp/pq";
@@ -87,8 +113,49 @@ const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] 
 
 /** Small right-aligned utility above the composer: the template menu works
  *  for BOTH editor styles (Notion blocks + VS Code textarea) because it
- *  rides the same setPlaintext path as typing. */
-function TemplateMenu({ onInsert }: { onInsert: (body: string) => void }) {
+ *  rides the same setPlaintext path as typing. Two sections: the user's
+ *  own saved templates (localStorage, deletable) and the curated starters. */
+function TemplateMenu({
+	onInsert,
+	currentMessage,
+}: {
+	onInsert: (body: string) => void;
+	currentMessage: string;
+}) {
+	const [templates, setTemplates] = useState<UserTemplate[]>([]);
+	const [saveOpen, setSaveOpen] = useState(false);
+	const [name, setName] = useState("");
+	const [saveError, setSaveError] = useState<string | null>(null);
+
+	// Load once on mount; save/delete refresh the local state directly.
+	useEffect(() => {
+		setTemplates(loadUserTemplates());
+	}, []);
+
+	const canSave = currentMessage.trim().length > 0;
+
+	const openSaveDialog = () => {
+		// Prefill with the first words of the message — a name, not the body.
+		const firstWords = currentMessage.trim().replace(/\s+/g, " ").slice(0, 32);
+		setName(firstWords.length > 0 ? firstWords : "");
+		setSaveError(null);
+		setSaveOpen(true);
+	};
+
+	const handleSave = () => {
+		const result = saveUserTemplate(name, currentMessage.slice(0, MAX_TEMPLATE_BODY_CHARS));
+		if (!result.ok) {
+			setSaveError(result.error);
+			return;
+		}
+		setTemplates(result.templates);
+		setSaveOpen(false);
+	};
+
+	const handleDelete = (id: string) => {
+		setTemplates(deleteUserTemplate(id));
+	};
+
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -102,7 +169,63 @@ function TemplateMenu({ onInsert }: { onInsert: (body: string) => void }) {
 					Insert template
 				</Button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="w-64">
+			<DropdownMenuContent align="end" className="w-72">
+				<DropdownMenuLabel className="flex items-center gap-1.5 text-[11px] font-normal text-muted-foreground">
+					<BookmarkPlus aria-hidden="true" className="size-3" />
+					Your templates
+				</DropdownMenuLabel>
+				{templates.length === 0 && (
+					<p className="px-2 pb-1 text-[11px] leading-relaxed text-muted-foreground">
+						Nothing saved yet — use "Save current message" to keep any message as a reusable
+						template (stored in this browser).
+					</p>
+				)}
+				{templates.map((t) => (
+					<DropdownMenuItem
+						key={t.id}
+						onSelect={(e) => {
+							// Clicks on the delete button bubble here (Radix fires
+							// onSelect for any child click) — keep the menu open and
+							// skip the insert when the trash icon was the target.
+							if ((e.target as HTMLElement).closest("button[data-template-delete]")) {
+								e.preventDefault();
+								return;
+							}
+							onInsert(t.body);
+						}}
+						className="group flex items-start gap-1 py-2"
+					>
+						<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+							<span className="truncate text-xs font-medium">{t.name}</span>
+							<span className="truncate text-[11px] text-muted-foreground">
+								{t.body.replace(/\s+/g, " ").slice(0, 48)}
+							</span>
+						</span>
+						<button
+							type="button"
+							data-template-delete
+							aria-label={`Delete template ${t.name}`}
+							title="Delete template"
+							onClick={(e) => {
+								e.stopPropagation();
+								e.preventDefault();
+								handleDelete(t.id);
+							}}
+							className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-black/5 hover:text-red-600 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-500/40 group-hover:opacity-100 dark:hover:bg-white/10 dark:hover:text-red-400"
+						>
+							<Trash2 aria-hidden="true" className="size-3.5" />
+						</button>
+					</DropdownMenuItem>
+				))}
+				<DropdownMenuItem
+					onSelect={openSaveDialog}
+					disabled={!canSave}
+					className="gap-1.5 py-2 text-xs font-medium text-[#0055dc] focus:text-[#0055dc] dark:text-[#5e94ff] dark:focus:text-[#5e94ff]"
+				>
+					<Sparkles aria-hidden="true" className="size-3.5" />
+					Save current message as template…
+				</DropdownMenuItem>
+				<DropdownMenuSeparator />
 				<DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
 					Starter templates
 				</DropdownMenuLabel>
@@ -117,6 +240,46 @@ function TemplateMenu({ onInsert }: { onInsert: (body: string) => void }) {
 					</DropdownMenuItem>
 				))}
 			</DropdownMenuContent>
+
+			{/* Name prompt for "Save current message as template". Plain
+			    Dialog (not an inline menu editor) so mobile keyboards, focus
+			    trapping, and Escape handling all behave. */}
+			<Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+				<DialogContent className="sm:max-w-sm">
+					<DialogHeader>
+						<DialogTitle>Save template</DialogTitle>
+						<DialogDescription>
+							Stored in this browser only. Insert it anytime from this menu.
+						</DialogDescription>
+					</DialogHeader>
+					<Input
+						value={name}
+						onChange={(e) => setName(e.target.value)}
+						placeholder="Template name"
+						aria-label="Template name"
+						maxLength={60}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") {
+								e.preventDefault();
+								handleSave();
+							}
+						}}
+					/>
+					{saveError && (
+						<p role="alert" className="text-xs text-red-600 dark:text-red-400">
+							{saveError}
+						</p>
+					)}
+					<DialogFooter>
+						<Button type="button" variant="outline" onClick={() => setSaveOpen(false)}>
+							Cancel
+						</Button>
+						<Button type="button" onClick={handleSave}>
+							Save template
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</DropdownMenu>
 	);
 }
@@ -610,7 +773,7 @@ export function EncryptTab({
 			<div className="rounded-xl">
 				{/* Composer utility row: starter templates (insert-only). */}
 				<div className="mb-1.5 flex items-center justify-end">
-					<TemplateMenu onInsert={insertTemplate} />
+					<TemplateMenu onInsert={insertTemplate} currentMessage={plaintext} />
 				</div>
 				<MessageEditor
 					value={plaintext}

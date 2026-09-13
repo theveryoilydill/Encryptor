@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Download, Loader2, Lock, LockKeyholeOpen, LockOpen } from "lucide-react";
+import { Download, Loader2, Lock, LockKeyholeOpen, LockOpen, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -40,6 +40,7 @@ import {
 } from "@/lib/pgp/pq";
 import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
+import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
 
 /** Debounce before auto-decrypting a pasted/typed message (ms). */
@@ -71,6 +72,11 @@ export function DecryptTab({
 	// Staleness counter for auto-decrypt runs: only the run launched for the
 	// CURRENT input may apply its result.
 	const runIdRef = useRef(0);
+	// Armor-repair banner state: what the last repair fixed (transient
+	// notice, cleared as soon as the input changes again) + a dismissal
+	// keyed to the input, mirroring the hint-dismissal pattern above.
+	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
+	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
 
 	// Drag & drop: load a .asc armor file onto the input card. Shared hook
 	// (ascii-drop.tsx) sniffs for a PGP armor header; a successful load also
@@ -255,6 +261,27 @@ export function DecryptTab({
 		detectedBlock !== "encrypted" &&
 		hintDismissedFor !== armored;
 
+	// Armor damage detection (cheap, render-time, same pattern as
+	// detectPgpBlock): offer the one-click repair only when the pasted
+	// block shows real mangling. Dismissal is keyed to the input.
+	const armorIssues = findArmorIssues(armored);
+	const showRepairHint = armorIssues.length > 0 && repairDismissedFor !== armored && !busy;
+
+	const applyRepair = useCallback(() => {
+		const result = repairArmor(armored);
+		if (!result) {
+			setError(
+				"Couldn't repair this block — it looks truncated (no END marker), so the ciphertext itself is incomplete.",
+			);
+			return;
+		}
+		setArmored(result.text);
+		setRepairedWith(result.fixes);
+		setError(null);
+		// No success toast needed: the repaired text re-enters the normal
+		// auto-decrypt flow, so the result speaks for itself.
+	}, [armored]);
+
 	const reset = useCallback(() => {
 		runIdRef.current += 1;
 		setArmored("");
@@ -326,7 +353,10 @@ export function DecryptTab({
 				)}
 				<Textarea
 					value={armored}
-					onChange={(e) => setArmored(e.target.value)}
+					onChange={(e) => {
+						setRepairedWith(null);
+						setArmored(e.target.value);
+					}}
 					placeholder={"-----BEGIN PGP MESSAGE-----\n...\n-----END PGP MESSAGE-----"}
 					rows={10}
 					spellCheck={false}
@@ -347,6 +377,50 @@ export function DecryptTab({
 							? "This looks like a signed (not encrypted) message. The Verify tab is designed for that."
 							: "This looks like a PGP key rather than an encrypted message. Keys are managed in the key configuration dialog."}
 					</InputHint>
+				)}
+				{showRepairHint && (
+					<div
+						role="status"
+						className="mt-2 flex animate-fade-up items-start gap-2 rounded-lg border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300"
+					>
+						<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<div className="flex-1">
+							<p className="leading-relaxed">
+								This message was mangled on its way here ({describeFixes(armorIssues)}) — common
+								with email forwarding and copy/paste.
+							</p>
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								onClick={applyRepair}
+								className="press-effect mt-1.5 h-7 gap-1.5 rounded-lg border-amber-400/60 bg-white/60 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 focus-visible:ring-2 focus-visible:ring-amber-500/40 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-900/40"
+							>
+								<WandSparkles aria-hidden="true" className="size-3" />
+								Repair armor
+							</Button>
+						</div>
+						<button
+							type="button"
+							onClick={() => setRepairDismissedFor(armored)}
+							aria-label="Dismiss repair suggestion"
+							title="Dismiss hint"
+							className="flex size-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-black/5 dark:hover:bg-white/10"
+						>
+							<X aria-hidden="true" className="size-3.5" />
+						</button>
+					</div>
+				)}
+				{repairedWith && !showRepairHint && (
+					<div
+						role="status"
+						className="mt-2 flex animate-fade-up items-start gap-2 rounded-lg border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+					>
+						<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<div className="flex-1">
+							<p>Armor repaired: {describeFixes(repairedWith)}.</p>
+						</div>
+					</div>
 				)}
 			</div>
 

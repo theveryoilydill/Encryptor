@@ -8,7 +8,7 @@
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,8 @@ import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
+import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
+import { useToast } from "@/hooks/use-toast";
 import { STORAGE_KEYS } from "@/lib/constants";
 
 const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
@@ -601,16 +603,43 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 	const [armored, setArmored] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Armor-repair state for pasted key armor (mirrors the Decrypt/Verify
+	// banner pair): `repairedWith` holds the fixes applied so the emerald
+	// notice can name them; it self-clears when the text changes again.
+	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
+	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
+	const { toast } = useToast();
 
 	const handleAdd = useCallback(async () => {
 		setError(null);
+		setRepairedWith(null);
 		if (!armored.trim()) {
 			setError("Paste an armored public key.");
 			return;
 		}
 		setBusy(true);
 		try {
-			const v = await validateArmoredKey(armored.trim());
+			// Repair fallback: if the pasted armor fails validation but shows
+			// the known mangling patterns (quotes, HTML entities, lost dashes,
+			// broken wrapping…), try the rebuild before giving up — mirrors the
+			// one-click repair on Decrypt/Verify, applied automatically here
+			// because a recipient key has no second chance to arrive.
+			let candidate = armored.trim();
+			let v = await validateArmoredKey(candidate);
+			if (!v.ok && findArmorIssues(candidate).length > 0) {
+				const originalIssues = findArmorIssues(candidate);
+				const repaired = repairArmor(candidate);
+				if (repaired) {
+					const v2 = await validateArmoredKey(repaired.text);
+					if (v2.ok) {
+						v = v2;
+						candidate = repaired.text;
+						setArmored(repaired.text);
+						setRepairedWith(originalIssues);
+						toast({ title: "Key armor repaired", description: describeFixes(originalIssues) });
+					}
+				}
+			}
 			if (!v.ok || !v.info) {
 				setError(v.error ?? "Invalid public key.");
 				return;
@@ -622,7 +651,7 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 			onAdd({
 				source: "local",
 				label: v.info.userIDs[0]?.name || v.info.userIDs[0]?.email || "Pasted key",
-				armored: armored.trim(),
+				armored: candidate,
 				fingerprint: v.info.fingerprint,
 				keyID: v.info.keyID,
 				algorithm: v.info.algorithm,
@@ -635,8 +664,14 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 		} finally {
 			setBusy(false);
 		}
-	}, [armored, onAdd]);
+	}, [armored, onAdd, toast]);
 
+	// Render-time armor damage detection for the live repair hint — only
+	// for text that plausibly IS a public-key block (never prose, never
+	// private keys). Same cheap helper the Decrypt/Verify tabs use.
+	const looksLikePublicKey = /BEGIN PGP PUBLIC KEY BLOCK/.test(armored);
+	const armorIssues = looksLikePublicKey ? findArmorIssues(armored) : [];
+	const showRepairHint = armorIssues.length > 0 && repairDismissedFor !== armored && !busy;
 	return (
 		<div className="mt-2">
 			<button
@@ -651,7 +686,12 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 				<div className="mt-1.5 space-y-2">
 					<Textarea
 						value={armored}
-						onChange={(e) => setArmored(e.target.value)}
+						onChange={(e) => {
+							setArmored(e.target.value);
+							// Same stale-notice rule as Decrypt/Verify: the emerald "repaired"
+							// note describes the PREVIOUS text only — a fresh paste clears it.
+							setRepairedWith(null);
+						}}
 						placeholder={
 							"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"
 						}
@@ -660,6 +700,61 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 						aria-label="Paste an armored public key"
 						spellCheck={false}
 					/>
+					{showRepairHint && (
+						<div
+							role="status"
+							className="flex animate-fade-up items-start gap-2 rounded-lg border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300"
+						>
+							<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+							<div className="flex-1">
+								<p>
+									This key armor was mangled on its way here ({describeFixes(armorIssues)}) — common
+									with email forwarding and copy/paste.
+								</p>
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+									onClick={() => {
+										const repaired = repairArmor(armored);
+										if (!repaired) {
+											setError(
+												"Couldn't repair this key armor automatically — try re-copying it from the source.",
+											);
+											return;
+										}
+										setArmored(repaired.text);
+										setRepairedWith(armorIssues);
+									}}
+									className="press-effect mt-1.5 h-7 gap-1.5 rounded-lg border-amber-400/60 bg-white/60 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 focus-visible:ring-2 focus-visible:ring-amber-500/40 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-900/40"
+								>
+									<WandSparkles aria-hidden="true" className="size-3" />
+									Repair armor
+								</Button>
+							</div>
+							<button
+								type="button"
+								onClick={() => setRepairDismissedFor(armored)}
+								aria-label="Dismiss repair suggestion"
+								title="Dismiss hint"
+								className="flex size-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-black/5 dark:hover:bg-white/10"
+							>
+								<X aria-hidden="true" className="size-3.5" />
+							</button>
+						</div>
+					)}
+					{repairedWith && !showRepairHint && (
+						<div
+							role="status"
+							className="flex animate-fade-up items-start gap-2 rounded-lg border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+						>
+							<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+							<p>
+								Armor repaired: {describeFixes(repairedWith)} — the key above is clean; add it when
+								ready.
+							</p>
+						</div>
+					)}
 					{error && (
 						<div
 							role="alert"

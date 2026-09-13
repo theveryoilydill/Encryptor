@@ -18,6 +18,11 @@ export const LIMITS = {
 
 export const STORAGE_KEYS = {
 	config: "encryptor.config.v1",
+	/** Ring of previously configured keys (metadata + encrypted armor) for
+	 *  one-click switching — see lib/pgp/key-history.ts. */
+	keyHistory: "encryptor.keyHistory.v1",
+	/** Per-fingerprint dismissal of the post-quantum onboarding banner. */
+	pqBannerDismissed: "encryptor.pq-banner-dismissed",
 	includeSelf: "encryptor.include-self.v1",
 	lastTab: "encryptor.lastTab",
 	recentRecipients: "encryptor.recentRecipients",

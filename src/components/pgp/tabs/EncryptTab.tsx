@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,15 @@ export function EncryptTab({
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
+	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
+	// image-paste bridge must return the FINAL (deduped) filename in the same
+	// tick it registers the file, but React state updates are async and the
+	// updater function must stay pure. The ref is updated eagerly on every
+	// mutation path and re-synced to the committed state after each render.
+	const attachmentsRef = useRef<EnvelopeFile[]>(attachments);
+	useEffect(() => {
+		attachmentsRef.current = attachments;
+	}, [attachments]);
 	const [output, setOutput] = useState("");
 	// Quantum-sealed copy of the LAST output (settings.pqSealedCopy + a key
 	// with a quantum-seal pair): an ML-KEM-768 outer layer only the owner
@@ -174,7 +183,14 @@ export function EncryptTab({
 
 	/** Editor paste bridge: store a pasted image (as a data URL) as an
 	 *  attachment and return the stored entry so the editor can reference it
-	 *  with an envelope:// marker. Sync by contract — throws on read errors. */
+	 *  with an envelope:// marker. Sync by contract — throws on read errors.
+	 *
+	 *  BUGFIX (was "VS Code is super broken"): this used to return the
+	 *  PRE-dedupe name while the state updater stored the DEDUPED one, so
+	 *  the second pasted image's marker pointed at the FIRST image's file —
+	 *  recipients silently saw the wrong image (browser-verified). The
+	 *  unique name is now computed against attachmentsRef BEFORE the state
+	 *  update and the FINAL entry is returned. */
 	const handleNewImageDataUrl = useCallback((dataUrl: string): EnvelopeFile => {
 		// Parse "data:<mime>;base64,<data>".
 		const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(dataUrl);
@@ -186,30 +202,50 @@ export function EncryptTab({
 			throw new Error(`Image is ${formatFileSize(size)} — max ${LIMITS.maxFileLabel}.`);
 		}
 		const ext = type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-		const stored: EnvelopeFile = {
-			name: `pasted-image.${ext}`,
-			type,
-			data,
-			size,
-		};
-		setAttachments((prev) => {
-			const usedNames = new Set(prev.map((a) => a.name));
-			if (!usedNames.has(stored.name)) return [...prev, stored];
-			const dot = stored.name.lastIndexOf(".");
-			let counter = 1;
-			let unique = stored.name;
-			while (usedNames.has(unique)) {
-				unique =
-					dot > 0
-						? `${stored.name.slice(0, dot)}-${counter}${stored.name.slice(dot)}`
-						: `${stored.name}-${counter}`;
-				counter++;
-			}
-			usedNames.add(unique);
-			return [...prev, { ...stored, name: unique }];
-		});
+		const baseName = `pasted-image.${ext}`;
+		// Dedupe against the mirrored list (sync, no stale closure).
+		const usedNames = new Set(attachmentsRef.current.map((a) => a.name));
+		const dot = baseName.lastIndexOf(".");
+		let unique = baseName;
+		let counter = 1;
+		while (usedNames.has(unique)) {
+			unique =
+				dot > 0
+					? `${baseName.slice(0, dot)}-${counter}${baseName.slice(dot)}`
+					: `${baseName}-${counter}`;
+			counter++;
+		}
+		const stored: EnvelopeFile = { name: unique, type, data, size };
+		// Eager mirror update so a same-tick follow-up paste sees this name.
+		attachmentsRef.current = [...attachmentsRef.current, stored];
+		// Guarded commit (idempotent under StrictMode double-invoke).
+		setAttachments((prev) => (prev.some((a) => a.name === stored.name) ? prev : [...prev, stored]));
 		return stored;
 	}, []);
+
+	// Orphan garbage collection (was "VS Code is super broken", part 2):
+	// deleting an image out of the message used to leave its file attached —
+	// it still got encrypted into the envelope (bloat + surprise files for
+	// recipients, verified in the browser). Whenever the message text no
+	// longer references an auto-named PASTED image, drop it. Files added via
+	// "Add files" keep their original names and are NEVER touched here.
+	useEffect(() => {
+		const referenced = new Set<string>();
+		const re = /!\[[^\]]*\]\(envelope:\/\/([^)\s]+)\)/g;
+		for (const m of plaintext.matchAll(re)) {
+			try {
+				referenced.add(decodeURIComponent(m[1]));
+			} catch {
+				referenced.add(m[1]);
+			}
+		}
+		setAttachments((prev) => {
+			const kept = prev.filter(
+				(a) => !/^pasted-image(-\d+)?\.[a-z0-9]+$/.test(a.name) || referenced.has(a.name),
+			);
+			return kept.length === prev.length ? prev : kept;
+		});
+	}, [plaintext]);
 
 	const handleAddFiles = useCallback(
 		(files: FileList | null) => {

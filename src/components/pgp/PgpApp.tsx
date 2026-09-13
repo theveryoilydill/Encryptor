@@ -22,6 +22,7 @@ import { SignTab } from "@/components/pgp/tabs/SignTab";
 import { VerifyTab } from "@/components/pgp/tabs/VerifyTab";
 import { STORAGE_KEYS } from "@/lib/constants";
 import { runCryptoSelfTest, type SelfTestResult } from "@/lib/pgp/self-test";
+import { loadSettings, saveSettings, type AppSettings } from "@/lib/pgp/settings";
 
 /** Last-active tab id, persisted so the app reopens on the mode the user
  *  was on. Only accepts the exact tab ids used below, else "encrypt". */
@@ -80,6 +81,13 @@ export default function PgpApp() {
   });
   const [configOpen, setConfigOpen] = useState(false);
   const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
+  // App preferences (compression + editor style). Owned here so the
+  // ConfigureModal and the tabs stay in sync without a page reload.
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const handleSetSettings = useCallback((next: AppSettings) => {
+    setSettings(next);
+    saveSettings(next);
+  }, []);
   // Screen-reader-only tab-change announcement (see live region below).
   const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
 
@@ -141,6 +149,20 @@ export default function PgpApp() {
     }
   }, [tab]);
 
+  // Keyserver warm-up at startup (all modes): the recipient search, signer
+  // lookups and key fetches all go through the same origin-proxied routes.
+  // Ping them once on mount with a static, non-identifying query so the
+  // first real lookup doesn't pay the cold-start cost. Fire-and-forget.
+  useEffect(() => {
+    const warm = (url: string) => {
+      void fetch(url, { priority: "low" }).catch(() => {
+        // Warm-up is best-effort; failures are invisible to the user.
+      });
+    };
+    warm("/api/keybase/search-all?q=w");
+    warm("/api/keybase/fetchkey?key_id=0000000000000000");
+  }, []);
+
   const handleSelfTest = useCallback(async () => {
     const result: SelfTestResult = await runCryptoSelfTest();
     if (result.ok) {
@@ -189,6 +211,7 @@ export default function PgpApp() {
               includeSelf={includeSelf}
               onIncludeSelfChange={handleSetIncludeSelf}
               requestDecryptedKey={requestDecryptedKey}
+              settings={settings}
             />
           )}
           {tab === "decrypt" && (
@@ -207,6 +230,8 @@ export default function PgpApp() {
         open={configOpen}
         onOpenChange={setConfigOpen}
         privateKey={privateKey}
+        settings={settings}
+        onSettingsChange={handleSetSettings}
         onSave={(next) => {
           handleSetPrivateKey(next);
           setConfigOpen(false);

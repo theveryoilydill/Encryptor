@@ -25,6 +25,13 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -44,6 +51,13 @@ import {
 } from "@/lib/pgp/key-details";
 import { applyConfigBackup, buildConfigBackup, parseConfigBackup } from "@/lib/pgp/config-backup";
 import { STORAGE_KEYS } from "@/lib/constants";
+import {
+  COMPRESSION_OPTIONS,
+  EDITOR_OPTIONS,
+  type AppSettings,
+  type CompressionLevel,
+  type MarkdownEditorKind,
+} from "@/lib/pgp/settings";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
@@ -69,12 +83,18 @@ export function ConfigureModal({
   privateKey,
   onSave,
   onClear,
+  settings,
+  onSettingsChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   privateKey: PrivateKeyConfig | null;
   onSave: (cfg: PrivateKeyConfig) => void;
   onClear: () => void;
+  /** Current app preferences (compression + editor style). */
+  settings: AppSettings;
+  /** Persist a preference change (writes localStorage + app state). */
+  onSettingsChange: (next: AppSettings) => void;
 }) {
   // Key-share QR (additive): toggles the inline QR block inside the Key
   // details disclosure. No state-reset effect on dialog close — the block
@@ -378,6 +398,12 @@ export function ConfigureModal({
           <hr className="my-4 border-border" />
 
           <GenerateKeyForm onLoaded={(cfg) => onSave(cfg)} />
+
+          <hr className="my-4 border-border" />
+
+          {/* Preferences: message compression + composer style. Applies
+              immediately — the tabs read the same state. */}
+          <PreferencesSection settings={settings} onSettingsChange={onSettingsChange} />
 
           {/* Additive: full-settings JSON backup export/import (localStorage
               driven; props signature unchanged). */}
@@ -1047,5 +1073,76 @@ function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => vo
         </Button>
       </div>
     </details>
+  );
+}
+
+/* ------------------------------ Preferences -------------------------------- */
+
+/**
+ * Message compression + composer style, applied immediately via
+ * onSettingsChange. Uses the shared Select; labels stay short (AGENTS.md:
+ * direct messages, no explanations of what things do).
+ */
+function PreferencesSection({
+  settings,
+  onSettingsChange,
+}: {
+  settings: AppSettings;
+  onSettingsChange: (next: AppSettings) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="text-sm font-medium">Preferences</div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="grid gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Message compression
+          </span>
+          <Select
+            value={settings.compression}
+            onValueChange={(v) =>
+              onSettingsChange({ ...settings, compression: v as CompressionLevel })
+            }
+          >
+            <SelectTrigger className="w-full" aria-label="Message compression">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {COMPRESSION_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+        <label className="grid gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Message editor
+          </span>
+          <Select
+            value={settings.markdownEditor}
+            onValueChange={(v) =>
+              onSettingsChange({ ...settings, markdownEditor: v as MarkdownEditorKind })
+            }
+          >
+            <SelectTrigger className="w-full" aria-label="Message editor">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {EDITOR_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Compression: Maximum (default) packs messages tightest; recipients that don&apos;t advertise
+        support fall back to uncompressed automatically.
+      </p>
+    </div>
   );
 }

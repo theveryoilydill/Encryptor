@@ -21,6 +21,7 @@ export const STORAGE_KEYS = {
   includeSelf: "encryptor.include-self.v1",
   lastTab: "encryptor.lastTab",
   recentRecipients: "encryptor.recentRecipients",
+  settings: "encryptor.settings.v1",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

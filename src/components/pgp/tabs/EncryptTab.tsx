@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -24,7 +25,7 @@ import { buildInlineImageMarker, DEFAULT_INLINE_IMAGE_SCALE } from "@/lib/pgp/in
 import { LIMITS } from "@/lib/constants";
 import type { AppSettings } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
-import { parseLooseDate } from "@/lib/pgp/key-details";
+import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
 
 export function EncryptTab({
   privateKey,
@@ -56,6 +57,22 @@ export function EncryptTab({
   // the textarea (or typing different content) re-arms the hint without
   // needing a state-reset effect.
   const [hintDismissedFor, setHintDismissedFor] = useState<string | null>(null);
+
+  // Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
+  // Same detection the recipient chips' "Expired" badge uses
+  // (getKeyExpiryStatus), so the banner and the badge can never disagree.
+  // Deliberately NON-blocking: openpgp.js can still succeed when only the
+  // primary is expired but a subkey remains valid — the banner warns, the
+  // catch below maps the genuine failures to friendly guidance.
+  const expiredRecipients = useMemo(
+    () =>
+      recipients.filter(
+        (r) =>
+          typeof r.expiresAt === "number" &&
+          getKeyExpiryStatus(new Date(r.expiresAt))?.status === "expired",
+      ),
+    [recipients],
+  );
 
   // Derive the user's own public key from the configured private key.
   // Shown as a recipient chip when "Include me" is checked.
@@ -243,7 +260,20 @@ export function EncryptTab({
       });
       setOutput(armored);
     } catch (e) {
-      setError((e as Error).message);
+      const msg = (e as Error).message ?? String(e);
+      // Expired-key failures surface as openpgp internals — translate to
+      // actionable guidance (R8). Triggered e.g. when every encryption
+      // subkey of a recipient is expired: "Could not find valid encryption
+      // key packet in key <KEYID>: Subkey is expired".
+      if (
+        /could not find valid encryption key packet|subkey is expired|key is expired/i.test(msg)
+      ) {
+        setError(
+          "A recipient key is expired — OpenPGP refused to encrypt to it. Remove the expired recipient (or ask its owner for an updated public key) and encrypt again.",
+        );
+      } else {
+        setError(msg);
+      }
     } finally {
       setBusy(false);
     }
@@ -359,6 +389,34 @@ export function EncryptTab({
         onAddFiles={handleAddFiles}
         onRemove={(idx) => setAttachments((prev) => prev.filter((_, i) => i !== idx))}
       />
+
+      {/* Expiry pre-flight warning (R8): fires as soon as an expired key is
+          on the recipient list — before any passphrase is requested. Amber,
+          matching the own-key "expiring" banner family; non-blocking. */}
+      {expiredRecipients.length > 0 && (
+        <div
+          role="status"
+          className="animate-fade-up flex items-start gap-2.5 rounded-xl border border-amber-300/70 bg-amber-50 px-4 py-3 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/30"
+        >
+          <TriangleAlert
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+          />
+          <p className="text-xs leading-relaxed text-amber-900 dark:text-amber-200">
+            <span className="font-medium">
+              {expiredRecipients.length === 1
+                ? "A recipient key has expired."
+                : `${expiredRecipients.length} recipient keys have expired.`}
+            </span>{" "}
+            {expiredRecipients
+              .map(
+                (r) => `“${r.label}” (expired ${new Date(r.expiresAt ?? 0).toLocaleDateString()})`,
+              )
+              .join(", ")}{" "}
+            — encryption may fail. Ask the owner for an updated public key.
+          </p>
+        </div>
+      )}
 
       {error && <ErrorBanner message={error} />}
 

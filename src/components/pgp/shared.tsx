@@ -497,6 +497,19 @@ export function OutputBlock({
             <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               {title}
             </Label>
+            {/* R8: armor stats — quiet mono detail next to the section label.
+                Armor is ASCII so string length ≈ byte length; lines from the
+                raw split. Hidden on the smallest screens to keep the row
+                uncluttered. */}
+            {output && (
+              <span
+                aria-hidden="true"
+                className="ml-0.5 hidden font-mono text-[10px] font-normal normal-case tracking-normal text-muted-foreground sm:inline"
+              >
+                {output.split("\n").length.toLocaleString()} lines ·{" "}
+                {(output.length / 1024).toFixed(1)} KB
+              </span>
+            )}
           </span>
           {preview && (
             <button

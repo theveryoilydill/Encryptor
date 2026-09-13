@@ -401,7 +401,13 @@ export function RecipientPicker({
             return (
               <li
                 key={r.fingerprint}
-                className="inline-flex items-center gap-1.5 rounded-full border bg-background py-1 pl-2.5 pr-1.5 text-xs shadow-xs"
+                className={`inline-flex items-center gap-1.5 rounded-full border py-1 pl-2.5 pr-1.5 text-xs shadow-xs transition-colors ${
+                  expiry?.status === "expired"
+                    ? // R8: whole-chip red tint when the key is expired — the
+                      // badge alone was easy to miss in a busy chip row.
+                      "border-red-300/70 bg-red-50 dark:border-red-900/50 dark:bg-red-950/30"
+                    : "bg-background"
+                }`}
                 title={chipTitle(r.label, r.algorithm, r.fingerprint)}
               >
                 <span className={`font-medium ${ACCENT_TEXT}`}>{r.label}</span>

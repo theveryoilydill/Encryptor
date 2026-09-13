@@ -100,6 +100,11 @@ export function ConfigureModal({
   // details disclosure. No state-reset effect on dialog close — the block
   // only exists while a key is configured AND the disclosure is expanded.
   const [showKeyQr, setShowKeyQr] = useState(false);
+  // R8: QR payload mode. "keyserver" (default — behavior unchanged since the
+  // QR shipped) encodes the keys.openpgp.org lookup URL; "fingerprint"
+  // encodes the de-facto openpgp4fpr: fingerprint URI that OpenKeychain /
+  // GPG Sync / aegir recognize as an import-and-verify target.
+  const [qrMode, setQrMode] = useState<"keyserver" | "fingerprint">("keyserver");
 
   // Pure + cheap: rows for the "Key details" disclosure ([] → render nothing).
   const keyDetailRows = privateKey?.info ? describeKeyDetails(privateKey.info) : [];
@@ -123,6 +128,16 @@ export function ConfigureModal({
         .replace(/\s+/g, "")
         .toUpperCase()}`
     : null;
+
+  // R8: fingerprint URI for the QR's second payload mode. Both payloads are
+  // derived from the same fingerprint, so fingerprintUri is non-null exactly
+  // when keyShareUrl is; the render guard on keyShareUrl makes the `?? ""`
+  // fallbacks unreachable, but QRCodeSVG/CopyButton want a plain string.
+  const fingerprintUri = privateKey?.info?.fingerprint
+    ? `openpgp4fpr:${privateKey.info.fingerprint.replace(/\s+/g, "").toUpperCase()}`
+    : null;
+  const qrValue =
+    qrMode === "keyserver" ? (keyShareUrl ?? "") : (fingerprintUri ?? keyShareUrl ?? "");
 
   // Additive backups: share the key's armored public part (info.armored) /
   // encrypted private part (encryptedArmored) without touching save/clear
@@ -286,10 +301,11 @@ export function ConfigureModal({
                     </div>
                   )}
                   {/* Additive key-share QR: encodes the keys.openpgp.org
-                      lookup URL for this key's fingerprint. Hidden entirely
-                      when no fingerprint is available. White tile keeps the
-                      QR scannable in dark mode; the URL is repeated as text
-                      for screen readers / no-scan fallback. */}
+                      lookup URL (default) or the openpgp4fpr: fingerprint
+                      URI (R8 mode toggle). Hidden entirely when no
+                      fingerprint is available. White tile keeps the QR
+                      scannable in dark mode; the payload is repeated as
+                      text for screen readers / no-scan fallback. */}
                   {keyShareUrl && (
                     <>
                       <button
@@ -307,8 +323,37 @@ export function ConfigureModal({
                           id="key-share-qr"
                           className="mt-2 rounded-lg border border-border bg-white p-3"
                         >
+                          {/* R8: payload mode switch — segmented pair on the
+                              white tile; the active side gets the emerald
+                              tint already used by the QR affordance. */}
+                          <div
+                            role="group"
+                            aria-label="QR code payload"
+                            className="mb-2 inline-flex gap-0.5 rounded-md border border-border bg-muted/40 p-0.5"
+                          >
+                            {(
+                              [
+                                ["keyserver", "Keyserver link"],
+                                ["fingerprint", "Fingerprint URI"],
+                              ] as const
+                            ).map(([mode, label]) => (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setQrMode(mode)}
+                                aria-pressed={qrMode === mode}
+                                className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+                                  qrMode === mode
+                                    ? "bg-emerald-100 text-emerald-900"
+                                    : "text-muted-foreground hover:text-foreground"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
                           <QRCodeSVG
-                            value={keyShareUrl}
+                            value={qrValue}
                             size={140}
                             bgColor="#FFFFFF"
                             fgColor="#000000"
@@ -317,16 +362,19 @@ export function ConfigureModal({
                           />
                           <div className="mt-2 flex items-center justify-between gap-2">
                             <p className="text-[11px] leading-snug text-muted-foreground">
-                              Scan to look up this key on keys.openpgp.org
+                              {qrMode === "keyserver"
+                                ? "Scan to look up this key on keys.openpgp.org"
+                                : "Scan to import + verify by fingerprint (OpenKeychain & friends)"}
                               <span className="mt-0.5 block break-all font-mono text-[10px]">
-                                {keyShareUrl}
+                                {qrValue}
                               </span>
                             </p>
                             {/* R9: copy the lookup URL — reuses the shared
                                 CopyButton (Copied! feedback + success/failure
-                                toasts), same as "Copy public key" below. */}
+                                toasts), same as "Copy public key" below.
+                                R8: copies whichever payload is active. */}
                             <CopyButton
-                              text={keyShareUrl}
+                              text={qrValue}
                               label="Copy link"
                               ariaLabel="Copy key lookup link"
                             />

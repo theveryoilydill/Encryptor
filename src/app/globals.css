@@ -4,161 +4,161 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  /* Brand text/link accent: #0055dc in light, lightened #5e94ff in dark.
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	/* Brand text/link accent: #0055dc in light, lightened #5e94ff in dark.
      Use `text-link` for links / accent-colored TEXT; `bg-primary` stays
      #0055dc in both modes (primary buttons). */
-  --color-link: var(--link);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+	--color-link: var(--link);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-chart-1: var(--chart-1);
+	--color-chart-2: var(--chart-2);
+	--color-chart-3: var(--chart-3);
+	--color-chart-4: var(--chart-4);
+	--color-chart-5: var(--chart-5);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+	--font-sans: var(--font-geist-sans);
+	--font-mono: var(--font-geist-mono);
 }
 
 :root {
-  --radius: 0.75rem;
-  --background: #ffffff;
-  --foreground: #0a0a0a;
-  --card: #ffffff;
-  --card-foreground: #0a0a0a;
-  --popover: #ffffff;
-  --popover-foreground: #0a0a0a;
-  --primary: #0055dc;
-  --primary-foreground: #ffffff;
-  --secondary: #f6f6f7;
-  --secondary-foreground: #0a0a0a;
-  --muted: #f6f6f7;
-  --muted-foreground: #6b6b70;
-  --accent: rgb(0 85 220 / 0.1);
-  --accent-foreground: #0a0a0a;
-  --destructive: #dc2626;
-  --destructive-foreground: #ffffff;
-  --border: #e7e7ea;
-  --input: #e7e7ea;
-  --ring: #0055dc;
-  --link: #0055dc;
-  --chart-1: #0055dc;
-  --chart-2: #5e94ff;
-  --chart-3: #6b6b70;
-  --chart-4: #0046b8;
-  --chart-5: #9a9ca3;
-  --sidebar: #f6f6f7;
-  --sidebar-foreground: #0a0a0a;
-  --sidebar-primary: #0055dc;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgb(0 85 220 / 0.1);
-  --sidebar-accent-foreground: #0a0a0a;
-  --sidebar-border: #e7e7ea;
-  --sidebar-ring: #0055dc;
-  /* Scrollbar tokens: neutral thumb, brand accent on hover */
-  --scrollbar-thumb: #d4d4d8;
-  --scrollbar-thumb-hover: #0055dc;
+	--radius: 0.75rem;
+	--background: #ffffff;
+	--foreground: #0a0a0a;
+	--card: #ffffff;
+	--card-foreground: #0a0a0a;
+	--popover: #ffffff;
+	--popover-foreground: #0a0a0a;
+	--primary: #0055dc;
+	--primary-foreground: #ffffff;
+	--secondary: #f6f6f7;
+	--secondary-foreground: #0a0a0a;
+	--muted: #f6f6f7;
+	--muted-foreground: #6b6b70;
+	--accent: rgb(0 85 220 / 0.1);
+	--accent-foreground: #0a0a0a;
+	--destructive: #dc2626;
+	--destructive-foreground: #ffffff;
+	--border: #e7e7ea;
+	--input: #e7e7ea;
+	--ring: #0055dc;
+	--link: #0055dc;
+	--chart-1: #0055dc;
+	--chart-2: #5e94ff;
+	--chart-3: #6b6b70;
+	--chart-4: #0046b8;
+	--chart-5: #9a9ca3;
+	--sidebar: #f6f6f7;
+	--sidebar-foreground: #0a0a0a;
+	--sidebar-primary: #0055dc;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: rgb(0 85 220 / 0.1);
+	--sidebar-accent-foreground: #0a0a0a;
+	--sidebar-border: #e7e7ea;
+	--sidebar-ring: #0055dc;
+	/* Scrollbar tokens: neutral thumb, brand accent on hover */
+	--scrollbar-thumb: #d4d4d8;
+	--scrollbar-thumb-hover: #0055dc;
 }
 
 .dark {
-  --background: #0b0c0e;
-  --foreground: #fafafa;
-  --card: #141518;
-  --card-foreground: #fafafa;
-  --popover: #141518;
-  --popover-foreground: #fafafa;
-  /* Primary buttons keep #0055dc in dark mode */
-  --primary: #0055dc;
-  --primary-foreground: #ffffff;
-  --secondary: #1b1d21;
-  --secondary-foreground: #fafafa;
-  --muted: #1b1d21;
-  --muted-foreground: #9a9ca3;
-  --accent: rgb(0 85 220 / 0.1);
-  --accent-foreground: #fafafa;
-  --destructive: #ef4444;
-  --destructive-foreground: #ffffff;
-  --border: #26282d;
-  --input: #26282d;
-  /* Accent for TEXT/links lightens in dark mode */
-  --ring: #5e94ff;
-  --link: #5e94ff;
-  --chart-1: #0055dc;
-  --chart-2: #5e94ff;
-  --chart-3: #6b6b70;
-  --chart-4: #0046b8;
-  --chart-5: #9a9ca3;
-  --sidebar: #141518;
-  --sidebar-foreground: #fafafa;
-  --sidebar-primary: #0055dc;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgb(0 85 220 / 0.1);
-  --sidebar-accent-foreground: #fafafa;
-  --sidebar-border: #26282d;
-  --sidebar-ring: #5e94ff;
-  --scrollbar-thumb: #43464d;
-  --scrollbar-thumb-hover: #5e94ff;
+	--background: #0b0c0e;
+	--foreground: #fafafa;
+	--card: #141518;
+	--card-foreground: #fafafa;
+	--popover: #141518;
+	--popover-foreground: #fafafa;
+	/* Primary buttons keep #0055dc in dark mode */
+	--primary: #0055dc;
+	--primary-foreground: #ffffff;
+	--secondary: #1b1d21;
+	--secondary-foreground: #fafafa;
+	--muted: #1b1d21;
+	--muted-foreground: #9a9ca3;
+	--accent: rgb(0 85 220 / 0.1);
+	--accent-foreground: #fafafa;
+	--destructive: #ef4444;
+	--destructive-foreground: #ffffff;
+	--border: #26282d;
+	--input: #26282d;
+	/* Accent for TEXT/links lightens in dark mode */
+	--ring: #5e94ff;
+	--link: #5e94ff;
+	--chart-1: #0055dc;
+	--chart-2: #5e94ff;
+	--chart-3: #6b6b70;
+	--chart-4: #0046b8;
+	--chart-5: #9a9ca3;
+	--sidebar: #141518;
+	--sidebar-foreground: #fafafa;
+	--sidebar-primary: #0055dc;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: rgb(0 85 220 / 0.1);
+	--sidebar-accent-foreground: #fafafa;
+	--sidebar-border: #26282d;
+	--sidebar-ring: #5e94ff;
+	--scrollbar-thumb: #43464d;
+	--scrollbar-thumb-hover: #5e94ff;
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  html {
-    scroll-behavior: smooth;
-  }
-  body {
-    @apply bg-background text-foreground font-sans antialiased;
-    line-height: 1.65;
-  }
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6 {
-    letter-spacing: -0.02em;
-  }
-  /* Focus/selection accents use var(--link) (the brand text-accent token:
+	* {
+		@apply border-border outline-ring/50;
+	}
+	html {
+		scroll-behavior: smooth;
+	}
+	body {
+		@apply bg-background text-foreground font-sans antialiased;
+		line-height: 1.65;
+	}
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		letter-spacing: -0.02em;
+	}
+	/* Focus/selection accents use var(--link) (the brand text-accent token:
      #0055dc light / #5e94ff dark) so keyboard focus and text selection keep
      the same perceived strength in both themes. Renders IDENTICALLY to the
      previous literal #0055dc in light mode; dark mode now matches the
      --ring-based focus rings used by Button/Input. */
-  :focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--link) 45%, transparent);
-    outline-offset: 2px;
-  }
-  ::selection {
-    background-color: color-mix(in srgb, var(--link) 20%, transparent);
-  }
+	:focus-visible {
+		outline: 2px solid color-mix(in srgb, var(--link) 45%, transparent);
+		outline-offset: 2px;
+	}
+	::selection {
+		background-color: color-mix(in srgb, var(--link) 20%, transparent);
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -167,55 +167,55 @@
  * Firefox: scrollbar-width / scrollbar-color via .scrollbar-thin.
  * ------------------------------------------------------------------------- */
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+	width: 8px;
+	height: 8px;
 }
 *::-webkit-scrollbar-track {
-  background: transparent;
+	background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border-radius: 9999px;
+	background-color: var(--scrollbar-thumb);
+	border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scrollbar-thumb-hover);
+	background-color: var(--scrollbar-thumb-hover);
 }
 
 .scrollbar-thin {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) transparent;
+	scrollbar-width: thin;
+	scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 .scrollbar-thin::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+	width: 6px;
+	height: 6px;
 }
 .scrollbar-thin::-webkit-scrollbar-track {
-  background: transparent;
+	background: transparent;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background-color: var(--scrollbar-thumb);
-  border-radius: 9999px;
+	background-color: var(--scrollbar-thumb);
+	border-radius: 9999px;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background-color: var(--scrollbar-thumb-hover);
+	background-color: var(--scrollbar-thumb-hover);
 }
 
 /* ---------------------------------------------------------------------------
  * Entrance animation — subtle fade + rise for main content containers.
  * ------------------------------------------------------------------------- */
 @keyframes fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 .animate-fade-up {
-  animation: fade-up 0.3s ease-out both;
+	animation: fade-up 0.3s ease-out both;
 }
 
 /* Reduced-motion contract (R11-b): the newer entrance utilities
@@ -224,9 +224,9 @@
    only, so under reduced motion the element simply appears at rest with zero
    layout shift. */
 @media (prefers-reduced-motion: reduce) {
-  .animate-fade-up {
-    animation: none;
-  }
+	.animate-fade-up {
+		animation: none;
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -234,24 +234,24 @@
  * (completed outputs, verification panels). Shorter and tighter than fade-up.
  * ------------------------------------------------------------------------- */
 @keyframes scale-in {
-  from {
-    opacity: 0;
-    transform: scale(0.97) translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+	from {
+		opacity: 0;
+		transform: scale(0.97) translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
 
 .animate-scale-in {
-  animation: scale-in 0.2s ease-out both;
+	animation: scale-in 0.2s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-scale-in {
-    animation: none;
-  }
+	.animate-scale-in {
+		animation: none;
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -259,14 +259,14 @@
  * (not the pre-tinted --accent token); lightens to #5e94ff in dark mode.
  * ------------------------------------------------------------------------- */
 .glow-accent {
-  box-shadow:
-    0 0 0 1px rgb(0 85 220 / 0.12),
-    0 8px 24px -12px rgb(0 85 220 / 0.25);
+	box-shadow:
+		0 0 0 1px rgb(0 85 220 / 0.12),
+		0 8px 24px -12px rgb(0 85 220 / 0.25);
 }
 .dark .glow-accent {
-  box-shadow:
-    0 0 0 1px rgb(94 148 255 / 0.15),
-    0 8px 24px -12px rgb(94 148 255 / 0.3);
+	box-shadow:
+		0 0 0 1px rgb(94 148 255 / 0.15),
+		0 8px 24px -12px rgb(94 148 255 / 0.3);
 }
 
 /* ---------------------------------------------------------------------------
@@ -278,10 +278,10 @@
  * tokens; the Next.js dev overlay (Chromium) is unaffected.
  * ------------------------------------------------------------------------- */
 @supports not selector(::-webkit-scrollbar) {
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
-  }
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -292,18 +292,18 @@
  * Movement is disabled under prefers-reduced-motion; colors still transition.
  * ------------------------------------------------------------------------- */
 .press-effect {
-  transition-property:
-    transform, color, background-color, border-color, box-shadow, opacity, fill, stroke;
-  transition-duration: 150ms;
-  transition-timing-function: ease-out;
+	transition-property:
+		transform, color, background-color, border-color, box-shadow, opacity, fill, stroke;
+	transition-duration: 150ms;
+	transition-timing-function: ease-out;
 }
 .press-effect:active {
-  transform: scale(0.98);
+	transform: scale(0.98);
 }
 @media (prefers-reduced-motion: reduce) {
-  .press-effect:active {
-    transform: none;
-  }
+	.press-effect:active {
+		transform: none;
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -314,24 +314,24 @@
  * shift at rest); disabled under prefers-reduced-motion.
  * ------------------------------------------------------------------------- */
 @keyframes panel-enter {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+	from {
+		opacity: 0;
+		transform: translateY(5px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 .panel-enter {
-  animation: panel-enter 0.18s ease-out both;
+	animation: panel-enter 0.18s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .panel-enter {
-    animation: none;
-  }
+	.panel-enter {
+		animation: none;
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -346,23 +346,23 @@
  * Transform/opacity/box-shadow only; disabled under prefers-reduced-motion.
  * ------------------------------------------------------------------------- */
 @keyframes result-enter {
-  from {
-    opacity: 0;
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--ring) 45%, transparent),
-      0 0 0 5px color-mix(in srgb, var(--ring) 20%, transparent),
-      0 8px 24px -12px color-mix(in srgb, var(--ring) 40%, transparent);
-  }
+	from {
+		opacity: 0;
+		box-shadow:
+			0 0 0 1px color-mix(in srgb, var(--ring) 45%, transparent),
+			0 0 0 5px color-mix(in srgb, var(--ring) 20%, transparent),
+			0 8px 24px -12px color-mix(in srgb, var(--ring) 40%, transparent);
+	}
 }
 
 .result-enter {
-  animation: result-enter 0.6s ease-out;
+	animation: result-enter 0.6s ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .result-enter {
-    animation: none;
-  }
+	.result-enter {
+		animation: none;
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -374,7 +374,7 @@
  * mounted surface; applies automatically if/when ui/sonner.tsx goes live.
  * ------------------------------------------------------------------------- */
 [data-sonner-toaster] [data-sonner-toast] {
-  box-shadow: var(--shadow-sm);
+	box-shadow: var(--shadow-sm);
 }
 
 /* R9-b canary: token-aligned focus/selection accents. */
@@ -389,44 +389,44 @@
  * # Mr. AI Acting on s183173's Behalf
  * ------------------------------------------------------------------------- */
 [data-color-mode="light"] .md-editor-wrap .w-md-editor {
-  --md-editor-border: var(--border);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
+	--md-editor-border: var(--border);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
 }
 [data-color-mode="dark"] .md-editor-wrap .w-md-editor {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
 }
 /* Title/toolbar bar: quieter background, app-token border. */
 .md-editor-wrap .w-md-editor-toolbar {
-  background: var(--muted);
-  border-bottom: 1px solid var(--border);
+	background: var(--muted);
+	border-bottom: 1px solid var(--border);
 }
 /* Toolbar buttons: brand-blue hover/active states. */
 .md-editor-wrap .w-md-editor-toolbar li:hover > button,
 .md-editor-wrap .w-md-editor-toolbar li:active > button {
-  color: #0055dc;
+	color: #0055dc;
 }
 [data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li:hover > button,
 [data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li:active > button {
-  color: #5e94ff;
+	color: #5e94ff;
 }
 /* Active toolbar group indicator matches the accent. */
 .md-editor-wrap .w-md-editor-toolbar li.active > button {
-  color: #0055dc;
-  border-bottom-color: #0055dc;
+	color: #0055dc;
+	border-bottom-color: #0055dc;
 }
 [data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li.active > button {
-  color: #5e94ff;
-  border-bottom-color: #5e94ff;
+	color: #5e94ff;
+	border-bottom-color: #5e94ff;
 }
 /* Editor surface follows the app background tokens (light + dark). */
 .md-editor-wrap .w-md-editor-content {
-  background: var(--background);
+	background: var(--background);
 }
 .md-editor-wrap .w-md-editor-text-pre > .w-md-editor-text-input {
-  font-size: 13px !important;
-  line-height: 1.7 !important;
+	font-size: 13px !important;
+	line-height: 1.7 !important;
 }

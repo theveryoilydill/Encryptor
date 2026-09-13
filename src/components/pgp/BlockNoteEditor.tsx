@@ -18,9 +18,9 @@
  * caption in the editor).
  */
 import {
-  BlockNoteSchema,
-  defaultBlockSpecs,
-  type BlockNoteEditor as BlockNoteEditorType,
+	BlockNoteSchema,
+	defaultBlockSpecs,
+	type BlockNoteEditor as BlockNoteEditorType,
 } from "@blocknote/core";
 import { BlockNoteView } from "@blocknote/mantine";
 import { useCreateBlockNote } from "@blocknote/react";
@@ -42,141 +42,141 @@ void video;
 void file;
 
 const schema = BlockNoteSchema.create({
-  blockSpecs: keptBlockSpecs,
+	blockSpecs: keptBlockSpecs,
 });
 
 type Editor = BlockNoteEditorType<
-  typeof schema.blockSchema,
-  typeof schema.inlineContentSchema,
-  typeof schema.styleSchema
+	typeof schema.blockSchema,
+	typeof schema.inlineContentSchema,
+	typeof schema.styleSchema
 >;
 
 export default function BlockNoteEditor({
-  value,
-  onChange,
-  files,
-  onNewImageDataUrl,
+	value,
+	onChange,
+	files,
+	onNewImageDataUrl,
 }: {
-  value: string;
-  onChange: (text: string) => void;
-  files: EnvelopeFile[];
-  onNewImageDataUrl: OnNewImageDataUrl;
-  placeholder?: string;
+	value: string;
+	onChange: (text: string) => void;
+	files: EnvelopeFile[];
+	onNewImageDataUrl: OnNewImageDataUrl;
+	placeholder?: string;
 }) {
-  const { resolvedTheme } = useTheme();
+	const { resolvedTheme } = useTheme();
 
-  // Latest props, read inside callbacks without re-creating the editor.
-  // (Assigned in an effect — refs must not be updated during render.)
-  const latest = useRef({ onChange, files, onNewImageDataUrl });
-  useEffect(() => {
-    latest.current = { onChange, files, onNewImageDataUrl };
-  });
+	// Latest props, read inside callbacks without re-creating the editor.
+	// (Assigned in an effect — refs must not be updated during render.)
+	const latest = useRef({ onChange, files, onNewImageDataUrl });
+	useEffect(() => {
+		latest.current = { onChange, files, onNewImageDataUrl };
+	});
 
-  // Accessible name + textbox semantics for the inner ProseMirror
-  // contenteditable (.tiptap). BlockNoteView does not forward aria-label to
-  // it, and axe flags a bare contenteditable div twice over: no accessible
-  // name (aria-input-field-name) and a label on a role-prohibited element
-  // (aria-prohibited-attr). Mount-only — the element is created once.
-  const viewRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = viewRef.current?.querySelector<HTMLElement>(".tiptap");
-    if (el) {
-      el.setAttribute("role", "textbox");
-      el.setAttribute("aria-multiline", "true");
-      el.setAttribute("aria-label", "Message (markdown)");
-    }
-  }, []);
+	// Accessible name + textbox semantics for the inner ProseMirror
+	// contenteditable (.tiptap). BlockNoteView does not forward aria-label to
+	// it, and axe flags a bare contenteditable div twice over: no accessible
+	// name (aria-input-field-name) and a label on a role-prohibited element
+	// (aria-prohibited-attr). Mount-only — the element is created once.
+	const viewRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		const el = viewRef.current?.querySelector<HTMLElement>(".tiptap");
+		if (el) {
+			el.setAttribute("role", "textbox");
+			el.setAttribute("aria-multiline", "true");
+			el.setAttribute("aria-label", "Message (markdown)");
+		}
+	}, []);
 
-  const editor: Editor = useCreateBlockNote({
-    schema,
-    pasteHandler: ({ event, defaultPasteHandler }) => {
-      const items = event.clipboardData?.items;
-      if (!items) return defaultPasteHandler();
-      const imageFiles: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        if (it.kind === "file" && it.type.startsWith("image/")) {
-          const f = it.getAsFile();
-          if (f) imageFiles.push(f);
-        }
-      }
-      if (imageFiles.length === 0) return defaultPasteHandler();
+	const editor: Editor = useCreateBlockNote({
+		schema,
+		pasteHandler: ({ event, defaultPasteHandler }) => {
+			const items = event.clipboardData?.items;
+			if (!items) return defaultPasteHandler();
+			const imageFiles: File[] = [];
+			for (let i = 0; i < items.length; i++) {
+				const it = items[i];
+				if (it.kind === "file" && it.type.startsWith("image/")) {
+					const f = it.getAsFile();
+					if (f) imageFiles.push(f);
+				}
+			}
+			if (imageFiles.length === 0) return defaultPasteHandler();
 
-      // Own the image paste: register each image as an attachment, then
-      // insert it as a block rendering the stored data URL. The onChange
-      // reconcile below rewrites the data URL to an envelope marker.
-      void (async () => {
-        for (const f of imageFiles) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-            reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
-            reader.readAsDataURL(f);
-          });
-          let stored: EnvelopeFile;
-          try {
-            stored = latest.current.onNewImageDataUrl(dataUrl);
-          } catch {
-            continue;
-          }
-          const cursor = editor.getTextCursorPosition().block;
-          editor.insertBlocks(
-            [{ type: "image", props: { url: dataUrl, caption: stored.name } }],
-            cursor,
-            "after",
-          );
-        }
-      })();
-      return true;
-    },
-  });
+			// Own the image paste: register each image as an attachment, then
+			// insert it as a block rendering the stored data URL. The onChange
+			// reconcile below rewrites the data URL to an envelope marker.
+			void (async () => {
+				for (const f of imageFiles) {
+					const dataUrl = await new Promise<string>((resolve, reject) => {
+						const reader = new FileReader();
+						reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+						reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
+						reader.readAsDataURL(f);
+					});
+					let stored: EnvelopeFile;
+					try {
+						stored = latest.current.onNewImageDataUrl(dataUrl);
+					} catch {
+						continue;
+					}
+					const cursor = editor.getTextCursorPosition().block;
+					editor.insertBlocks(
+						[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
+						cursor,
+						"after",
+					);
+				}
+			})();
+			return true;
+		},
+	});
 
-  // Value the editor currently reflects — guards the sync effect against
-  // feedback loops with our own onChange output.
-  const syncedValue = useRef<string | null>(null);
+	// Value the editor currently reflects — guards the sync effect against
+	// feedback loops with our own onChange output.
+	const syncedValue = useRef<string | null>(null);
 
-  // Push outside changes (reset / tab remount / paste-inserted markers from
-  // the parent) into the editor.
-  useEffect(() => {
-    if (syncedValue.current === value) return;
-    syncedValue.current = value;
-    const md = markersToDataUrls(value, latest.current.files);
-    let blocks: Editor["document"] | undefined;
-    try {
-      blocks = editor.tryParseMarkdownToBlocks(md);
-    } catch {
-      blocks = undefined;
-    }
-    const next =
-      blocks && blocks.length > 0
-        ? blocks
-        : [{ type: "paragraph" as const, content: value ? md : "" }];
-    editor.replaceBlocks(editor.document, next);
-  }, [value, editor]);
+	// Push outside changes (reset / tab remount / paste-inserted markers from
+	// the parent) into the editor.
+	useEffect(() => {
+		if (syncedValue.current === value) return;
+		syncedValue.current = value;
+		const md = markersToDataUrls(value, latest.current.files);
+		let blocks: Editor["document"] | undefined;
+		try {
+			blocks = editor.tryParseMarkdownToBlocks(md);
+		} catch {
+			blocks = undefined;
+		}
+		const next =
+			blocks && blocks.length > 0
+				? blocks
+				: [{ type: "paragraph" as const, content: value ? md : "" }];
+		editor.replaceBlocks(editor.document, next);
+	}, [value, editor]);
 
-  // Editor → parent: serialize, reconcile images, push.
-  useEffect(() => {
-    const unsub = editor.onChange(() => {
-      const { onChange: push, files: currentFiles, onNewImageDataUrl: register } = latest.current;
-      try {
-        const md = editor.blocksToMarkdownLossy();
-        const reconciled = dataUrlsToMarkers(md, currentFiles, register);
-        syncedValue.current = reconciled;
-        if (reconciled !== value) push(reconciled);
-      } catch {
-        // Never let a serialization hiccup break typing.
-      }
-    });
-    return unsub;
-  }, [editor]);
+	// Editor → parent: serialize, reconcile images, push.
+	useEffect(() => {
+		const unsub = editor.onChange(() => {
+			const { onChange: push, files: currentFiles, onNewImageDataUrl: register } = latest.current;
+			try {
+				const md = editor.blocksToMarkdownLossy();
+				const reconciled = dataUrlsToMarkers(md, currentFiles, register);
+				syncedValue.current = reconciled;
+				if (reconciled !== value) push(reconciled);
+			} catch {
+				// Never let a serialization hiccup break typing.
+			}
+		});
+		return unsub;
+	}, [editor]);
 
-  return (
-    <div ref={viewRef}>
-      <BlockNoteView
-        editor={editor}
-        theme={resolvedTheme === "dark" ? "dark" : "light"}
-        aria-label="Message (markdown)"
-      />
-    </div>
-  );
+	return (
+		<div ref={viewRef}>
+			<BlockNoteView
+				editor={editor}
+				theme={resolvedTheme === "dark" ? "dark" : "light"}
+				aria-label="Message (markdown)"
+			/>
+		</div>
+	);
 }

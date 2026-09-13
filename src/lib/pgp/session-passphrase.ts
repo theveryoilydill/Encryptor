@@ -26,24 +26,24 @@ let cached: string | null = null;
 let cachedAt = 0;
 
 export function getCachedPassphrase(): string | null {
-  return cached;
+	return cached;
 }
 
 /** When the current cache entry was stored (epoch ms; 0 = nothing cached). */
 export function getCachedPassphraseAt(): number {
-  return cachedAt;
+	return cachedAt;
 }
 
 /** Store the passphrase for this session (overwrites any previous value). */
 export function cachePassphrase(passphrase: string): void {
-  cached = passphrase;
-  cachedAt = Date.now();
+	cached = passphrase;
+	cachedAt = Date.now();
 }
 
 /** Drop the cached passphrase (idempotent). */
 export function forgetPassphrase(): void {
-  cached = null;
-  cachedAt = 0;
+	cached = null;
+	cachedAt = 0;
 }
 
 /** Freshness gate (R9 auto-lock): returns the cached passphrase only while
@@ -52,12 +52,12 @@ export function forgetPassphrase(): void {
  *  their "cached" indicator off without a second call. Fractional minutes
  *  are accepted on purpose — tests/QA rely on sub-minute values. */
 export function getCachedPassphraseIfFresh(autoLockMinutes: number): string | null {
-  if (!cached) return null;
-  if (!autoLockMinutes || autoLockMinutes <= 0) return cached;
-  if (Date.now() - cachedAt > autoLockMinutes * 60_000) {
-    cached = null;
-    cachedAt = 0;
-    return null;
-  }
-  return cached;
+	if (!cached) return null;
+	if (!autoLockMinutes || autoLockMinutes <= 0) return cached;
+	if (Date.now() - cachedAt > autoLockMinutes * 60_000) {
+		cached = null;
+		cachedAt = 0;
+		return null;
+	}
+	return cached;
 }

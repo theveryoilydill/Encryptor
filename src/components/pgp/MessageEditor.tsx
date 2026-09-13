@@ -34,193 +34,193 @@ import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 export type OnNewImageDataUrl = (dataUrl: string) => EnvelopeFile;
 
 const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
-  ssr: false,
-  loading: () => <div className="min-h-32 animate-pulse rounded-md bg-muted/40" />,
+	ssr: false,
+	loading: () => <div className="min-h-32 animate-pulse rounded-md bg-muted/40" />,
 });
 
 /** Replace every `envelope://filename` image URL in the markdown with the
  *  matching attachment's data URL (resolved against `files`). Used when
  *  feeding message text INTO an editor that renders images. */
 export function markersToDataUrls(text: string, files: EnvelopeFile[]): string {
-  if (!text.includes("envelope://")) return text;
-  const byName = new Map(files.map((f) => [f.name, envelopeFileToDataUrl(f)]));
-  return text.replace(/!\[([^\]]*)\]\(envelope:\/\/([^)\s]+)\)/g, (whole, alt, encodedName) => {
-    const name = decodeURIComponent(encodedName);
-    const dataUrl = byName.get(name);
-    return dataUrl ? `![${alt}](${dataUrl})` : whole;
-  });
+	if (!text.includes("envelope://")) return text;
+	const byName = new Map(files.map((f) => [f.name, envelopeFileToDataUrl(f)]));
+	return text.replace(/!\[([^\]]*)\]\(envelope:\/\/([^)\s]+)\)/g, (whole, alt, encodedName) => {
+		const name = decodeURIComponent(encodedName);
+		const dataUrl = byName.get(name);
+		return dataUrl ? `![${alt}](${dataUrl})` : whole;
+	});
 }
 
 /** Replace every image data URL in the markdown with an envelope marker,
  *  registering unknown data URLs as new attachments via `onNewImage`. Used
  *  when taking markdown OUT of an editor that stored pastes inline. */
 export function dataUrlsToMarkers(
-  text: string,
-  files: EnvelopeFile[],
-  onNewImage: OnNewImageDataUrl,
+	text: string,
+	files: EnvelopeFile[],
+	onNewImage: OnNewImageDataUrl,
 ): string {
-  if (!text.includes("data:image/")) return text;
-  const byData = new Map(files.map((f) => [f.data, f.name]));
-  return text.replace(
-    /!\[([^\]]*)\]\(data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)\)/g,
-    (whole, alt, mime, data) => {
-      let name = byData.get(data);
-      if (!name) {
-        let stored: EnvelopeFile | null = null;
-        try {
-          stored = onNewImage(`data:${mime};base64,${data}`);
-        } catch {
-          stored = null;
-        }
-        if (!stored) return whole;
-        name = stored.name;
-        byData.set(data, name);
-      }
-      // Keep whatever scale/position metadata the alt text carried; default
-      // newly-pasted images (no scale suffix) to the app-wide default.
-      const altWithScale =
-        alt.includes("|") || alt.includes("@") ? alt : `${alt}|${DEFAULT_INLINE_IMAGE_SCALE}%`;
-      return `![${altWithScale}](envelope://${encodeURIComponent(name)})`;
-    },
-  );
+	if (!text.includes("data:image/")) return text;
+	const byData = new Map(files.map((f) => [f.data, f.name]));
+	return text.replace(
+		/!\[([^\]]*)\]\(data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)\)/g,
+		(whole, alt, mime, data) => {
+			let name = byData.get(data);
+			if (!name) {
+				let stored: EnvelopeFile | null = null;
+				try {
+					stored = onNewImage(`data:${mime};base64,${data}`);
+				} catch {
+					stored = null;
+				}
+				if (!stored) return whole;
+				name = stored.name;
+				byData.set(data, name);
+			}
+			// Keep whatever scale/position metadata the alt text carried; default
+			// newly-pasted images (no scale suffix) to the app-wide default.
+			const altWithScale =
+				alt.includes("|") || alt.includes("@") ? alt : `${alt}|${DEFAULT_INLINE_IMAGE_SCALE}%`;
+			return `![${altWithScale}](envelope://${encodeURIComponent(name)})`;
+		},
+	);
 }
 
 export function MessageEditor({
-  value,
-  onChange,
-  files,
-  onNewImageDataUrl,
-  editorKind,
-  placeholder,
+	value,
+	onChange,
+	files,
+	onNewImageDataUrl,
+	editorKind,
+	placeholder,
 }: {
-  value: string;
-  onChange: (text: string) => void;
-  files: EnvelopeFile[];
-  onNewImageDataUrl: OnNewImageDataUrl;
-  editorKind: MarkdownEditorKind;
-  placeholder?: string;
+	value: string;
+	onChange: (text: string) => void;
+	files: EnvelopeFile[];
+	onNewImageDataUrl: OnNewImageDataUrl;
+	editorKind: MarkdownEditorKind;
+	placeholder?: string;
 }) {
-  // Decorative toolbar icons (VS Code mode): MDEditor renders its toolbar
-  // glyphs as role="img" SVGs without alternative text — axe's svg-img-alt
-  // rule flags them (serious). Each toolbar button already carries its own
-  // accessible name, so the icons are hidden from the accessibility tree.
-  // Re-runs on editor switches; a no-op in Notion mode (ref not attached).
-  const vsWrapRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (editorKind !== "vscode") return;
-    const id = requestAnimationFrame(() => {
-      vsWrapRef.current
-        ?.querySelectorAll('svg[role="img"]')
-        .forEach((svg) => svg.setAttribute("aria-hidden", "true"));
-    });
-    return () => cancelAnimationFrame(id);
-  }, [editorKind]);
+	// Decorative toolbar icons (VS Code mode): MDEditor renders its toolbar
+	// glyphs as role="img" SVGs without alternative text — axe's svg-img-alt
+	// rule flags them (serious). Each toolbar button already carries its own
+	// accessible name, so the icons are hidden from the accessibility tree.
+	// Re-runs on editor switches; a no-op in Notion mode (ref not attached).
+	const vsWrapRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		if (editorKind !== "vscode") return;
+		const id = requestAnimationFrame(() => {
+			vsWrapRef.current
+				?.querySelectorAll('svg[role="img"]')
+				.forEach((svg) => svg.setAttribute("aria-hidden", "true"));
+		});
+		return () => cancelAnimationFrame(id);
+	}, [editorKind]);
 
-  // VS Code mode -------------------------------------------------------------
-  const handleMDEditorChange = useCallback(
-    (next?: string) => {
-      onChange(dataUrlsToMarkers(next ?? "", files, onNewImageDataUrl));
-    },
-    [onChange, files, onNewImageDataUrl],
-  );
+	// VS Code mode -------------------------------------------------------------
+	const handleMDEditorChange = useCallback(
+		(next?: string) => {
+			onChange(dataUrlsToMarkers(next ?? "", files, onNewImageDataUrl));
+		},
+		[onChange, files, onNewImageDataUrl],
+	);
 
-  // Paste images directly into the source editor: register them as
-  // attachments and insert envelope markers at the cursor.
-  const handleVSPaste = useCallback(
-    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const imageFiles: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        if (it.kind === "file" && it.type.startsWith("image/")) {
-          const f = it.getAsFile();
-          if (f) imageFiles.push(f);
-        }
-      }
-      if (imageFiles.length === 0) return;
-      e.preventDefault();
-      const textarea = e.currentTarget;
-      const start = textarea.selectionStart ?? value.length;
-      const end = textarea.selectionEnd ?? start;
+	// Paste images directly into the source editor: register them as
+	// attachments and insert envelope markers at the cursor.
+	const handleVSPaste = useCallback(
+		(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+			const items = e.clipboardData?.items;
+			if (!items) return;
+			const imageFiles: File[] = [];
+			for (let i = 0; i < items.length; i++) {
+				const it = items[i];
+				if (it.kind === "file" && it.type.startsWith("image/")) {
+					const f = it.getAsFile();
+					if (f) imageFiles.push(f);
+				}
+			}
+			if (imageFiles.length === 0) return;
+			e.preventDefault();
+			const textarea = e.currentTarget;
+			const start = textarea.selectionStart ?? value.length;
+			const end = textarea.selectionEnd ?? start;
 
-      void (async () => {
-        const markers: string[] = [];
-        for (const f of imageFiles) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-            reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
-            reader.readAsDataURL(f);
-          });
-          const stored = onNewImageDataUrl(dataUrl);
-          markers.push(
-            buildInlineImageMarker(stored.name, DEFAULT_INLINE_IMAGE_SCALE, 0, 0, stored.name),
-          );
-        }
-        const insert = markers.join("\n\n");
-        const before = value.slice(0, start);
-        const after = value.slice(end);
-        const pad1 = before.length > 0 && !before.endsWith("\n") ? "\n\n" : "";
-        const pad2 = after.length > 0 && !after.startsWith("\n") ? "\n\n" : "";
-        onChange(before + pad1 + insert + pad2 + after);
-        queueMicrotask(() => {
-          textarea.focus();
-          const pos = (before + pad1 + insert).length;
-          textarea.setSelectionRange(pos, pos);
-        });
-      })();
-    },
-    [value, onChange, onNewImageDataUrl],
-  );
+			void (async () => {
+				const markers: string[] = [];
+				for (const f of imageFiles) {
+					const dataUrl = await new Promise<string>((resolve, reject) => {
+						const reader = new FileReader();
+						reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+						reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
+						reader.readAsDataURL(f);
+					});
+					const stored = onNewImageDataUrl(dataUrl);
+					markers.push(
+						buildInlineImageMarker(stored.name, DEFAULT_INLINE_IMAGE_SCALE, 0, 0, stored.name),
+					);
+				}
+				const insert = markers.join("\n\n");
+				const before = value.slice(0, start);
+				const after = value.slice(end);
+				const pad1 = before.length > 0 && !before.endsWith("\n") ? "\n\n" : "";
+				const pad2 = after.length > 0 && !after.startsWith("\n") ? "\n\n" : "";
+				onChange(before + pad1 + insert + pad2 + after);
+				queueMicrotask(() => {
+					textarea.focus();
+					const pos = (before + pad1 + insert).length;
+					textarea.setSelectionRange(pos, pos);
+				});
+			})();
+		},
+		[value, onChange, onNewImageDataUrl],
+	);
 
-  const { resolvedTheme } = useTheme();
-  const editorMd = useMemo(() => markersToDataUrls(value, files), [value, files]);
-  const previewMd = editorMd;
+	const { resolvedTheme } = useTheme();
+	const editorMd = useMemo(() => markersToDataUrls(value, files), [value, files]);
+	const previewMd = editorMd;
 
-  if (editorKind === "vscode") {
-    return (
-      <div
-        ref={vsWrapRef}
-        data-color-mode={resolvedTheme === "dark" ? "dark" : "light"}
-        className="grid md:grid-cols-2"
-      >
-        <MDEditor
-          value={editorMd}
-          onChange={handleMDEditorChange}
-          preview="edit"
-          textareaProps={{
-            onPaste: handleVSPaste,
-            placeholder,
-            "aria-label": "Message (markdown)",
-          }}
-          height={320}
-          className="min-w-0"
-        />
-        <div className="min-w-0 border-t border-border bg-card p-4 md:border-l md:border-t-0">
-          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Preview
-          </div>
-          {previewMd.trim() ? (
-            <DecryptedMessageView text={previewMd} files={files} />
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              {placeholder ?? "Nothing to preview yet."}
-            </p>
-          )}
-        </div>
-      </div>
-    );
-  }
+	if (editorKind === "vscode") {
+		return (
+			<div
+				ref={vsWrapRef}
+				data-color-mode={resolvedTheme === "dark" ? "dark" : "light"}
+				className="grid md:grid-cols-2"
+			>
+				<MDEditor
+					value={editorMd}
+					onChange={handleMDEditorChange}
+					preview="edit"
+					textareaProps={{
+						onPaste: handleVSPaste,
+						placeholder,
+						"aria-label": "Message (markdown)",
+					}}
+					height={320}
+					className="min-w-0"
+				/>
+				<div className="min-w-0 border-t border-border bg-card p-4 md:border-l md:border-t-0">
+					<div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+						Preview
+					</div>
+					{previewMd.trim() ? (
+						<DecryptedMessageView text={previewMd} files={files} />
+					) : (
+						<p className="text-xs text-muted-foreground">
+							{placeholder ?? "Nothing to preview yet."}
+						</p>
+					)}
+				</div>
+			</div>
+		);
+	}
 
-  // Notion/Affine-style mode (default) --------------------------------------
-  return (
-    <BlockNoteEditor
-      value={value}
-      onChange={onChange}
-      files={files}
-      onNewImageDataUrl={onNewImageDataUrl}
-      placeholder={placeholder}
-    />
-  );
+	// Notion/Affine-style mode (default) --------------------------------------
+	return (
+		<BlockNoteEditor
+			value={value}
+			onChange={onChange}
+			files={files}
+			onNewImageDataUrl={onNewImageDataUrl}
+			placeholder={placeholder}
+		/>
+	);
 }

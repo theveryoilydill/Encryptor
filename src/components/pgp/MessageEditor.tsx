@@ -19,7 +19,7 @@
  * attachment list; this component only edits text through onChange and
  * registers pasted images through the provided callback.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTheme } from "next-themes";
 import dynamic from "next/dynamic";
 import MDEditor from "@uiw/react-md-editor";
@@ -100,6 +100,22 @@ export function MessageEditor({
   editorKind: MarkdownEditorKind;
   placeholder?: string;
 }) {
+  // Decorative toolbar icons (VS Code mode): MDEditor renders its toolbar
+  // glyphs as role="img" SVGs without alternative text — axe's svg-img-alt
+  // rule flags them (serious). Each toolbar button already carries its own
+  // accessible name, so the icons are hidden from the accessibility tree.
+  // Re-runs on editor switches; a no-op in Notion mode (ref not attached).
+  const vsWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (editorKind !== "vscode") return;
+    const id = requestAnimationFrame(() => {
+      vsWrapRef.current
+        ?.querySelectorAll('svg[role="img"]')
+        .forEach((svg) => svg.setAttribute("aria-hidden", "true"));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [editorKind]);
+
   // VS Code mode -------------------------------------------------------------
   const handleMDEditorChange = useCallback(
     (next?: string) => {
@@ -165,6 +181,7 @@ export function MessageEditor({
   if (editorKind === "vscode") {
     return (
       <div
+        ref={vsWrapRef}
         data-color-mode={resolvedTheme === "dark" ? "dark" : "light"}
         className="grid md:grid-cols-2"
       >

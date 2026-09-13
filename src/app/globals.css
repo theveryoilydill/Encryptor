@@ -380,3 +380,53 @@
 /* R9-b canary: token-aligned focus/selection accents. */
 
 /* R11-b canary: reduced-motion guards for .animate-fade-up + .animate-scale-in. */
+
+/* ---------------------------------------------------------------------------
+ * VS Code-style message editor (@uiw/react-md-editor) — align the editor
+ * chrome with the app's language: Keybase-blue accents (#0055dc / dark
+ * #5e94ff), same border tokens, same radii, muted title bar. Scoped under
+ * .md-editor-wrap so the plain Textareas and BlockNote stay untouched.
+ * # Mr. AI Acting on s183173's Behalf
+ * ------------------------------------------------------------------------- */
+[data-color-mode="light"] .md-editor-wrap .w-md-editor {
+  --md-editor-border: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+[data-color-mode="dark"] .md-editor-wrap .w-md-editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+/* Title/toolbar bar: quieter background, app-token border. */
+.md-editor-wrap .w-md-editor-toolbar {
+  background: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+/* Toolbar buttons: brand-blue hover/active states. */
+.md-editor-wrap .w-md-editor-toolbar li:hover > button,
+.md-editor-wrap .w-md-editor-toolbar li:active > button {
+  color: #0055dc;
+}
+[data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li:hover > button,
+[data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li:active > button {
+  color: #5e94ff;
+}
+/* Active toolbar group indicator matches the accent. */
+.md-editor-wrap .w-md-editor-toolbar li.active > button {
+  color: #0055dc;
+  border-bottom-color: #0055dc;
+}
+[data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li.active > button {
+  color: #5e94ff;
+  border-bottom-color: #5e94ff;
+}
+/* Editor surface follows the app background tokens (light + dark). */
+.md-editor-wrap .w-md-editor-content {
+  background: var(--background);
+}
+.md-editor-wrap .w-md-editor-text-pre > .w-md-editor-text-input {
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+}

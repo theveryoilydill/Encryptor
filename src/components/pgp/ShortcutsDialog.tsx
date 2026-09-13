@@ -21,12 +21,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/** Exactly the Alt+1..4 bindings from PgpApp.tsx (TABS array order). */
+/** The global bindings from PgpApp.tsx (tab order: TABS array). */
 const SHORTCUTS: { keys: string; description: string }[] = [
   { keys: "Alt+1", description: "Encrypt" },
   { keys: "Alt+2", description: "Decrypt" },
   { keys: "Alt+3", description: "Sign" },
   { keys: "Alt+4", description: "Verify" },
+  { keys: "Ctrl+,", description: "Open key settings" },
 ];
 
 export function ShortcutsDialog() {

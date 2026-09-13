@@ -125,10 +125,14 @@ export default function PgpApp() {
     });
   }, []);
 
-  // Alt+1..4 switches tabs (ignored while typing with Alt in most platforms;
-  // harmless if swallowed by the browser).
+  // Alt+1..4 switches tabs; Ctrl/Cmd+, opens the key settings dialog.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ",") {
+        e.preventDefault();
+        setConfigOpen(true);
+        return;
+      }
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
       const idx = Number(e.key) - 1;
       if (idx >= 0 && idx < TABS.length) {

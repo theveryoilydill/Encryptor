@@ -367,7 +367,10 @@ export function EncryptTab({
           title="Encrypted + signed message"
           output={output}
           files={attachments}
-          preview={buildPlaintextForEncryption(plaintext, attachments)}
+          // Preview the MESSAGE (with inline images resolved against the
+          // attachments) — the envelope wire format is an implementation
+          // detail the user should never have to look at.
+          preview={plaintext}
           operation="encrypt"
           nukeLabel="Nuke plaintext"
           onNuke={() => {

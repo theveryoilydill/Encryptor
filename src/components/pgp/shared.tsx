@@ -8,7 +8,17 @@
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BadgeCheck, Check, Copy, FileSignature, FileText, Lock, X } from "lucide-react";
+import {
+  BadgeCheck,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  FileSignature,
+  FileText,
+  Lock,
+  X,
+} from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -78,17 +88,57 @@ export function SignerHashLegend() {
 /** Full-size image viewer (lightbox) for attachments. Opens from the file
  *  name / thumbnail clicks in FileDownloadList — never from the download
  *  button, which keeps its plain download behavior. */
-export function ImageViewer({ file, onClose }: { file: EnvelopeFile | null; onClose: () => void }) {
+export function ImageViewer({
+  images,
+  index,
+  onIndexChange,
+  onClose,
+}: {
+  /** All image attachments (viewer navigates within this list). */
+  images: EnvelopeFile[];
+  /** Currently viewed index, or null when closed. */
+  index: number | null;
+  onIndexChange: (next: number) => void;
+  onClose: () => void;
+}) {
+  const open = index !== null && images.length > 0;
+  const file = open ? images[Math.min(index, images.length - 1)] : null;
   const safeSrc =
     file && file.type.startsWith("image/") ? isSafeImageUrl(envelopeFileToDataUrl(file)) : null;
+  const many = images.length > 1;
+  const go = useCallback(
+    (delta: number) => {
+      if (index === null || images.length === 0) return;
+      onIndexChange((index + delta + images.length) % images.length);
+    },
+    [index, images.length, onIndexChange],
+  );
+
+  // Arrow-key navigation while the viewer is open (dialog keeps focus, so a
+  // window listener scoped to `open` is enough).
+  useEffect(() => {
+    if (!open || !many) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        go(-1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        go(1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, many, go]);
+
   return (
-    <Dialog open={file !== null} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl p-0 overflow-hidden" aria-describedby={undefined}>
         <DialogTitle className="sr-only">
           {file ? `Viewing ${file.name}` : "Image viewer"}
         </DialogTitle>
         {file && safeSrc && (
-          <figure className="space-y-0">
+          <figure className="relative space-y-0">
             <div className="flex max-h-[70vh] items-center justify-center overflow-auto bg-muted/40 p-2">
               {}
               <img
@@ -97,11 +147,38 @@ export function ImageViewer({ file, onClose }: { file: EnvelopeFile | null; onCl
                 className="max-h-[68vh] w-auto max-w-full rounded object-contain"
               />
             </div>
+            {many && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => go(-1)}
+                  aria-label="Previous image"
+                  title="Previous (←)"
+                  className="absolute left-2 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-full border bg-background/90 text-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted"
+                >
+                  <ChevronLeft className="size-4" aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => go(1)}
+                  aria-label="Next image"
+                  title="Next (→)"
+                  className="absolute right-2 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-full border bg-background/90 text-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted"
+                >
+                  <ChevronRight className="size-4" aria-hidden />
+                </button>
+              </>
+            )}
             <figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
               <span className="truncate text-xs font-medium">{file.name}</span>
               <span className="shrink-0 text-[11px] text-muted-foreground">
                 {formatFileSize(file.size)}
               </span>
+              {many && (
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  {Math.min(index ?? 0, images.length - 1) + 1} / {images.length}
+                </span>
+              )}
               <Button
                 type="button"
                 variant="ghost"
@@ -817,7 +894,9 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
  *  plain download behavior — the viewer never intercepts it). Non-image
  *  files keep a static chip + download. */
 export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
-  const [viewing, setViewing] = useState<EnvelopeFile | null>(null);
+  // Viewer state: index into the IMAGES subset (non-images aren't viewable).
+  const [viewingIndex, setViewingIndex] = useState<number | null>(null);
+  const images = useMemo(() => files.filter((f) => f.type.startsWith("image/")), [files]);
 
   return (
     <div className="rounded-xl border bg-muted/40 p-4 shadow-sm">
@@ -841,7 +920,7 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
                 // Thumbnail + file name open the image viewer (not a download).
                 <button
                   type="button"
-                  onClick={() => setViewing(f)}
+                  onClick={() => setViewingIndex(images.indexOf(f))}
                   className="flex items-center gap-2.5 text-left transition-opacity hover:opacity-80"
                   aria-label={`View ${f.name}`}
                   title="View image"
@@ -875,7 +954,12 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
           );
         })}
       </ul>
-      <ImageViewer file={viewing} onClose={() => setViewing(null)} />
+      <ImageViewer
+        images={images}
+        index={viewingIndex}
+        onIndexChange={setViewingIndex}
+        onClose={() => setViewingIndex(null)}
+      />
     </div>
   );
 }

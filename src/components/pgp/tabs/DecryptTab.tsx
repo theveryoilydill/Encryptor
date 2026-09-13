@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  CopyButton,
   DecryptedMessageView,
   ErrorBanner,
   FileDownloadList,
@@ -324,6 +325,11 @@ export function DecryptTab({
           {/* Compact action row — the armored input is NOT echoed back as an
               output block anymore. */}
           <div className="flex flex-wrap gap-2">
+            <CopyButton
+              text={output.plaintext}
+              label="Copy text"
+              ariaLabel="Copy decrypted message text"
+            />
             <ZipDownloadButton
               files={output.files}
               operation="decrypt"

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TriangleAlert } from "lucide-react";
+import { LayoutTemplate, Loader2, Lock, ShieldCheck, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,6 +16,14 @@ import {
 } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "@/lib/pgp/composer-draft";
 import { encryptAndSign, encryptMessage } from "@/lib/pgp/pgp";
 import { sealForConfig } from "@/lib/pgp/pq";
 import {
@@ -28,6 +36,90 @@ import { LIMITS } from "@/lib/constants";
 import type { AppSettings } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
+
+/** Curated starter templates for the composer. Insert-only (they seed an
+ *  empty message or append after the current text); placeholders are meant
+ *  to be filled in. Deliberately generic — the composer is a markdown
+ *  editor, so emphasis/headers serialize losslessly into the envelope. */
+const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] = [
+	{
+		name: "Credentials handoff",
+		description: "Share access details — one secret per message",
+		body: [
+			"**Service / site:** ",
+			"**Account ID or username:** ",
+			"**Secret to hand off:** ",
+			"**Rotate after:** ",
+			"",
+			"_Once this message is confirmed received, delete the secret from wherever it was first written — this copy should be the only one left._",
+		].join("\n"),
+	},
+	{
+		name: "Meeting details",
+		description: "Time, place, and agenda",
+		body: [
+			"**When:** ",
+			"**Where / link:** ",
+			"",
+			"**Agenda**",
+			"1. ",
+			"2. ",
+			"",
+			"_Please reply encrypted if you include anything confidential._",
+		].join("\n"),
+	},
+	{
+		name: "Sensitive document note",
+		description: "Wrap a private body with handling instructions",
+		body: [
+			"The attached material is confidential.",
+			"",
+			"---",
+			"",
+			"(body)",
+			"",
+			"---",
+			"",
+			"_Handling: decrypt, read, and delete this copy. Do not forward — share a fresh encrypted copy instead._",
+		].join("\n"),
+	},
+];
+
+/** Small right-aligned utility above the composer: the template menu works
+ *  for BOTH editor styles (Notion blocks + VS Code textarea) because it
+ *  rides the same setPlaintext path as typing. */
+function TemplateMenu({ onInsert }: { onInsert: (body: string) => void }) {
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					className="h-7 gap-1.5 rounded-lg px-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:focus-visible:ring-[#5e94ff]/40"
+				>
+					<LayoutTemplate aria-hidden="true" className="size-3.5" />
+					Insert template
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end" className="w-64">
+				<DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+					Starter templates
+				</DropdownMenuLabel>
+				{COMPOSER_TEMPLATES.map((t) => (
+					<DropdownMenuItem
+						key={t.name}
+						onClick={() => onInsert(t.body)}
+						className="flex-col items-start gap-0.5 py-2"
+					>
+						<span className="text-xs font-medium">{t.name}</span>
+						<span className="text-[11px] text-muted-foreground">{t.description}</span>
+					</DropdownMenuItem>
+				))}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 export function EncryptTab({
 	privateKey,
@@ -72,6 +164,12 @@ export function EncryptTab({
 	// the textarea (or typing different content) re-arms the hint without
 	// needing a state-reset effect.
 	const [hintDismissedFor, setHintDismissedFor] = useState<string | null>(null);
+	// Draft rescue banner (the sessionStorage mirror itself lives in
+	// lib/pgp/composer-draft — session-only, dies with the tab).
+	const [draftNotice, setDraftNotice] = useState(false);
+	// Success summary for the LAST output (recipient count + signed),
+	// rendered as a compact strip above the output block.
+	const [outputMeta, setOutputMeta] = useState<{ keys: number; signed: boolean } | null>(null);
 
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
@@ -247,6 +345,27 @@ export function EncryptTab({
 		});
 	}, [plaintext]);
 
+	// Draft rescue: load ONCE on mount (an accidental reload mid-composition
+	// restores the message instead of losing it), then keep the mirror fresh
+	// with a short debounce. Armor-ish content is never mirrored — the rescue
+	// path is for composed messages only (see composer-draft.ts for the
+	// session-only privacy posture).
+	useEffect(() => {
+		const draft = loadComposerDraft();
+		if (draft && draft.trim()) {
+			setPlaintext(draft);
+			setDraftNotice(true);
+		}
+	}, []);
+	useEffect(() => {
+		if (!plaintext.trim() || detectPgpBlock(plaintext) !== null) {
+			clearComposerDraft();
+			return;
+		}
+		const t = setTimeout(() => saveComposerDraft(plaintext), 600);
+		return () => clearTimeout(t);
+	}, [plaintext]);
+
 	const handleAddFiles = useCallback(
 		(files: FileList | null) => {
 			if (files) void addFiles(files);
@@ -254,10 +373,21 @@ export function EncryptTab({
 		[addFiles],
 	);
 
+	// Insert a starter template: seed an empty composer or append after the
+	// current text. Rides the same setPlaintext path as typing, so it works
+	// for both editor styles and the draft mirror stays consistent.
+	const insertTemplate = useCallback((body: string) => {
+		setPlaintext((prev) => {
+			const trimmed = prev.trimEnd();
+			return trimmed ? `${trimmed}\n\n${body}` : body;
+		});
+	}, []);
+
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
 		setOutput("");
 		setSealedCopy("");
+		setOutputMeta(null);
 		if (!plaintext.trim() && attachments.length === 0) {
 			setError("Enter a message to encrypt, or attach a file.");
 			return;
@@ -340,6 +470,7 @@ export function EncryptTab({
 				}
 			}
 			setOutput(armored);
+			setOutputMeta({ keys: recipientKeys.length, signed: signing });
 
 			// The user can always decrypt their own copy (Include me) — so the
 			// plaintext is deleted from the composer as soon as the ciphertext
@@ -446,6 +577,28 @@ export function EncryptTab({
 					</span>
 				</div>
 			)}
+			{draftNotice && (
+				<div
+					role="status"
+					className="animate-fade-up flex items-start justify-between gap-3 rounded-xl border border-[#0055dc]/30 bg-[#0055dc]/5 px-4 py-3 shadow-sm dark:border-[#5e94ff]/40 dark:bg-[#5e94ff]/10"
+				>
+					<p className="text-xs leading-relaxed text-[#0055dc] dark:text-[#5e94ff]">
+						<span className="font-medium">Draft restored</span> — your unsent message was recovered
+						from this tab&apos;s earlier visit. It lives in session memory only and disappears when
+						the tab closes.
+					</p>
+					<button
+						type="button"
+						onClick={() => {
+							setPlaintext("");
+							setDraftNotice(false);
+						}}
+						className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-[#0055dc] transition-colors hover:bg-[#0055dc]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10 dark:focus-visible:outline-[#5e94ff]"
+					>
+						Discard
+					</button>
+				</div>
+			)}
 			<RecipientPicker
 				recipients={recipients}
 				setRecipients={setRecipients}
@@ -455,6 +608,10 @@ export function EncryptTab({
 			/>
 
 			<div className="rounded-xl">
+				{/* Composer utility row: starter templates (insert-only). */}
+				<div className="mb-1.5 flex items-center justify-end">
+					<TemplateMenu onInsert={insertTemplate} />
+				</div>
 				<MessageEditor
 					value={plaintext}
 					onChange={setPlaintext}
@@ -517,19 +674,53 @@ export function EncryptTab({
 				<Button
 					onClick={handleEncrypt}
 					disabled={busy}
-					className="bg-[#0055dc] text-white hover:bg-[#0046b8] transition-colors duration-150 press-effect"
+					className="bg-[#0055dc] text-white shadow-sm shadow-[#0055dc]/20 hover:bg-[#0046b8] transition-all duration-150 press-effect"
 				>
-					{busy
-						? "Encrypting…"
-						: output
-							? settings.autoSign
-								? "Encrypt & sign again"
-								: "Encrypt again"
-							: settings.autoSign
-								? "Encrypt & sign"
-								: "Encrypt"}
+					{busy ? (
+						<>
+							<Loader2
+								aria-hidden="true"
+								className="size-4 animate-spin motion-reduce:animate-none"
+							/>
+							Encrypting…
+						</>
+					) : (
+						<>
+							<Lock aria-hidden="true" className="size-4" />
+							{output
+								? settings.autoSign
+									? "Encrypt & sign again"
+									: "Encrypt again"
+								: settings.autoSign
+									? "Encrypt & sign"
+									: "Encrypt"}
+						</>
+					)}
 				</Button>
 			</div>
+
+			{output && outputMeta && (
+				<div
+					role="status"
+					className="animate-fade-up flex flex-wrap items-center gap-2 rounded-xl border border-emerald-300/70 bg-emerald-50 px-4 py-2.5 shadow-sm dark:border-emerald-900/50 dark:bg-emerald-950/30"
+				>
+					<ShieldCheck
+						aria-hidden="true"
+						className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+					/>
+					<p className="text-xs font-medium text-emerald-900 dark:text-emerald-200">
+						Message sealed — plaintext cleared from the composer.
+					</p>
+					<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+						{outputMeta.keys} {outputMeta.keys === 1 ? "key" : "keys"}
+					</span>
+					{outputMeta.signed && (
+						<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+							signed
+						</span>
+					)}
+				</div>
+			)}
 
 			{output && (
 				<OutputBlock
@@ -544,6 +735,7 @@ export function EncryptTab({
 					onReset={() => {
 						setOutput("");
 						setSealedCopy("");
+						setOutputMeta(null);
 						setError(null);
 					}}
 				/>

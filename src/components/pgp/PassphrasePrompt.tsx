@@ -16,6 +16,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Eye, EyeOff, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -25,16 +26,19 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { readKey, unlockPrivateKey, validateArmoredKey } from "@/lib/pgp/pgp";
+import { cachePassphrase } from "@/lib/pgp/session-passphrase";
 import { PROXIES, type KeyRequestState, type PrivateKeyConfig } from "@/components/pgp/contracts";
 
 /** Local destructive-tinted error panel (same markup as shared ErrorBanner;
- *  kept local so this file only imports from the pinned allow-list). */
+ *  kept local so this file only imports from the pinned allow-list). Text
+ *  colors match the shared banner's contrast fix (text-destructive on
+ *  destructive/10 measures ≈ 4.16:1 — below the 4.5:1 WCAG AA threshold). */
 function FormError({ message }: { message: string | null }) {
   if (!message) return null;
   return (
     <div
       role="alert"
-      className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-red-700 dark:text-red-400"
     >
       {message}
     </div>
@@ -45,15 +49,22 @@ export function PassphrasePrompt({
   config,
   request,
   onKeyUpdated,
+  onPassphraseCached,
 }: {
   config: PrivateKeyConfig;
   request: KeyRequestState;
   onKeyUpdated: (cfg: PrivateKeyConfig) => void;
+  /** Called after a successful unlock when the user opted into the session
+   *  passphrase cache — lets the app show the "remembered" header state. */
+  onPassphraseCached?: () => void;
 }) {
   const [passphrase, setPassphrase] = useState("");
   // Additive UX affordance: reveal/hide the passphrase input. Default stays
   // hidden (type="password"), exactly as before.
   const [showPassphrase, setShowPassphrase] = useState(false);
+  // Opt-in session cache (memory only, dies with the tab). Keybase passwords
+  // are never cacheable — the Keybase flow re-fetches the key bundle.
+  const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -117,6 +128,10 @@ export function PassphrasePrompt({
           throw new Error("Stored key is not a private key.");
         }
         const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
+        if (remember) {
+          cachePassphrase(passphrase);
+          onPassphraseCached?.();
+        }
         settledRef.current = true;
         request.resolve(decrypted);
       }
@@ -126,7 +141,16 @@ export function PassphrasePrompt({
       setBusy(false);
       setStage("");
     }
-  }, [passphrase, isKeybase, config, request, onKeyUpdated, promptLabel]);
+  }, [
+    passphrase,
+    isKeybase,
+    config,
+    request,
+    onKeyUpdated,
+    promptLabel,
+    remember,
+    onPassphraseCached,
+  ]);
 
   return (
     <Dialog
@@ -196,6 +220,26 @@ export function PassphrasePrompt({
             </div>
             <FormError message={error} />
             {busy && stage && <p className="text-[11px] text-muted-foreground">{stage}</p>}
+            {!isKeybase && (
+              <div className="flex min-h-11 items-start gap-2 py-1 text-xs sm:min-h-0">
+                <Checkbox
+                  id="remember-passphrase-session"
+                  checked={remember}
+                  onCheckedChange={(v) => setRemember(v === true)}
+                  className="mt-0.5 size-3.5"
+                  aria-label="Remember passphrase for this session"
+                />
+                <label
+                  htmlFor="remember-passphrase-session"
+                  className="cursor-pointer select-none leading-snug"
+                >
+                  Remember for this session{" "}
+                  <span className="text-muted-foreground">
+                    (browser memory only — gone when you close the tab)
+                  </span>
+                </label>
+              </div>
+            )}
             <div className="flex gap-2 pt-1">
               <Button
                 type="button"

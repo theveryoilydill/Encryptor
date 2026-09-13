@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTheme } from "next-themes";
-import { Github, Loader2, Monitor, Moon, ShieldCheck, Sun } from "lucide-react";
+import { Github, Loader2, Monitor, Moon, ShieldCheck, Sun, Unlock } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toaster";
@@ -21,7 +21,13 @@ import { DecryptTab } from "@/components/pgp/tabs/DecryptTab";
 import { SignTab } from "@/components/pgp/tabs/SignTab";
 import { VerifyTab } from "@/components/pgp/tabs/VerifyTab";
 import { STORAGE_KEYS } from "@/lib/constants";
+import { readKey, unlockPrivateKey } from "@/lib/pgp/pgp";
 import { runCryptoSelfTest, type SelfTestResult } from "@/lib/pgp/self-test";
+import {
+  cachePassphrase,
+  forgetPassphrase,
+  getCachedPassphrase,
+} from "@/lib/pgp/session-passphrase";
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/pgp/settings";
 
 /** Last-active tab id, persisted so the app reopens on the mode the user
@@ -101,7 +107,13 @@ export default function PgpApp() {
   }, []);
 
   const handleSetPrivateKey = useCallback((next: PrivateKeyConfig | null) => {
-    setPrivateKey(next);
+    setPrivateKey((prev) => {
+      // The session passphrase cache is scoped to one key: dropping the key or
+      // switching to a different fingerprint must not keep the old secret.
+      const fingerprintChanged = prev && next && prev.info?.fingerprint !== next.info?.fingerprint;
+      if (!next || fingerprintChanged) forgetPassphrase();
+      return next;
+    });
     try {
       if (next) {
         localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(next));
@@ -115,15 +127,48 @@ export default function PgpApp() {
 
   // --- On-demand key decryption (Keybase-style) ---
   // When a tab needs the decrypted private key, it calls requestDecryptedKey().
-  // This shows a passphrase prompt. The decrypted key exists only in the
+  // This shows a passphrase prompt — unless the user opted into the session
+  // passphrase cache and the cached passphrase unlocks the key, in which case
+  // the key is unlocked silently. The decrypted key exists only in the
   // promise resolver's scope and is cleared after the operation completes.
   const [keyRequest, setKeyRequest] = useState<KeyRequestState | null>(null);
+  // Header indicator state for the opt-in session passphrase cache (the cache
+  // itself lives in lib/pgp/session-passphrase — memory only).
+  const [passphraseCached, setPassphraseCached] = useState(false);
 
   const requestDecryptedKey = useCallback((): Promise<OpenPGP.PrivateKey> => {
+    const cached =
+      privateKey?.source !== "keybase" && privateKey?.encryptedArmored
+        ? getCachedPassphrase()
+        : null;
+    if (cached) {
+      // Silent unlock attempt with the session-cached passphrase. On any
+      // failure (wrong passphrase, unreadable key) drop the cache and fall
+      // back to the visible prompt.
+      return (async () => {
+        try {
+          const key = await readKey(privateKey!.encryptedArmored!);
+          if (!key.isPrivate()) throw new Error("Stored key is not a private key.");
+          return await unlockPrivateKey(key as OpenPGP.PrivateKey, cached);
+        } catch {
+          forgetPassphrase();
+          setPassphraseCached(false);
+          return new Promise<OpenPGP.PrivateKey>((resolve, reject) =>
+            setKeyRequest({ resolve, reject }),
+          );
+        }
+      })();
+    }
     return new Promise((resolve, reject) => {
       setKeyRequest({ resolve, reject });
     });
-  }, []);
+  }, [privateKey]);
+
+  const handleForgetCachedPassphrase = useCallback(() => {
+    forgetPassphrase();
+    setPassphraseCached(false);
+    toast({ title: "Session passphrase forgotten" });
+  }, [toast]);
 
   // Alt+1..4 switches tabs; Ctrl/Cmd+, opens the key settings dialog.
   useEffect(() => {
@@ -191,7 +236,12 @@ export default function PgpApp() {
         {currentTabLabel} tab selected
       </span>
 
-      <Header onConfigure={() => setConfigOpen(true)} privateKey={privateKey} />
+      <Header
+        onConfigure={() => setConfigOpen(true)}
+        privateKey={privateKey}
+        passphraseCached={passphraseCached}
+        onForgetCachedPassphrase={handleForgetCachedPassphrase}
+      />
 
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
         <Tabs value={tab} onChange={setTab} />
@@ -271,6 +321,7 @@ export default function PgpApp() {
             },
           }}
           onKeyUpdated={handleSetPrivateKey}
+          onPassphraseCached={() => setPassphraseCached(true)}
         />
       )}
 
@@ -284,9 +335,13 @@ export default function PgpApp() {
 function Header({
   onConfigure,
   privateKey,
+  passphraseCached,
+  onForgetCachedPassphrase,
 }: {
   onConfigure: () => void;
   privateKey: PrivateKeyConfig | null;
+  passphraseCached: boolean;
+  onForgetCachedPassphrase: () => void;
 }) {
   return (
     <header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
@@ -298,6 +353,19 @@ function Header({
           <h1 className="text-base font-semibold tracking-tight">Encryptor</h1>
         </div>
         <div className="flex items-center gap-2">
+          {passphraseCached && privateKey && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={onForgetCachedPassphrase}
+              aria-label="Forget the remembered session passphrase"
+              title="Passphrase remembered for this session (memory only) — click to forget it now"
+              className="size-8 text-muted-foreground transition-colors hover:text-[#0055dc] dark:hover:text-[#5e94ff]"
+            >
+              <Unlock className="size-4" aria-hidden />
+            </Button>
+          )}
           <ThemeToggle />
           <ShortcutsDialog />
           <Button

@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	BookmarkPlus,
+	FileDown,
+	FileUp,
 	LayoutTemplate,
 	Loader2,
 	Lock,
@@ -42,8 +44,12 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
 import {
 	deleteUserTemplate,
+	downloadFileName,
+	exportTemplates,
+	importTemplates,
 	loadUserTemplates,
 	MAX_TEMPLATE_BODY_CHARS,
 	saveUserTemplate,
@@ -156,6 +162,49 @@ function TemplateMenu({
 		setTemplates(deleteUserTemplate(id));
 	};
 
+	// Backup: export downloads a versioned JSON file; import merges a picked
+	// file (deduped by name+body — re-importing the same file is a no-op).
+	const { toast } = useToast();
+	const importInputRef = useRef<HTMLInputElement>(null);
+
+	const handleExport = () => {
+		const blob = new Blob([exportTemplates()], { type: "application/json" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = downloadFileName();
+		a.click();
+		URL.revokeObjectURL(url);
+		toast({
+			title: `Exported ${templates.length} template${templates.length === 1 ? "" : "s"}`,
+			description: "Saved as a .json file you can re-import on any device.",
+		});
+	};
+
+	const handleImportFile = async (file: File) => {
+		try {
+			const result = importTemplates(await file.text());
+			if (!result.ok) {
+				toast({ title: "Import failed", description: result.error, variant: "destructive" });
+				return;
+			}
+			setTemplates(result.templates);
+			toast({
+				title: `Imported ${result.added} template${result.added === 1 ? "" : "s"}`,
+				description:
+					result.skipped > 0
+						? `${result.skipped} duplicate${result.skipped === 1 ? "" : "s"} or invalid skipped.`
+						: undefined,
+			});
+		} catch {
+			toast({
+				title: "Import failed",
+				description: "Couldn't read that file.",
+				variant: "destructive",
+			});
+		}
+	};
+
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -169,7 +218,13 @@ function TemplateMenu({
 					Insert template
 				</Button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="w-72">
+			<DropdownMenuContent
+				align="end"
+				// Cap at the viewport so the Backup row is always reachable — the
+				// long "your templates + starters + backup" list scrolls instead of
+				// clipping below the fold (repo-wide thin scrollbar applies).
+				className="max-h-[min(26rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto"
+			>
 				<DropdownMenuLabel className="flex items-center gap-1.5 text-[11px] font-normal text-muted-foreground">
 					<BookmarkPlus aria-hidden="true" className="size-3" />
 					Your templates
@@ -239,8 +294,45 @@ function TemplateMenu({
 						<span className="text-[11px] text-muted-foreground">{t.description}</span>
 					</DropdownMenuItem>
 				))}
+				<DropdownMenuSeparator />
+				<DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+					Backup
+				</DropdownMenuLabel>
+				{/* Export always works (even with zero templates — an empty backup is
+				     still a valid file); import feeds the merge + toast flow. */}
+				<DropdownMenuItem onSelect={handleExport} className="gap-1.5 py-2 text-xs">
+					<FileDown aria-hidden="true" className="size-3.5" />
+					Export templates
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					onSelect={() => {
+						// Radix closes the menu on select; open the picker after that,
+						// otherwise the focus restore can swallow the file dialog.
+						setTimeout(() => importInputRef.current?.click(), 0);
+					}}
+					className="gap-1.5 py-2 text-xs"
+				>
+					<FileUp aria-hidden="true" className="size-3.5" />
+					Import templates…
+				</DropdownMenuItem>
 			</DropdownMenuContent>
 
+			{/* Backup file input lives OUTSIDE the DropdownMenuContent: Radix
+			    unmounts the content on close, which would null the ref before the
+			    deferred picker click could fire. */}
+			<input
+				ref={importInputRef}
+				type="file"
+				accept="application/json,.json"
+				aria-hidden="true"
+				tabIndex={-1}
+				className="hidden"
+				onChange={(e) => {
+					const f = e.target.files?.[0];
+					if (f) void handleImportFile(f);
+					e.target.value = ""; // re-arm: picking the same file twice must fire
+				}}
+			/>
 			{/* Name prompt for "Save current message as template". Plain
 			    Dialog (not an inline menu editor) so mobile keyboards, focus
 			    trapping, and Escape handling all behave. */}

@@ -230,6 +230,10 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					value={armored}
 					onChange={(e) => {
 						setRepairedWith(null);
+						// Any new input invalidates everything from the previous input —
+						// a stale verify verdict / error must never outlive its input.
+						setResult(null);
+						setError(null);
 						setArmored(e.target.value);
 					}}
 					placeholder={

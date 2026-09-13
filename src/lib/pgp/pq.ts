@@ -232,7 +232,10 @@ export function parseSealedArmor(text: string): SealedPayload {
 	const b64 = inner
 		.split("\n")
 		.map((l) => l.trim())
-		.filter((l) => l && !l.includes(":"))
+		// Skip armor header lines AND an RFC-style CRC24 checksum line
+		// ("=XXXX") — our own writer omits it, but a repaired or external
+		// block may carry one; feeding "=" into atob would throw.
+		.filter((l) => l && !l.includes(":") && !l.startsWith("="))
 		.join("");
 	let json: string;
 	try {

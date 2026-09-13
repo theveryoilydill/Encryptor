@@ -355,6 +355,12 @@ export function DecryptTab({
 					value={armored}
 					onChange={(e) => {
 						setRepairedWith(null);
+						// Any new input invalidates everything from the previous input —
+						// without this, a failed repair / stale decrypt error — WORSE, the
+						// PREVIOUS MESSAGE'S plaintext — sticks around when the new text
+						// never reaches the auto-decrypt path (unrecognized/partial input).
+						setError(null);
+						setOutput(null);
 						setArmored(e.target.value);
 					}}
 					placeholder={"-----BEGIN PGP MESSAGE-----\n...\n-----END PGP MESSAGE-----"}

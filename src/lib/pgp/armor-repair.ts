@@ -48,6 +48,16 @@ function canonicalEnd(type: string): string {
 	return `-----END ${type}-----`;
 }
 
+/**
+ * Canonical armor marker line (BEGIN or END) for every block type we ship:
+ * openpgp.js's five PGP types (three of them multi-word!) plus the ENCRYPTOR
+ * quantum-seal type. Multi-word matters — a [A-Z-]+ style class silently
+ * rejects "PGP SIGNED MESSAGE" / "PGP PUBLIC KEY BLOCK" and made clean
+ * blocks look damaged.
+ */
+const CANONICAL_MARKER_LINE =
+	/^-----(?:BEGIN|END) (?:PGP (?:MESSAGE|SIGNED MESSAGE|SIGNATURE|PUBLIC KEY BLOCK|PRIVATE KEY BLOCK)|ENCRYPTOR [A-Z-]+)-----\s*$/;
+
 const HTML_ENTITIES: ReadonlyArray<readonly [RegExp, string]> = [
 	[/&lt;/g, "<"],
 	[/&gt;/g, ">"],
@@ -80,10 +90,10 @@ export function findArmorIssues(text: string): ArmorFix[] {
 	const isCleartextSigned = /BEGIN PGP SIGNED MESSAGE/.test(beginLine ?? "");
 	// Dashes: marker line exists but isn't canonical (lost/mangled dashes,
 	// leading "On ... wrote:" style prefixes are handled under stray-lines).
-	if (beginLine && !/^-----BEGIN (?:PGP|ENCRYPTOR) [A-Z-]+-----\s*$/.test(beginLine.trim())) {
+	if (beginLine && !CANONICAL_MARKER_LINE.test(beginLine.trim())) {
 		issues.add("header-dashes");
 	}
-	if (endLine && !/^-----END (?:PGP|ENCRYPTOR) [A-Z-]+-----\s*$/.test(endLine.trim())) {
+	if (endLine && !CANONICAL_MARKER_LINE.test(endLine.trim())) {
 		issues.add("header-dashes");
 	}
 	// Stray lines: blank lines / non-base64 junk INSIDE the body region
@@ -217,6 +227,10 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 		if (stripped !== lines[i]) fixes.add("quote-prefix");
 		const line = stripped.trim();
 		if (line === "") continue; // blank line noise
+		// Armor header lines are preserved verbatim in step 8 — never
+		// count them as stray junk (a clean sealed block would otherwise
+		// report a phantom "stray-lines" fix).
+		if (/^[A-Za-z-]+: /.test(line)) continue;
 		if (line.startsWith("=")) {
 			if (/^=[A-Za-z0-9+/]{4}$/.test(line)) oldChecksum = line;
 			continue; // checksum is recomputed below either way
@@ -242,8 +256,11 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 	} catch {
 		return null; // body isn't valid base64 — beyond framing repair
 	}
-	const newChecksum = `=${crc24ToBase64(crc24(bytes))}`;
-	if (oldChecksum !== newChecksum) fixes.add("checksum");
+	// The ENCRYPTOR quantum-seal type omits the checksum line by design
+	// (matches the writer in pq.ts) — for it we only VALIDATE the base64.
+	const isQuantumType = blockType.startsWith("ENCRYPTOR");
+	const newChecksum = isQuantumType ? null : `=${crc24ToBase64(crc24(bytes))}`;
+	if (newChecksum !== null && oldChecksum !== newChecksum) fixes.add("checksum");
 
 	// 8. Preserve armor header lines (Version:/Comment:) that sat between
 	//    BEGIN and the first body line in the original.
@@ -262,7 +279,7 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 		...headerLines.slice(0, 4),
 		"",
 		...wrapped,
-		newChecksum,
+		...(newChecksum === null ? [] : [newChecksum]),
 		canonicalEndLine,
 	].join("\n");
 

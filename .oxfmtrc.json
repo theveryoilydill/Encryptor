@@ -1,4 +1,13 @@
 {
-  "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": []
+	"$schema": "./node_modules/oxfmt/configuration_schema.json",
+	"ignorePatterns": [],
+	"rules": {
+		"indent": {
+			"enabled": true,
+			"options": {
+				"indentStyle": "tabs",
+				"indentSize": 4
+			}
+		}
+	}
 }

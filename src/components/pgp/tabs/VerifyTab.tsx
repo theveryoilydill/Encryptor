@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { FileSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -69,7 +69,6 @@ function buildVerificationReport(result: VerificationResult): string {
 export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
   const [armored, setArmored] = useState("");
   const [plaintext, setPlaintext] = useState("");
-  const [detected, setDetected] = useState<ArmoredFormat | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<VerificationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,14 +101,14 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
     requirePgpArmor: false,
   });
 
-  // Auto-detect format on input change
-  useEffect(() => {
+	// Detected format is derived state, recomputed from the armor on every
+	// change — nothing to reset when the input is cleared.
+	// # Mr. AI Acting on s183173's Behalf
+	const detected = useMemo<ArmoredFormat | null>(() => {
     if (!armored.trim()) {
-      setDetected(null);
-      return;
+			return null;
     }
-    const f = detectArmoredFormat(armored);
-    setDetected(f);
+		return detectArmoredFormat(armored);
   }, [armored]);
 
   const handleVerify = useCallback(async () => {
@@ -276,7 +275,6 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
                 setPlaintext("");
                 setResult(null);
                 setError(null);
-                setDetected(null);
               }}
               className="transition-colors duration-150"
             >

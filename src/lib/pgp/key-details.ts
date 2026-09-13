@@ -14,10 +14,10 @@ import { formatFingerprint, type PublicKeyInfo } from "@/lib/pgp/pgp";
 
 /** One row of the "Key details" disclosure (label/value definition grid). */
 export interface KeyDetailRow {
-  label: string;
-  value: string;
-  /** Render the value in monospace (key IDs, fingerprints). */
-  mono?: boolean;
+	label: string;
+	value: string;
+	/** Render the value in monospace (key IDs, fingerprints). */
+	mono?: boolean;
 }
 
 /**
@@ -30,9 +30,9 @@ export interface KeyDetailRow {
  * on it directly crashed the tab on reload ("getTime is not a function").
  */
 export function parseLooseDate(value: unknown): Date | null {
-  if (!(value instanceof Date) && typeof value !== "string") return null;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+	if (!(value instanceof Date) && typeof value !== "string") return null;
+	const date = value instanceof Date ? value : new Date(value);
+	return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /**
@@ -43,8 +43,8 @@ export function parseLooseDate(value: unknown): Date | null {
  * ("Never expires", date only).
  */
 function toLocalizedDate(value: unknown): string | null {
-  const date = parseLooseDate(value);
-  return date ? date.toLocaleDateString() : null;
+	const date = parseLooseDate(value);
+	return date ? date.toLocaleDateString() : null;
 }
 
 /**
@@ -56,61 +56,61 @@ function toLocalizedDate(value: unknown): string | null {
  * Returns [] gracefully for empty input / no data.
  */
 export function describeKeyDetails(info: PublicKeyInfo): KeyDetailRow[] {
-  if (!info) return [];
-  const rows: KeyDetailRow[] = [];
+	if (!info) return [];
+	const rows: KeyDetailRow[] = [];
 
-  if (info.keyID) {
-    rows.push({ label: "Key ID", value: info.keyID, mono: true });
-  }
-  if (info.fingerprint) {
-    rows.push({
-      label: "Fingerprint",
-      value: formatFingerprint(info.fingerprint),
-      mono: true,
-    });
-  }
-  if (info.algorithm) {
-    const algorithm = humanizeAlgorithm(info.algorithm);
-    const detail = algorithmDetail(info, algorithm);
-    rows.push({
-      label: "Algorithm",
-      value: detail ? `${algorithm}${detail}` : algorithm,
-    });
-  }
-  const created = toLocalizedDate(info.creationTime);
-  if (created) {
-    rows.push({ label: "Created", value: created });
-  }
-  if (info.expirationTime) {
-    const expires = toLocalizedDate(info.expirationTime);
-    if (expires) rows.push({ label: "Expires", value: expires });
-  } else if (info.expirationTime === null) {
-    // Explicit null = the key never expires (missing field → skip the row).
-    rows.push({ label: "Expires", value: "Never expires" });
-  }
-  const userIDs = Array.isArray(info.userIDs) ? info.userIDs : [];
-  if (userIDs.length > 0) {
-    const primaryEmail = userIDs[0]?.email;
-    rows.push({
-      label: "User IDs",
-      value: primaryEmail ? `${userIDs.length} · ${primaryEmail}` : String(userIDs.length),
-    });
-  }
-  // describePublicKey attaches subkeyFingerprints via a spread cast (useful
-  // but not part of the exported type) — read it defensively. When the R11
-  // per-subkey list has rows, the detailed list REPLACES this count row
-  // (rendering both would duplicate the same information); configs stored
-  // before R11 carry no subkeyDetails → describeSubkeyDetails returns [] and
-  // the count row still renders (back-compat, no crash).
-  const subkeyFingerprints = (info as { subkeyFingerprints?: unknown }).subkeyFingerprints;
-  if (Array.isArray(subkeyFingerprints) && describeSubkeyDetails(info).length === 0) {
-    rows.push({
-      label: "Subkeys",
-      value: String(subkeyFingerprints.length),
-    });
-  }
+	if (info.keyID) {
+		rows.push({ label: "Key ID", value: info.keyID, mono: true });
+	}
+	if (info.fingerprint) {
+		rows.push({
+			label: "Fingerprint",
+			value: formatFingerprint(info.fingerprint),
+			mono: true,
+		});
+	}
+	if (info.algorithm) {
+		const algorithm = humanizeAlgorithm(info.algorithm);
+		const detail = algorithmDetail(info, algorithm);
+		rows.push({
+			label: "Algorithm",
+			value: detail ? `${algorithm}${detail}` : algorithm,
+		});
+	}
+	const created = toLocalizedDate(info.creationTime);
+	if (created) {
+		rows.push({ label: "Created", value: created });
+	}
+	if (info.expirationTime) {
+		const expires = toLocalizedDate(info.expirationTime);
+		if (expires) rows.push({ label: "Expires", value: expires });
+	} else if (info.expirationTime === null) {
+		// Explicit null = the key never expires (missing field → skip the row).
+		rows.push({ label: "Expires", value: "Never expires" });
+	}
+	const userIDs = Array.isArray(info.userIDs) ? info.userIDs : [];
+	if (userIDs.length > 0) {
+		const primaryEmail = userIDs[0]?.email;
+		rows.push({
+			label: "User IDs",
+			value: primaryEmail ? `${userIDs.length} · ${primaryEmail}` : String(userIDs.length),
+		});
+	}
+	// describePublicKey attaches subkeyFingerprints via a spread cast (useful
+	// but not part of the exported type) — read it defensively. When the R11
+	// per-subkey list has rows, the detailed list REPLACES this count row
+	// (rendering both would duplicate the same information); configs stored
+	// before R11 carry no subkeyDetails → describeSubkeyDetails returns [] and
+	// the count row still renders (back-compat, no crash).
+	const subkeyFingerprints = (info as { subkeyFingerprints?: unknown }).subkeyFingerprints;
+	if (Array.isArray(subkeyFingerprints) && describeSubkeyDetails(info).length === 0) {
+		rows.push({
+			label: "Subkeys",
+			value: String(subkeyFingerprints.length),
+		});
+	}
 
-  return rows;
+	return rows;
 }
 
 /**
@@ -118,14 +118,14 @@ export function describeKeyDetails(info: PublicKeyInfo): KeyDetailRow[] {
  * details" rows when the configured info carries subkey data.
  */
 export interface SubkeyDetailRow {
-  keyID: string;
-  /** Humanized algorithm label (raw openpgp value → display name). */
-  algorithm: string;
-  created: string;
-  /** Localized expiration date, or null when the subkey never expires. */
-  expires: string | null;
-  expiring: boolean;
-  expired: boolean;
+	keyID: string;
+	/** Humanized algorithm label (raw openpgp value → display name). */
+	algorithm: string;
+	created: string;
+	/** Localized expiration date, or null when the subkey never expires. */
+	expires: string | null;
+	expiring: boolean;
+	expired: boolean;
 }
 
 /**
@@ -148,39 +148,39 @@ export interface SubkeyDetailRow {
  * returns [] and the panel shows only the legacy "Subkeys: N" count row.
  */
 export function describeSubkeyDetails(info: PublicKeyInfo): SubkeyDetailRow[] {
-  if (!info) return [];
-  const raw = (info as { subkeyDetails?: unknown }).subkeyDetails;
-  if (!Array.isArray(raw)) return [];
-  const rows: SubkeyDetailRow[] = [];
-  for (const item of raw) {
-    if (typeof item !== "object" || item === null) continue;
-    const rec = item as {
-      keyID?: unknown;
-      algorithm?: unknown;
-      created?: unknown;
-      expiresAt?: unknown;
-    };
-    // Malformed items are skipped, never fatal (one bad subkey must not
-    // take down the panel).
-    if (typeof rec.keyID !== "string" || rec.keyID.trim() === "") continue;
-    if (typeof rec.algorithm !== "string" || rec.algorithm.trim() === "") continue;
-    const created = toLocalizedDate(rec.created);
-    if (!created) continue;
-    let expiresAt: Date | null = null;
-    if (typeof rec.expiresAt === "number" && Number.isFinite(rec.expiresAt) && rec.expiresAt > 0) {
-      expiresAt = new Date(rec.expiresAt);
-    }
-    const expiry = expiresAt ? getKeyExpiryStatus(expiresAt) : null;
-    rows.push({
-      keyID: rec.keyID,
-      algorithm: humanizeRawAlgorithm(rec.algorithm),
-      created,
-      expires: expiresAt ? (toLocalizedDate(expiresAt) ?? null) : null,
-      expiring: expiry?.status === "expiring",
-      expired: expiry?.status === "expired",
-    });
-  }
-  return rows;
+	if (!info) return [];
+	const raw = (info as { subkeyDetails?: unknown }).subkeyDetails;
+	if (!Array.isArray(raw)) return [];
+	const rows: SubkeyDetailRow[] = [];
+	for (const item of raw) {
+		if (typeof item !== "object" || item === null) continue;
+		const rec = item as {
+			keyID?: unknown;
+			algorithm?: unknown;
+			created?: unknown;
+			expiresAt?: unknown;
+		};
+		// Malformed items are skipped, never fatal (one bad subkey must not
+		// take down the panel).
+		if (typeof rec.keyID !== "string" || rec.keyID.trim() === "") continue;
+		if (typeof rec.algorithm !== "string" || rec.algorithm.trim() === "") continue;
+		const created = toLocalizedDate(rec.created);
+		if (!created) continue;
+		let expiresAt: Date | null = null;
+		if (typeof rec.expiresAt === "number" && Number.isFinite(rec.expiresAt) && rec.expiresAt > 0) {
+			expiresAt = new Date(rec.expiresAt);
+		}
+		const expiry = expiresAt ? getKeyExpiryStatus(expiresAt) : null;
+		rows.push({
+			keyID: rec.keyID,
+			algorithm: humanizeRawAlgorithm(rec.algorithm),
+			created,
+			expires: expiresAt ? (toLocalizedDate(expiresAt) ?? null) : null,
+			expiring: expiry?.status === "expiring",
+			expired: expiry?.status === "expired",
+		});
+	}
+	return rows;
 }
 
 /**
@@ -195,29 +195,29 @@ export function describeSubkeyDetails(info: PublicKeyInfo): SubkeyDetailRow[] {
  * prototype-chain pitfall ("constructor" etc.) on adversarial input.
  */
 const ALGORITHM_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
-  ["ed25519legacy", "EdDSA (Curve25519)"],
-  ["eddsalegacy", "EdDSA (legacy)"],
-  ["rsa4", "RSA"],
-  ["rsasign", "RSA"],
-  ["rsaencrypt", "RSA"],
-  ["ecdh", "ECDH"],
-  ["ecdhx25519", "ECDH (Curve25519)"],
-  ["ecdsanistp256", "ECDSA (NIST P-256)"],
-  ["ecdsanistp384", "ECDSA (NIST P-384)"],
-  ["ecdsanistp521", "ECDSA (NIST P-521)"],
-  ["curve25519", "Curve25519"],
-  ["nistp256", "NIST P-256"],
-  ["nistp384", "NIST P-384"],
-  ["nistp521", "NIST P-521"],
-  ["elgamal", "ElGamal"],
-  ["aes128", "AES-128"],
-  ["aes192", "AES-192"],
-  ["aes256", "AES-256"],
+	["ed25519legacy", "EdDSA (Curve25519)"],
+	["eddsalegacy", "EdDSA (legacy)"],
+	["rsa4", "RSA"],
+	["rsasign", "RSA"],
+	["rsaencrypt", "RSA"],
+	["ecdh", "ECDH"],
+	["ecdhx25519", "ECDH (Curve25519)"],
+	["ecdsanistp256", "ECDSA (NIST P-256)"],
+	["ecdsanistp384", "ECDSA (NIST P-384)"],
+	["ecdsanistp521", "ECDSA (NIST P-521)"],
+	["curve25519", "Curve25519"],
+	["nistp256", "NIST P-256"],
+	["nistp384", "NIST P-384"],
+	["nistp521", "NIST P-521"],
+	["elgamal", "ElGamal"],
+	["aes128", "AES-128"],
+	["aes192", "AES-192"],
+	["aes256", "AES-256"],
 ]);
 
 /** Map a raw algorithm identifier to its human-friendly label (or itself). */
 function humanizeAlgorithm(raw: string): string {
-  return ALGORITHM_LABELS.get(raw.toLowerCase()) ?? raw;
+	return ALGORITHM_LABELS.get(raw.toLowerCase()) ?? raw;
 }
 
 /**
@@ -233,7 +233,7 @@ function humanizeAlgorithm(raw: string): string {
  * which is exactly the desired passthrough behavior.
  */
 export function humanizeRawAlgorithm(raw: string): string {
-  return humanizeAlgorithm(raw);
+	return humanizeAlgorithm(raw);
 }
 
 /**
@@ -243,15 +243,15 @@ export function humanizeRawAlgorithm(raw: string): string {
  * only — pgp.ts still returns raw curve values everywhere else.
  */
 const CURVE_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
-  ["ed25519legacy", "Curve25519"],
-  ["curve25519legacy", "Curve25519"],
-  ["nistp256", "NIST P-256"],
-  ["nistp384", "NIST P-384"],
-  ["nistp521", "NIST P-521"],
-  ["brainpoolp256r1", "Brainpool P-256"],
-  ["brainpoolp384r1", "Brainpool P-384"],
-  ["brainpoolp512r1", "Brainpool P-512"],
-  ["secp256k1", "secp256k1"],
+	["ed25519legacy", "Curve25519"],
+	["curve25519legacy", "Curve25519"],
+	["nistp256", "NIST P-256"],
+	["nistp384", "NIST P-384"],
+	["nistp521", "NIST P-521"],
+	["brainpoolp256r1", "Brainpool P-256"],
+	["brainpoolp384r1", "Brainpool P-384"],
+	["brainpoolp512r1", "Brainpool P-512"],
+	["secp256k1", "secp256k1"],
 ]);
 
 /**
@@ -263,21 +263,21 @@ const CURVE_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
  * restructured (R6 scope note).
  */
 function algorithmDetail(info: PublicKeyInfo, humanized: string): string {
-  const curve =
-    typeof info.curve === "string" ? CURVE_LABELS.get(info.curve.toLowerCase()) : undefined;
-  if (curve && !humanized.toLowerCase().includes(curve.toLowerCase())) {
-    return ` · ${curve}`;
-  }
-  if (typeof info.bitSize === "number" && Number.isFinite(info.bitSize) && info.bitSize > 0) {
-    return ` · ${info.bitSize} bits`;
-  }
-  return "";
+	const curve =
+		typeof info.curve === "string" ? CURVE_LABELS.get(info.curve.toLowerCase()) : undefined;
+	if (curve && !humanized.toLowerCase().includes(curve.toLowerCase())) {
+		return ` · ${curve}`;
+	}
+	if (typeof info.bitSize === "number" && Number.isFinite(info.bitSize) && info.bitSize > 0) {
+		return ` · ${info.bitSize} bits`;
+	}
+	return "";
 }
 
 /** Expiry status of a key, for the ConfigureModal badge. */
 export interface KeyExpiryStatus {
-  status: "expired" | "expiring" | "none";
-  label: string;
+	status: "expired" | "expiring" | "none";
+	label: string;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -300,20 +300,20 @@ const EXPIRING_SOON_DAYS = 30;
  *     "none" anyway).
  */
 export function getKeyExpiryStatus(expirationTime: unknown): KeyExpiryStatus | null {
-  const date = parseLooseDate(expirationTime);
-  if (!date) return null;
-  const remainingMs = date.getTime() - Date.now();
-  if (remainingMs <= 0) {
-    return { status: "expired", label: "Expired" };
-  }
-  const daysRemaining = Math.ceil(remainingMs / MS_PER_DAY);
-  if (daysRemaining < EXPIRING_SOON_DAYS) {
-    return {
-      status: "expiring",
-      label: `Expires in ${daysRemaining} day${daysRemaining === 1 ? "" : "s"}`,
-    };
-  }
-  return { status: "none", label: toLocalizedDate(date) ?? "" };
+	const date = parseLooseDate(expirationTime);
+	if (!date) return null;
+	const remainingMs = date.getTime() - Date.now();
+	if (remainingMs <= 0) {
+		return { status: "expired", label: "Expired" };
+	}
+	const daysRemaining = Math.ceil(remainingMs / MS_PER_DAY);
+	if (daysRemaining < EXPIRING_SOON_DAYS) {
+		return {
+			status: "expiring",
+			label: `Expires in ${daysRemaining} day${daysRemaining === 1 ? "" : "s"}`,
+		};
+	}
+	return { status: "none", label: toLocalizedDate(date) ?? "" };
 }
 
 /**
@@ -323,9 +323,9 @@ export function getKeyExpiryStatus(expirationTime: unknown): KeyExpiryStatus | n
  * e.g. downloadKeyName("public", "@max") → "max-public-key.asc".
  */
 export function downloadKeyName(kind: "public" | "private", label: string): string {
-  const slug = label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `${slug || "pgp"}-${kind}-key.asc`;
+	const slug = label
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return `${slug || "pgp"}-${kind}-key.asc`;
 }

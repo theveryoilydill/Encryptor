@@ -9,28 +9,28 @@ import { LIMITS } from "@/lib/constants";
  */
 
 export const ROUTE_CONFIG = {
-  runtime: "nodejs",
-  dynamic: "force-dynamic",
+	runtime: "nodejs",
+	dynamic: "force-dynamic",
 } as const;
 
 /** Browser-visible cache header sets used by the proxy routes. */
 export const CACHE = {
-  /** Upstream results are stable for a while — allow short caching. */
-  public: "public, max-age=300, s-maxage=600",
-  /** Live search results — never cache. */
-  none: "no-store",
+	/** Upstream results are stable for a while — allow short caching. */
+	public: "public, max-age=300, s-maxage=600",
+	/** Live search results — never cache. */
+	none: "no-store",
 } as const;
 
 /** Split a comma-separated query parameter into trimmed, non-empty items. */
 export function csvParam(url: URL, name: string): string[] {
-  return (url.searchParams.get(name) ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+	return (url.searchParams.get(name) ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
 }
 
 export function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status });
+	return NextResponse.json({ error: message }, { status });
 }
 
 /**
@@ -38,20 +38,20 @@ export function jsonError(message: string, status: number) {
  * Returns either an error response or the parsed list.
  */
 export function requireCsvParam(
-  url: URL,
-  name: string,
-  missingMessage: string,
-  maxMessage: string,
-  max: number = LIMITS.maxUsernamesPerRequest,
+	url: URL,
+	name: string,
+	missingMessage: string,
+	maxMessage: string,
+	max: number = LIMITS.maxUsernamesPerRequest,
 ): { ok: true; values: string[] } | { ok: false; response: NextResponse } {
-  const values = csvParam(url, name);
-  if (values.length === 0) {
-    return { ok: false, response: jsonError(missingMessage, 400) };
-  }
-  if (values.length > max) {
-    return { ok: false, response: jsonError(maxMessage, 400) };
-  }
-  return { ok: true, values };
+	const values = csvParam(url, name);
+	if (values.length === 0) {
+		return { ok: false, response: jsonError(missingMessage, 400) };
+	}
+	if (values.length > max) {
+		return { ok: false, response: jsonError(maxMessage, 400) };
+	}
+	return { ok: true, values };
 }
 
 /**
@@ -60,12 +60,12 @@ export function requireCsvParam(
  * specific status (e.g. 400 invalid username, 401 bad login).
  */
 export class UpstreamError extends Error {
-  status: number;
-  constructor(message: string, status: number) {
-    super(message);
-    this.name = "UpstreamError";
-    this.status = status;
-  }
+	status: number;
+	constructor(message: string, status: number) {
+		super(message);
+		this.name = "UpstreamError";
+		this.status = status;
+	}
 }
 
 /**
@@ -74,20 +74,20 @@ export class UpstreamError extends Error {
  * boilerplate out of every route (DRY).
  */
 export async function proxyCall<T>(
-  fn: () => Promise<T>,
-  cacheControl?: string,
+	fn: () => Promise<T>,
+	cacheControl?: string,
 ): Promise<NextResponse> {
-  try {
-    const data = await fn();
-    return NextResponse.json(data, {
-      headers: cacheControl ? { "Cache-Control": cacheControl } : undefined,
-    });
-  } catch (e) {
-    if (e instanceof UpstreamError) {
-      return jsonError(e.message, e.status);
-    }
-    return jsonError((e as Error).message, 502);
-  }
+	try {
+		const data = await fn();
+		return NextResponse.json(data, {
+			headers: cacheControl ? { "Cache-Control": cacheControl } : undefined,
+		});
+	} catch (e) {
+		if (e instanceof UpstreamError) {
+			return jsonError(e.message, e.status);
+		}
+		return jsonError((e as Error).message, 502);
+	}
 }
 
 /**
@@ -102,13 +102,13 @@ export async function proxyCall<T>(
  * Array.prototype.keys (a function), so `body.keys ?? []` never falls back.
  */
 export async function proxyKeyCall(
-  fn: () => Promise<unknown[]>,
-  cacheControl?: string,
+	fn: () => Promise<unknown[]>,
+	cacheControl?: string,
 ): Promise<NextResponse> {
-  return proxyCall(async () => ({ keys: await fn() }), cacheControl);
+	return proxyCall(async () => ({ keys: await fn() }), cacheControl);
 }
 
 /** Extract a query string param with a default. */
 export function queryParam(req: NextRequest, name: string, fallback = ""): string {
-  return new URL(req.url).searchParams.get(name) ?? fallback;
+	return new URL(req.url).searchParams.get(name) ?? fallback;
 }

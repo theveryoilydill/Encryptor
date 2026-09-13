@@ -16,10 +16,10 @@ export const dynamic = "force-dynamic";
  * Returns a merged, deduplicated list of results.
  */
 export async function GET(req: NextRequest) {
-  const q = queryParam(req, "q");
-  const keybaseOnly = queryParam(req, "keybase_only") === "1";
-  if (q.trim().length < 1) {
-    return NextResponse.json([]);
-  }
-  return proxyCall(() => searchAllKeyserversServer(q, fetch, keybaseOnly), CACHE.none);
+	const q = queryParam(req, "q");
+	const keybaseOnly = queryParam(req, "keybase_only") === "1";
+	if (q.trim().length < 1) {
+		return NextResponse.json([]);
+	}
+	return proxyCall(() => searchAllKeyserversServer(q, fetch, keybaseOnly), CACHE.none);
 }

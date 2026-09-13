@@ -14,7 +14,7 @@
  * from Keybase each time.
  */
 import { useCallback, useRef, useState } from "react";
-import { Eye, EyeOff, KeyRound } from "lucide-react";
+import { Eye, EyeOff, KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -219,7 +219,12 @@ export function PassphrasePrompt({
               </Button>
             </div>
             <FormError message={error} />
-            {busy && stage && <p className="text-[11px] text-muted-foreground">{stage}</p>}
+            {busy && stage && (
+              <p className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Loader2 aria-hidden="true" className="size-3 animate-spin" />
+                {stage}
+              </p>
+            )}
             {!isKeybase && (
               <div className="flex min-h-11 items-start gap-2 py-1 text-xs sm:min-h-0">
                 <Checkbox

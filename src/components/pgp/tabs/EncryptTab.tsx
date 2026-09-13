@@ -5,7 +5,12 @@ import { useCallback, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RecipientPicker } from "@/components/pgp/RecipientPicker";
-import { AttachmentList, ErrorBanner, OutputBlock } from "@/components/pgp/shared";
+import {
+  AttachmentList,
+  ErrorBanner,
+  InputSizeCounter,
+  OutputBlock,
+} from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
 import { encryptAndSign } from "@/lib/pgp/pgp";
@@ -335,12 +340,8 @@ export function EncryptTab({
           editorKind={settings.markdownEditor}
           placeholder="Type the message you want to encrypt + sign…"
         />
-        {/* Additive char/size counter (visual feedback only; aria-live off —
-            announcing every keystroke would be noisy for screen readers). */}
-        <div aria-live="off" className="mt-1 text-right text-[10px] text-muted-foreground">
-          {plaintext.length.toLocaleString()} chars
-          {plaintext.length > 0 && ` · ~${(plaintext.length / 1024).toFixed(1)} KB`}
-        </div>
+        {/* Char/word/size counter (visual feedback only). */}
+        <InputSizeCounter text={plaintext} />
         {showEncryptHint && detectedBlock && (
           <InputHint
             tone={detectedBlock === "encrypted" ? "amber" : "info"}

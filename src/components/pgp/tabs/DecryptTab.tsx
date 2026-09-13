@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Loader2, Lock, LockKeyholeOpen } from "lucide-react";
+import { Download, Loader2, Lock, LockKeyholeOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -330,6 +330,28 @@ export function DecryptTab({
               label="Copy text"
               ariaLabel="Copy decrypted message text"
             />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                // Save the decrypted message as a plain-text file (client-side
+                // only — the blob never touches a server).
+                const blob = new Blob([output.plaintext], {
+                  type: "text/plain;charset=utf-8",
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "decrypted-message.txt";
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+              aria-label="Save decrypted message as a .txt file"
+            >
+              <Download className="size-3.5" aria-hidden />
+              Save as .txt
+            </Button>
             <ZipDownloadButton
               files={output.files}
               operation="decrypt"

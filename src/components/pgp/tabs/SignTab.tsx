@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { ErrorBanner, OutputBlock } from "@/components/pgp/shared";
+import { ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { signMessage } from "@/lib/pgp/pgp";
 
@@ -97,12 +97,8 @@ export function SignTab({
           spellCheck={false}
           className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
         />
-        {/* Char counter — parity with the Encrypt tab counter (visual feedback
-            only; aria-live off so screen readers are not spammed per key). */}
-        <div aria-live="off" className="mt-1 text-right text-[10px] text-muted-foreground">
-          {plaintext.length.toLocaleString()} chars
-          {plaintext.length > 0 && ` · ~${(plaintext.length / 1024).toFixed(1)} KB`}
-        </div>
+        {/* Char/word/size counter — parity with the Encrypt tab counter. */}
+        <InputSizeCounter text={plaintext} />
       </div>
 
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">

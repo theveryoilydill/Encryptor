@@ -577,6 +577,23 @@ export function OutputBlock({
   );
 }
 
+/* ------------------------------ InputSizeCounter ---------------------------- */
+
+/** Right-aligned char/word/KB counter under composer inputs (Encrypt + Sign
+ *  tabs share it). aria-live off on purpose — announcing every keystroke
+ *  would be noisy for screen readers. */
+export function InputSizeCounter({ text }: { text: string }) {
+  const trimmed = text.trim();
+  const words = trimmed ? trimmed.split(/\s+/).length : 0;
+  return (
+    <div aria-live="off" className="mt-1 text-right text-[10px] text-muted-foreground">
+      {text.length.toLocaleString()} chars
+      {words > 0 && ` · ${words.toLocaleString()} ${words === 1 ? "word" : "words"}`}
+      {text.length > 0 && ` · ~${(text.length / 1024).toFixed(1)} KB`}
+    </div>
+  );
+}
+
 /* ------------------------------ AttachmentList ------------------------------ */
 
 /** Render the list of files attached to an outgoing encrypted message.

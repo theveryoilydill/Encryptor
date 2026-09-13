@@ -7,7 +7,7 @@
  * (RecipientPicker + ManualRecipientAdd in PgpApp.tsx) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -121,6 +121,17 @@ export function RecipientPicker({
       // ignore
     }
   }, [recentRecipients]);
+
+  // Self is never offered as a recent entry (the include-me checkbox already
+  // covers encrypting to yourself); the whole section hides when nothing
+  // visible remains.
+  const visibleRecentRecipients = useMemo(
+    () =>
+      recentRecipients.filter(
+        (r) => !(selfRecipient?.fingerprint && r.fingerprint === selfRecipient.fingerprint),
+      ),
+    [recentRecipients, selfRecipient],
+  );
 
   /** Record a successfully added recipient (deduped, most recent first). */
   const rememberRecentRecipient = useCallback((entry: RecentRecipient) => {
@@ -518,39 +529,47 @@ export function RecipientPicker({
 
       {/* Additive: recent recipients — shown only when the search box is empty
           and no dropdown results are on screen. Clicking routes through the
-          same addRecipient path as picking a search result. */}
+          same addRecipient path as picking a search result. Self is never
+          offered as a recent entry. */}
       {input.trim() === "" &&
         !(showSuggestions && suggestions.length > 0) &&
-        recentRecipients.length > 0 && (
+        visibleRecentRecipients.length > 0 && (
           <div className="mt-2">
-            <p className="text-[10px] text-muted-foreground">Recent:</p>
+            <p className="flex items-center gap-2 text-[10px] text-muted-foreground">
+              Recent:
+              {/* Privacy affordance: wipe the recent-recipients list without
+                  touching the saved key or recipients. */}
+              <button
+                type="button"
+                onClick={() => setRecentRecipients([])}
+                aria-label="Clear recent recipients"
+                className="rounded text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-destructive hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff]"
+              >
+                Clear
+              </button>
+            </p>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              {recentRecipients
-                .filter(
-                  (r) =>
-                    !(selfRecipient?.fingerprint && r.fingerprint === selfRecipient.fingerprint),
-                )
-                .map((r, i) => {
-                  const alreadyAdded = recipients.some(
-                    (p) =>
-                      (r.username !== undefined && p.username === r.username) ||
-                      (r.fingerprint !== undefined && p.fingerprint === r.fingerprint),
-                  );
-                  return (
-                    <button
-                      key={`${r.fingerprint || r.label}-${i}`}
-                      type="button"
-                      onClick={() => addRecentRecipient(r)}
-                      disabled={alreadyAdded}
-                      aria-label={`Add recent recipient ${r.label}`}
-                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[#0055dc]/5 hover:text-foreground dark:hover:bg-[#5e94ff]/5 ${
-                        alreadyAdded ? "cursor-not-allowed opacity-50" : ""
-                      }`}
-                    >
-                      <span className="max-w-40 truncate">{r.label}</span>
-                    </button>
-                  );
-                })}
+              {visibleRecentRecipients.map((r, i) => {
+                const alreadyAdded = recipients.some(
+                  (p) =>
+                    (r.username !== undefined && p.username === r.username) ||
+                    (r.fingerprint !== undefined && p.fingerprint === r.fingerprint),
+                );
+                return (
+                  <button
+                    key={`${r.fingerprint || r.label}-${i}`}
+                    type="button"
+                    onClick={() => addRecentRecipient(r)}
+                    disabled={alreadyAdded}
+                    aria-label={`Add recent recipient ${r.label}`}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[#0055dc]/5 hover:text-foreground dark:hover:bg-[#5e94ff]/5 ${
+                      alreadyAdded ? "cursor-not-allowed opacity-50" : ""
+                    }`}
+                  >
+                    <span className="max-w-40 truncate">{r.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

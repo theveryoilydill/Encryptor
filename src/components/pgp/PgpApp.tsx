@@ -293,7 +293,9 @@ function Header({
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
           <img src="/logo.svg" alt="Encryptor logo" width={28} height={28} className="rounded" />
-          <span className="text-base font-semibold tracking-tight">Encryptor</span>
+          {/* h1: the page's only level-one heading (axe page-has-heading-one);
+              styled identically to the previous span. */}
+          <h1 className="text-base font-semibold tracking-tight">Encryptor</h1>
         </div>
         <div className="flex items-center gap-2">
           <ThemeToggle />

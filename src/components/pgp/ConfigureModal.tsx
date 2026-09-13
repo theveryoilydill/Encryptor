@@ -1,12 +1,14 @@
 "use client";
 
 /**
- * "Configure your private key" modal.
+ * "Your key" modal — the key/auth half of the old combined dialog.
  *
  * Three ways to get a private key, ported verbatim from the original app
  * (ConfigureModal + KeybaseLoginForm + ManualKeyForm + GenerateKeyForm in
  * PgpApp.tsx): Keybase password login, manual armored-key paste, and local
  * key generation. Only styling is modernized (shadcn Dialog + #0055dc accent).
+ * APP preferences (editor, compression, auto sign, auto-lock, backups) live
+ * in the dedicated SettingsDialog since round 11.
  *
  * SECURITY (unchanged): only key METADATA and the ENCRYPTED armored private
  * key are handed to onSave. The decrypted key and the passphrase are never
@@ -18,10 +20,10 @@ import {
 	ChevronDown,
 	Dice5,
 	Download,
+	Loader2,
 	QrCode,
-	RotateCcw,
+	ShieldHalf,
 	TriangleAlert,
-	Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -42,8 +44,7 @@ import {
 	downloadKeyName,
 	getKeyExpiryStatus,
 } from "@/lib/pgp/key-details";
-import { applyConfigBackup, buildConfigBackup, parseConfigBackup } from "@/lib/pgp/config-backup";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { generateSealKeyPair, wrapSealSecret, type QuantumSealConfig } from "@/lib/pgp/pq";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
@@ -67,17 +68,26 @@ export function ConfigureModal({
 	privateKey,
 	onSave,
 	onClear,
+	requestDecryptedKey,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	privateKey: PrivateKeyConfig | null;
 	onSave: (cfg: PrivateKeyConfig) => void;
 	onClear: () => void;
+	/** On-demand key unlock — used ONLY by the "enable quantum seal" flow,
+	 *  which wraps the new ML-KEM secret under the app passphrase. */
+	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 }) {
 	// Key-share QR (additive): toggles the inline QR block inside the Key
 	// details disclosure. No state-reset effect on dialog close — the block
 	// only exists while a key is configured AND the disclosure is expanded.
 	const [showKeyQr, setShowKeyQr] = useState(false);
+	// R8: QR payload mode. "keyserver" (default — behavior unchanged since the
+	// QR shipped) encodes the keys.openpgp.org lookup URL; "fingerprint"
+	// encodes the de-facto openpgp4fpr: fingerprint URI that OpenKeychain /
+	// GPG Sync / aegir recognize as an import-and-verify target.
+	const [qrMode, setQrMode] = useState<"keyserver" | "fingerprint">("keyserver");
 
 	// Pure + cheap: rows for the "Key details" disclosure ([] → render nothing).
 	const keyDetailRows = privateKey?.info ? describeKeyDetails(privateKey.info) : [];
@@ -101,6 +111,16 @@ export function ConfigureModal({
 				.replace(/\s+/g, "")
 				.toUpperCase()}`
 		: null;
+
+	// R8: fingerprint URI for the QR's second payload mode. Both payloads are
+	// derived from the same fingerprint, so fingerprintUri is non-null exactly
+	// when keyShareUrl is; the render guard on keyShareUrl makes the `?? ""`
+	// fallbacks unreachable, but QRCodeSVG/CopyButton want a plain string.
+	const fingerprintUri = privateKey?.info?.fingerprint
+		? `openpgp4fpr:${privateKey.info.fingerprint.replace(/\s+/g, "").toUpperCase()}`
+		: null;
+	const qrValue =
+		qrMode === "keyserver" ? (keyShareUrl ?? "") : (fingerprintUri ?? keyShareUrl ?? "");
 
 	// Additive backups: share the key's armored public part (info.armored) /
 	// encrypted private part (encryptedArmored) without touching save/clear
@@ -141,6 +161,39 @@ export function ConfigureModal({
 		}
 	};
 
+	// Quantum-seal onboarding for existing (pre-feature) keys: unlock the key
+	// once — the prompt returns the passphrase — generate the ML-KEM pair,
+	// wrap the secret half under that passphrase, and save. Keybase-sourced
+	// configs never enter this flow (see the render guard above).
+	const [sealBusy, setSealBusy] = useState(false);
+	const handleEnableQuantumSeal = async () => {
+		if (!privateKey?.encryptedArmored || sealBusy) return;
+		setSealBusy(true);
+		try {
+			const { passphrase } = await requestDecryptedKey();
+			if (!passphrase) {
+				toast({
+					title: "Passphrase required",
+					description:
+						"The quantum-seal secret is protected by your passphrase — enter it in the prompt and try again.",
+					variant: "destructive",
+				});
+				return;
+			}
+			const sealPair = generateSealKeyPair();
+			const pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
+			onSave({ ...privateKey, pq });
+			toast({
+				title: "Quantum seal enabled",
+				description: "ML-KEM-768 key pair attached to this identity.",
+			});
+		} catch {
+			// Cancelled prompt or wrap failure — stay unsealed, no error spam.
+		} finally {
+			setSealBusy(false);
+		}
+	};
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent
@@ -148,7 +201,7 @@ export function ConfigureModal({
 				aria-describedby={undefined}
 			>
 				<DialogHeader className="border-b px-5 py-3.5">
-					<DialogTitle className="text-base font-semibold">Configure your private key</DialogTitle>
+					<DialogTitle className="text-base font-semibold">Your key</DialogTitle>
 				</DialogHeader>
 
 				<div className="scrollbar-thin max-h-[75vh] overflow-y-auto px-5 py-4">
@@ -264,10 +317,11 @@ export function ConfigureModal({
 										</div>
 									)}
 									{/* Additive key-share QR: encodes the keys.openpgp.org
-                      lookup URL for this key's fingerprint. Hidden entirely
-                      when no fingerprint is available. White tile keeps the
-                      QR scannable in dark mode; the URL is repeated as text
-                      for screen readers / no-scan fallback. */}
+                      lookup URL (default) or the openpgp4fpr: fingerprint
+                      URI (R8 mode toggle). Hidden entirely when no
+                      fingerprint is available. White tile keeps the QR
+                      scannable in dark mode; the payload is repeated as
+                      text for screen readers / no-scan fallback. */}
 									{keyShareUrl && (
 										<>
 											<button
@@ -285,8 +339,37 @@ export function ConfigureModal({
 													id="key-share-qr"
 													className="mt-2 rounded-lg border border-border bg-white p-3"
 												>
+													{/* R8: payload mode switch — segmented pair on the
+                              white tile; the active side gets the emerald
+                              tint already used by the QR affordance. */}
+													<div
+														role="group"
+														aria-label="QR code payload"
+														className="mb-2 inline-flex gap-0.5 rounded-md border border-border bg-muted/40 p-0.5"
+													>
+														{(
+															[
+																["keyserver", "Keyserver link"],
+																["fingerprint", "Fingerprint URI"],
+															] as const
+														).map(([mode, label]) => (
+															<button
+																key={mode}
+																type="button"
+																onClick={() => setQrMode(mode)}
+																aria-pressed={qrMode === mode}
+																className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+																	qrMode === mode
+																		? "bg-emerald-100 text-emerald-900"
+																		: "text-muted-foreground hover:text-foreground"
+																}`}
+															>
+																{label}
+															</button>
+														))}
+													</div>
 													<QRCodeSVG
-														value={keyShareUrl}
+														value={qrValue}
 														size={140}
 														bgColor="#FFFFFF"
 														fgColor="#000000"
@@ -295,16 +378,19 @@ export function ConfigureModal({
 													/>
 													<div className="mt-2 flex items-center justify-between gap-2">
 														<p className="text-[11px] leading-snug text-muted-foreground">
-															Scan to look up this key on keys.openpgp.org
+															{qrMode === "keyserver"
+																? "Scan to look up this key on keys.openpgp.org"
+																: "Scan to import + verify by fingerprint (OpenKeychain & friends)"}
 															<span className="mt-0.5 block break-all font-mono text-[10px]">
-																{keyShareUrl}
+																{qrValue}
 															</span>
 														</p>
 														{/* R9: copy the lookup URL — reuses the shared
                                 CopyButton (Copied! feedback + success/failure
-                                toasts), same as "Copy public key" below. */}
+                                toasts), same as "Copy public key" below.
+                                R8: copies whichever payload is active. */}
 														<CopyButton
-															text={keyShareUrl}
+															text={qrValue}
 															label="Copy link"
 															ariaLabel="Copy key lookup link"
 														/>
@@ -364,6 +450,60 @@ export function ConfigureModal({
 									</Button>
 								)}
 							</div>
+
+							{/* Quantum seal (ML-KEM-768): offered for keys imported or
+                configured before this feature (in-app generated keys already
+                carry the pair). Unlocking the key yields the passphrase needed
+                to wrap the new ML-KEM secret — the same prompt used by
+                encrypt/decrypt, cache included. Keybase-sourced keys are
+                excluded: their passphrase never stays in the app, so the
+                sealed copy could never be opened later. */}
+							{privateKey.encryptedArmored && !privateKey.pq && (
+								<div className="mt-3 rounded-xl border border-violet-300/60 bg-violet-50/60 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
+									<div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+										<div className="min-w-0">
+											<p className="flex items-center gap-1.5 text-xs font-medium text-violet-900 dark:text-violet-300">
+												<ShieldHalf aria-hidden className="size-3.5" />
+												Quantum seal not configured
+											</p>
+											<p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+												Add an ML-KEM-768 (post-quantum) key to this identity so your archive copies
+												get quantum-resistant protection.
+											</p>
+										</div>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											onClick={handleEnableQuantumSeal}
+											disabled={sealBusy}
+											className="h-11 shrink-0 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+											title="Generate an ML-KEM-768 key pair and protect it with your passphrase"
+										>
+											{sealBusy ? (
+												<>
+													<Loader2
+														aria-hidden
+														className="size-3.5 animate-spin motion-reduce:animate-none"
+													/>
+													Generating…
+												</>
+											) : (
+												"Enable quantum seal"
+											)}
+										</Button>
+									</div>
+								</div>
+							)}
+							{privateKey.pq && (
+								<p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+									<ShieldHalf
+										aria-hidden
+										className="size-3.5 text-violet-600 dark:text-violet-400"
+									/>
+									Quantum seal: ML-KEM-768 pair attached (secret key wrapped under your passphrase).
+								</p>
+							)}
 						</div>
 					)}
 
@@ -375,11 +515,7 @@ export function ConfigureModal({
 
 					<hr className="my-4 border-border" />
 
-					<GenerateKeyForm onLoaded={(cfg) => onSave(cfg)} />
-
-					{/* Additive: full-settings JSON backup export/import (localStorage
-              driven; props signature unchanged). */}
-					<BackupRestoreSection privateKey={privateKey} />
+					<GenerateKeyForm onLoaded={(cfg) => onSave(cfg)} autoOpen={!privateKey} />
 				</div>
 			</DialogContent>
 		</Dialog>
@@ -392,7 +528,6 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [stage, setStage] = useState<string>("");
 	const [error, setError] = useState<string | null>(null);
 
 	const handleLogin = useCallback(async () => {
@@ -403,22 +538,15 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 		}
 		setBusy(true);
 		try {
-			setStage("Loading crypto libraries…");
 			// Dynamically import keybase-auth (which in turn dynamically imports
 			// kbpgp + keybase-proofs) only when the user actually clicks login.
-			// This keeps the initial page bundle small and prevents OOM crashes
-			// during Turbopack compilation.
+			// The startup prewarm (PgpApp) usually has this chunk ready by now.
 			const { loginWithPassword } = await import("@/lib/pgp/keybase-auth");
 
-			setStage("Fetching salt + deriving keys…");
-			// Yield to the browser so the stage label can paint before the
+			// Yield to the browser so the spinner paints before the
 			// synchronous scrypt + PDPKA signing work blocks the main thread.
 			await new Promise((r) => setTimeout(r, 50));
 
-			setStage("Generating PDPKA signatures…");
-			await new Promise((r) => setTimeout(r, 50));
-
-			setStage("Logging in to Keybase…");
 			const { me, privateKey: decrypted } = await loginWithPassword(username, password, {
 				getsaltUrl: PROXIES.getsaltProxy,
 				loginUrl: PROXIES.loginProxy,
@@ -430,7 +558,6 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 				);
 			}
 
-			setStage("Decrypting private key…");
 			const armored = decrypted.armor();
 			const info = await validateArmoredKey(armored);
 			if (!info.ok || !info.info) {
@@ -450,7 +577,6 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 			setError((e as Error).message);
 		} finally {
 			setBusy(false);
-			setStage("");
 		}
 	}, [username, password, onLoaded]);
 
@@ -458,10 +584,8 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 		<div>
 			<div className="mb-1 text-sm font-semibold">Log in with Keybase</div>
 			<p className="mb-3 text-[11px] text-muted-foreground">
-				Your password is used to derive the PGP passphrase via scrypt and never leaves your browser.
-				We fetch your private key bundle from{" "}
-				<code className="text-foreground">keybase.io/_/api/1.0/me.json</code> and decrypt it
-				locally.
+				Your password unlocks your Keybase key right here in the browser — it is never sent
+				anywhere.
 			</p>
 			<div className="space-y-2">
 				<Input
@@ -485,14 +609,35 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 					disabled={busy}
 				/>
 				<FormError message={error} />
-				{busy && stage && <p className="text-[11px] text-muted-foreground">{stage}</p>}
+				{busy && (
+					<p
+						role="status"
+						className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"
+					>
+						<Loader2
+							aria-hidden="true"
+							className="size-3 animate-spin motion-reduce:animate-none"
+						/>
+						Signing in…
+					</p>
+				)}
 				<Button
 					type="button"
 					onClick={handleLogin}
 					disabled={busy}
 					className="h-11 w-full bg-[#0055dc] text-white transition-colors hover:bg-[#0046b8] sm:h-9"
 				>
-					{busy ? "Working…" : "Log in & load private key"}
+					{busy ? (
+						<>
+							<Loader2
+								aria-hidden="true"
+								className="size-4 animate-spin motion-reduce:animate-none"
+							/>
+							Working…
+						</>
+					) : (
+						"Log in & load private key"
+					)}
 				</Button>
 			</div>
 		</div>
@@ -667,196 +812,24 @@ function PassphraseStrength({ password }: { password: string }) {
 
 /* --------------------------- Backup & restore ------------------------------- */
 
-/**
- * Export/import of ALL app settings (recipients, configured key, include-me
- * preference, recent recipients, last tab) as a single JSON file. Purely
- * localStorage-driven: export reads STORAGE_KEYS via buildConfigBackup;
- * import validates with parseConfigBackup, writes with applyConfigBackup,
- * then reloads the page so PgpApp re-hydrates from localStorage.
- */
-function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
-	const [importBusy, setImportBusy] = useState(false);
-	const fileInputRef = useRef<HTMLInputElement>(null);
-	// Two-step confirm for "Restore defaults": the first click arms the
-	// confirm state; a second click within a 4s window completes it.
-	// A timer auto-disarms after the window so the destructive state never
-	// lingers (toast-first UX — no window.confirm).
-	const [confirmReset, setConfirmReset] = useState(false);
-	const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-	useEffect(() => {
-		return () => {
-			if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
-		};
-	}, []);
-
-	const handleExportBackup = () => {
-		try {
-			const json = buildConfigBackup();
-			const now = new Date();
-			const yyyy = now.getFullYear();
-			const mm = String(now.getMonth() + 1).padStart(2, "0");
-			const dd = String(now.getDate()).padStart(2, "0");
-			downloadBlob(
-				new Blob([json], { type: "application/json" }),
-				`encryptor-backup-${yyyy}-${mm}-${dd}.json`,
-			);
-			toast({ title: "Backup downloaded" });
-		} catch (e) {
-			toast({
-				title: "Backup failed",
-				description: (e as Error)?.message || "Backup unavailable",
-				variant: "destructive",
-			});
-		}
-	};
-
-	const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-		const input = event.target;
-		const file = input.files?.[0] ?? null;
-		if (!file) {
-			input.value = "";
-			return;
-		}
-		setImportBusy(true);
-		try {
-			const text = await file.text();
-			const parsed = parseConfigBackup(text);
-			if (!parsed.ok) {
-				toast({
-					title: "Import failed",
-					description: parsed.error,
-					variant: "destructive",
-				});
-				return;
-			}
-			const applied = applyConfigBackup(parsed.data);
-			toast({
-				title: "Settings imported",
-				description: `${applied} setting${applied === 1 ? "" : "s"} restored.`,
-			});
-			// Give the success toast a beat to paint, then reload so PgpApp
-			// re-reads localStorage (config, include-self, recents, last tab).
-			setTimeout(() => window.location.reload(), 700);
-		} catch (e) {
-			toast({
-				title: "Import failed",
-				description: (e as Error)?.message || "Import unavailable",
-				variant: "destructive",
-			});
-		} finally {
-			setImportBusy(false);
-			input.value = ""; // allow re-picking the same file
-		}
-	};
-
-	/** Two-step destructive reset: clear ONLY the known STORAGE_KEYS (the
-	 *  same set the backup export/import uses), toast, then reload after
-	 *  ~700ms exactly like the import flow — so PgpApp re-hydrates from a
-	 *  now-empty localStorage. */
-	const handleRestoreDefaults = () => {
-		if (!confirmReset) {
-			setConfirmReset(true);
-			if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
-			resetTimerRef.current = setTimeout(() => setConfirmReset(false), 4000);
-			return;
-		}
-		if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
-		setConfirmReset(false);
-		try {
-			for (const key of Object.values(STORAGE_KEYS)) {
-				try {
-					localStorage.removeItem(key);
-				} catch {
-					// ignore individual removal failures
-				}
-			}
-			toast({ title: "Settings restored to defaults" });
-			// Give the success toast a beat to paint, then reload (import-flow
-			// timing) so PgpApp re-reads the cleared localStorage.
-			setTimeout(() => window.location.reload(), 700);
-		} catch (e) {
-			toast({
-				title: "Reset failed",
-				description: (e as Error)?.message || "Reset unavailable",
-				variant: "destructive",
-			});
-		}
-	};
-
-	return (
-		<details className="group mt-4">
-			<summary className="inline-flex cursor-pointer select-none items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
-				Backup &amp; restore
-				<ChevronDown aria-hidden className="size-3.5 transition-transform group-open:rotate-180" />
-			</summary>
-			<p className="mt-2 text-xs text-muted-foreground">
-				Download all Encryptor settings — recipients, your key, and preferences — as a JSON file.
-				Importing replaces the current settings.
-			</p>
-			{privateKey?.encryptedArmored && (
-				<p className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-					<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-					Backups include your passphrase-encrypted private key.
-				</p>
-			)}
-			<div className="mt-2 flex flex-wrap gap-2">
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={handleExportBackup}
-					className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
-					title="Download all settings as a JSON backup file"
-					aria-label="Export backup"
-				>
-					<Download className="size-3.5" aria-hidden />
-					Export backup
-				</Button>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={() => fileInputRef.current?.click()}
-					disabled={importBusy}
-					className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
-					title="Restore settings from a JSON backup file"
-					aria-label="Import backup"
-				>
-					<Upload className="size-3.5" aria-hidden />
-					{importBusy ? "Importing…" : "Import backup"}
-				</Button>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={handleRestoreDefaults}
-					className={`h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8 text-destructive hover:text-destructive ${
-						confirmReset
-							? "border-destructive/40 bg-destructive/10 hover:bg-destructive/15 dark:bg-destructive/10 dark:hover:bg-destructive/20"
-							: ""
-					}`}
-					title="Clear all saved settings (recipients, key, preferences)"
-				>
-					<RotateCcw className="size-3.5" aria-hidden />
-					{confirmReset ? "Click again to confirm" : "Restore defaults"}
-				</Button>
-				<input
-					ref={fileInputRef}
-					type="file"
-					accept="application/json,.json"
-					className="sr-only"
-					tabIndex={-1}
-					onChange={(e) => void handleImportFile(e)}
-				/>
-			</div>
-		</details>
-	);
-}
-
 /* ----------------------------- Generate key form ---------------------------- */
 
-function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void }) {
+function GenerateKeyForm({
+	onLoaded,
+	autoOpen = false,
+}: {
+	onLoaded: (cfg: PrivateKeyConfig) => void;
+	/** Open the collapsed <details> section on mount — used when no key is
+	 *  configured yet, so the primary setup path is one glance away. */
+	autoOpen?: boolean;
+}) {
+	const detailsRef = useRef<HTMLDetailsElement>(null);
+	// Mount-only effect (not the `open` prop — that would fight the user's
+	// manual collapse on every re-render). Re-runs when autoOpen flips, which
+	// only happens when the key is added or removed.
+	useEffect(() => {
+		if (autoOpen && detailsRef.current) detailsRef.current.open = true;
+	}, [autoOpen]);
 	const [name, setName] = useState("");
 	const [email, setEmail] = useState("");
 	const [pass, setPass] = useState("");
@@ -898,6 +871,18 @@ function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => vo
 				expirationSeconds,
 			});
 			const label = name || email || (type === "ecc" ? "ECC key" : "RSA key");
+			// Quantum-seal pair (ML-KEM-768): generated alongside every
+			// in-app key. The public half is stored in the clear; the secret
+			// half is wrapped under the chosen passphrase (an empty passphrase
+			// is no worse than the unprotected private key itself). Failure is
+			// non-fatal — the classical key works without the PQ layer.
+			let pq: QuantumSealConfig | undefined;
+			try {
+				const sealPair = generateSealKeyPair();
+				pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, pass);
+			} catch {
+				pq = undefined;
+			}
 			// Store ONLY the ENCRYPTED armored private key. The passphrase is
 			// NOT stored — it will be re-requested at operation time.
 			onLoaded({
@@ -905,6 +890,7 @@ function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => vo
 				label,
 				encryptedArmored: kp.privateKey,
 				info: kp.info,
+				...(pq ? { pq } : {}),
 			});
 		} catch (e) {
 			setError((e as Error).message);
@@ -917,7 +903,7 @@ function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => vo
 		"h-11 w-full rounded-md border border-input bg-transparent px-2.5 text-xs shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 dark:bg-input/30";
 
 	return (
-		<details className="group">
+		<details ref={detailsRef} className="group">
 			<summary className="inline-flex min-h-11 cursor-pointer select-none items-center text-sm font-semibold sm:min-h-0">
 				Generate a new local key{" "}
 				<span className="text-[11px] font-normal text-muted-foreground">(advanced)</span>

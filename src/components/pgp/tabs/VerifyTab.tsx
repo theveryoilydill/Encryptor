@@ -6,7 +6,13 @@ import { FileSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ErrorBanner, ZipDownloadButton } from "@/components/pgp/shared";
+import {
+	CopyButton,
+	ErrorBanner,
+	ZipDownloadButton,
+	KeySourcePill,
+	SignerHashLegend,
+} from "@/components/pgp/shared";
 import type {
 	PrivateKeyConfig,
 	SignatureInfo,
@@ -23,6 +29,42 @@ import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
+
+/** Plain-text verification report for the clipboard (additive): a compact,
+ *  shareable summary of the current result — handy for pasting into an
+ *  email or an issue tracker. Pure: derives everything from the result
+ *  record (called on click, so the timestamp is always current). */
+function buildVerificationReport(result: VerificationResult): string {
+	const lines: string[] = [
+		"Encryptor — signature verification report",
+		`Checked at: ${new Date().toLocaleString()}`,
+		result.verified === "valid"
+			? "Result: signature is valid"
+			: result.verified === "invalid"
+				? "Result: signature is INVALID"
+				: "Result: could not be verified (signer key not found)",
+	];
+	result.signatures.forEach((s: SignatureInfo, i: number) => {
+		const who = s.username ? `@${s.username}` : s.name || s.email || s.userID || "Unknown key";
+		lines.push("", `Signer ${i + 1}: ${who}`);
+		lines.push(
+			`  Status: ${
+				s.verified === "valid"
+					? "verified"
+					: s.verified === "invalid"
+						? "invalid"
+						: "unknown signer"
+			}`,
+		);
+		if (s.keyID) lines.push(`  Key ID: ${s.keyID}`);
+		if (s.fingerprint) lines.push(`  Fingerprint: ${s.fingerprint}`);
+		if (s.email) lines.push(`  Email: ${s.email}`);
+		if (s.timestampIso) lines.push(`  Signed at: ${formatTimestamp(s.timestampIso)}`);
+		if (s.resolvedFrom) lines.push(`  Key source: ${s.resolvedFrom}`);
+		if (s.self) lines.push("  Note: signed with your locally configured key");
+	});
+	return lines.join("\n");
+}
 
 export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
 	const [armored, setArmored] = useState("");
@@ -122,7 +164,17 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 		hintDismissedFor !== armored;
 
 	return (
-		<section className="space-y-6">
+		<section
+			className="space-y-6"
+			onKeyDown={(e) => {
+				// Ctrl/Cmd+Enter runs the primary action from anywhere in the tab.
+				// Skips while a run is in flight — same guard as the disabled button.
+				if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+					e.preventDefault();
+					if (!busy) void handleVerify();
+				}
+			}}
+		>
 			{/* Signature card doubles as a .asc drop target (R10): relative +
           drop props + overlay (aria-hidden, pointer-events-none) — the
           textarea and paste path are untouched. */}
@@ -151,9 +203,6 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 						<p className="mt-3 text-sm font-medium">
 							Paste a signature to verify, or drop a .asc file
 						</p>
-						<p className="mt-1 text-xs text-muted-foreground">
-							Supports cleartext-signed, detached, and encrypted formats — detected automatically.
-						</p>
 					</div>
 				)}
 				<Textarea
@@ -167,17 +216,6 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					spellCheck={false}
 					className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
 				/>
-				{detected && (
-					<p className="mt-1.5 text-[11px] text-muted-foreground">
-						Detected format: <span className="font-medium text-foreground">{detected}</span>
-						{detected === "encrypted-message" && (
-							<span className="ml-1">— switch to the Decrypt tab to decrypt and verify.</span>
-						)}
-					</p>
-				)}
-				<p className="mt-1.5 text-[11px] text-muted-foreground">
-					The signer's public key is fetched automatically from Keybase by the signature's key ID.
-				</p>
 				{showVerifyHint && detectedBlock && (
 					<InputHint
 						tone={detectedBlock === "encrypted" ? "info" : "amber"}
@@ -242,6 +280,13 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 						>
 							Reset
 						</Button>
+						{result && (
+							<CopyButton
+								text={buildVerificationReport(result)}
+								label="Copy report"
+								ariaLabel="Copy verification report as plain text"
+							/>
+						)}
 						{result && (
 							<ZipDownloadButton
 								files={[]}
@@ -310,6 +355,9 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 													{displayName}
 												</span>
 												<span className={`font-medium tracking-wide ${color}`}>{label}</span>
+												{/* Where the signer's public key was resolved from —
+                            same pill as the Decrypt tab's signed card. */}
+												<KeySourcePill source={s.resolvedFrom} />
 												{/* Self-signer marker — mirrors the Decrypt tab's
                             SignerBadges "you" pill (shared.tsx). */}
 												{s.self && (
@@ -331,7 +379,8 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 														{expiry.label}
 													</span>
 												)}
-												<span className="text-[11px] text-muted-foreground font-mono ml-auto">
+												<span className="ml-auto font-mono text-[11px] text-muted-foreground">
+													<span className="mr-1 font-sans text-[10px] tracking-wide">Key ID</span>
 													{s.keyID}
 												</span>
 											</div>
@@ -374,6 +423,9 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 											)}
 											{s.fingerprint && (
 												<div className="text-[10px] text-muted-foreground font-mono break-all">
+													<span className="mr-1 font-sans text-[10px] tracking-wide">
+														Fingerprint
+													</span>
 													{s.fingerprint}
 												</div>
 											)}
@@ -382,6 +434,8 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 								})}
 							</ul>
 						)}
+						{/* What the key ID / fingerprint hex strings mean. */}
+						{result.signatures.length > 0 && <SignerHashLegend />}
 					</div>
 				</div>
 			)}

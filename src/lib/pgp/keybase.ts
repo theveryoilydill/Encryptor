@@ -193,6 +193,32 @@ function guessAlgorithmFromBundle(bundle: string): {
 	return { algorithm: "RSA", bits: 4096 };
 }
 
+/** Hard ceiling for BROWSER→proxy fetches. Our proxy routes already cap
+ *  their upstream keyserver calls (SERVER_FETCH_TIMEOUT_MS), so this only
+ *  fires if the proxy itself wedges (lost network, stalled dev server) —
+ *  without it the Verify/Decrypt spinners could hang forever. Callers all
+ *  wrap in try/catch (or .catch(() => [])), so the thrown message degrades
+ *  into their existing error / soft-fail paths. */
+const PROXY_FETCH_TIMEOUT_MS = 20000;
+
+/** fetch() against one of our proxy routes with a hard timeout; surfaces a
+ *  friendly message on abort instead of a raw DOMException. */
+async function fetchProxyWithTimeout(url: string): Promise<Response> {
+	try {
+		return await fetch(url, {
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(PROXY_FETCH_TIMEOUT_MS),
+		});
+	} catch (e) {
+		if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+			throw new Error(
+				`Keyserver request timed out after ${PROXY_FETCH_TIMEOUT_MS / 1000}s — try again, or configure the key locally.`,
+			);
+		}
+		throw e;
+	}
+}
+
 /**
  * Browser-side helper: call our own server proxy at /api/keybase.
  *
@@ -210,7 +236,7 @@ export async function lookupKeybaseUsersClient(
 	}
 
 	const url = `${proxyUrl}?usernames=${encodeURIComponent(cleaned.join(","))}`;
-	const res = await fetch(url, { headers: { Accept: "application/json" } });
+	const res = await fetchProxyWithTimeout(url);
 
 	if (!res.ok) {
 		let detail = "";
@@ -285,6 +311,12 @@ export interface KeybaseKeyByIDResult {
 	kid?: string;
 }
 
+/** Hard ceiling for SERVER-side keyserver fetches (keybase.io / keys.openpgp.org).
+ *  Matches the 8s budget already used by the HKP search paths; without it a
+ *  wedged keyserver would hang the proxy route and the Verify/Decrypt UI
+ *  would spin forever (the spinner is only cleared by this promise settling). */
+const SERVER_FETCH_TIMEOUT_MS = 8000;
+
 /**
  * Server-side: fetch a public key by its PGP key ID (short 16-hex or long 40-hex)
  * via Keybase's key/fetch.json endpoint. The response includes the owning
@@ -302,6 +334,7 @@ export async function fetchKeyByKeyIDServer(
 	)}`;
 	const res = await fetchImpl(url, {
 		headers: { Accept: "application/json", "User-Agent": "pgp-keybase-cloudflare/1.0" },
+		signal: AbortSignal.timeout(SERVER_FETCH_TIMEOUT_MS),
 	});
 	if (!res.ok) {
 		throw new Error(`Keybase key fetch returned HTTP ${res.status}`);
@@ -349,7 +382,7 @@ export async function autocompleteKeybaseUsersClient(
 	const q = query.trim();
 	if (q.length < 1) return [];
 	const url = `${proxyUrl}?q=${encodeURIComponent(q)}`;
-	const res = await fetch(url, { headers: { Accept: "application/json" } });
+	const res = await fetchProxyWithTimeout(url);
 	if (!res.ok) return [];
 	return (await res.json()) as KeybaseAutocompleteResult[];
 }
@@ -383,7 +416,7 @@ export async function fetchKeyByKeyIDClient(
 	const cleaned = keyIDs.map((k) => k.trim().toLowerCase()).filter(Boolean);
 	if (cleaned.length === 0) return [];
 	const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
-	const res = await fetch(url, { headers: { Accept: "application/json" } });
+	const res = await fetchProxyWithTimeout(url);
 	if (!res.ok) return [];
 	return coerceKeyListResponse(await res.json().catch(() => null));
 }
@@ -417,6 +450,7 @@ export async function fetchKeyFromOpenPGP_orgServer(
 			const url = `https://keys.openpgp.org/vks/v1/by-keyid/${encodeURIComponent(keyID)}`;
 			const res = await fetchImpl(url, {
 				headers: { Accept: "application/pgp-keys" },
+				signal: AbortSignal.timeout(SERVER_FETCH_TIMEOUT_MS),
 			});
 			if (!res.ok) continue;
 			const armored = await res.text();
@@ -467,7 +501,7 @@ export async function fetchKeyFromOpenPGP_orgClient(
 	const cleaned = keyIDs.map((k) => k.trim().toUpperCase()).filter(Boolean);
 	if (cleaned.length === 0) return [];
 	const url = `${proxyUrl}?key_id=${encodeURIComponent(cleaned.join(","))}`;
-	const res = await fetch(url, { headers: { Accept: "application/json" } });
+	const res = await fetchProxyWithTimeout(url);
 	if (!res.ok) return [];
 	return coerceKeyListResponse(await res.json().catch(() => null));
 }
@@ -687,7 +721,7 @@ export async function searchAllKeyserversClient(
 	const q = query.trim();
 	if (q.length < 1) return [];
 	const url = `${proxyUrl}?q=${encodeURIComponent(q)}`;
-	const res = await fetch(url, { headers: { Accept: "application/json" } });
+	const res = await fetchProxyWithTimeout(url);
 	if (!res.ok) return [];
 	return (await res.json()) as KeySearchResult[];
 }

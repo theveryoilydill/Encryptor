@@ -69,6 +69,10 @@ export interface EncryptAndSignOptions {
 	signerPassphrase?: string;
 	/** Sign as a separate detached signature file (false = inline signature in the encrypted message). */
 	detached?: boolean;
+	/** Message compression preference (settings-driven). openpgp.js uses the
+	 *  sender's preferred algorithm only when every recipient key advertises
+	 *  it, and falls back to uncompressed otherwise — see settings.ts. */
+	compression?: "uncompressed" | "zip" | "zlib";
 }
 
 export interface DecryptAndVerifyOptions {
@@ -423,9 +427,62 @@ export async function encryptAndSign(opts: EncryptAndSignOptions): Promise<strin
 		encryptionKeys,
 		signingKeys: [signingKey],
 		signatureNotations,
+		// Compression preference (v6 replaced the old compress flag with the
+		// sender's preferredCompressionAlgorithm; openpgp.js still degrades
+		// gracefully when a recipient doesn't advertise the algorithm).
+		...(opts.compression
+			? {
+					config: {
+						preferredCompressionAlgorithm:
+							opts.compression === "zlib"
+								? openpgp.enums.compression.zlib
+								: opts.compression === "zip"
+									? openpgp.enums.compression.zip
+									: openpgp.enums.compression.uncompressed,
+					},
+				}
+			: {}),
 		format: "armored",
 	});
 
+	return encrypted as string;
+}
+
+/** Encrypt WITHOUT signing (the "auto sign off" preference path): no private
+ *  key or passphrase required — the message is only encrypted to the
+ *  recipients. Shares the compression handling with encryptAndSign. */
+export async function encryptMessage(opts: {
+	plaintext: string;
+	recipientPublicKeys: string[];
+	compression?: "zlib" | "zip" | "uncompressed";
+}): Promise<string> {
+	if (!opts.plaintext) throw new Error("Plaintext is required.");
+	if (!opts.recipientPublicKeys.length)
+		throw new Error("At least one recipient public key is required.");
+
+	const encryptionKeys: openpgp.PublicKey[] = [];
+	for (const arm of opts.recipientPublicKeys) {
+		encryptionKeys.push(await readKey(arm));
+	}
+
+	const message = await openpgp.createMessage({ text: opts.plaintext });
+	const encrypted = await openpgp.encrypt({
+		message,
+		encryptionKeys,
+		...(opts.compression
+			? {
+					config: {
+						preferredCompressionAlgorithm:
+							opts.compression === "zlib"
+								? openpgp.enums.compression.zlib
+								: opts.compression === "zip"
+									? openpgp.enums.compression.zip
+									: openpgp.enums.compression.uncompressed,
+					},
+				}
+			: {}),
+		format: "armored",
+	});
 	return encrypted as string;
 }
 
@@ -585,6 +642,8 @@ export async function decryptAndAutoVerify(
 			/** Expiration of the record's key as epoch-ms, when known (R9: only
 			 *  locally-resolved records carry it). */
 			expiresAt?: number | null;
+			/** Which source resolved this key (local / Keybase / openpgp.org). */
+			resolvedFrom?: "local" | "keybase" | "openpgp.org";
 		}>
 	>,
 ): Promise<{
@@ -605,6 +664,8 @@ export async function decryptAndAutoVerify(
 		self?: boolean;
 		/** Expiration of the signer's key as epoch-ms, when known. */
 		expiresAt?: number | null;
+		/** Where the verification key came from. */
+		resolvedFrom?: "local" | "keybase" | "openpgp.org";
 	}>;
 }> {
 	if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
@@ -770,6 +831,7 @@ export async function decryptAndAutoVerify(
 				username: match?.username,
 				self: match?.self,
 				expiresAt: match?.expiresAt,
+				resolvedFrom: match?.resolvedFrom,
 				verified: verifiedStatus,
 				error,
 				name: info?.name,
@@ -1092,6 +1154,12 @@ export interface EncryptedMessageMeta {
 	/** Unique humanized public-key algorithm names across those packets, in
 	 *  first-appearance order (e.g. ["ECDH"] or ["ECDH", "RSA"]). */
 	publicKeyAlgorithms: string[];
+	/** Recipient key IDs from the PKESK packet headers (uppercase hex) —
+	 *  typically SUBKEY ids, since the encryption-capable key of a modern
+	 *  key pair is its ECDH/RSA subkey. Callers match these against the full
+	 *  id list of their own key (listPrivateKeyIds) to detect "encrypted to
+	 *  me" BEFORE any passphrase is requested. */
+	recipientKeyIDs: string[];
 }
 
 /**
@@ -1117,15 +1185,48 @@ export async function describeEncryptedMessage(
 		const pkesks = msg.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
 		if (pkesks.length === 0) return null;
 		const publicKeyAlgorithms: string[] = [];
+		const recipientKeyIDs: string[] = [];
 		for (const pkesk of pkesks) {
 			const raw = (pkesk as { publicKeyAlgorithm?: unknown }).publicKeyAlgorithm;
-			if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-			const label = describePkeskAlgorithm(raw);
-			if (!publicKeyAlgorithms.includes(label)) publicKeyAlgorithms.push(label);
+			if (typeof raw === "number" && Number.isFinite(raw)) {
+				const label = describePkeskAlgorithm(raw);
+				if (!publicKeyAlgorithms.includes(label)) publicKeyAlgorithms.push(label);
+			}
+			// Recipient key ID (uppercase hex). openpgp 6.3.1 exposes it as
+			// `publicKeyID` (a KeyID with .toHex()); guarded so a future shape
+			// change degrades to an empty list instead of throwing.
+			const id = (pkesk as { publicKeyID?: { toHex?: () => string } }).publicKeyID;
+			if (typeof id?.toHex === "function") {
+				const hex = id.toHex().toUpperCase();
+				if (!recipientKeyIDs.includes(hex)) recipientKeyIDs.push(hex);
+			}
 		}
-		return { recipientKeyCount: pkesks.length, publicKeyAlgorithms };
+		return { recipientKeyCount: pkesks.length, publicKeyAlgorithms, recipientKeyIDs };
 	} catch {
 		// Not an encrypted message / malformed — metadata is best-effort only.
+		return null;
+	}
+}
+
+/**
+ * List every key ID (primary + subkeys, uppercase hex) of an armored PRIVATE
+ * key. Reads the key WITHOUT decrypting it — no passphrase, no secret
+ * material touches the result. Used by the Decrypt tab to detect "this
+ * message was encrypted to one of my keys" from the PKESK headers alone
+ * (the PKESK carries the encryption SUBKEY's id, so the primary id alone is
+ * not enough to match).
+ *
+ * Returns null (never throws) when the armored input cannot be parsed.
+ */
+export async function listPrivateKeyIds(armored: string): Promise<string[] | null> {
+	try {
+		const key = await readKey(armored);
+		const ids = key
+			.getKeys()
+			.map((k) => k.getKeyID().toHex().toUpperCase())
+			.filter((hex) => /^[0-9A-F]{16}$/.test(hex));
+		return [...new Set(ids)];
+	} catch {
 		return null;
 	}
 }
@@ -1203,6 +1304,8 @@ export async function verifyAutoDetectWithKeyFetch(
 			/** Expiration of the record's key as epoch-ms, when known (R9: only
 			 *  locally-resolved records carry it). */
 			expiresAt?: number | null;
+			/** Which source resolved this key (local / Keybase / openpgp.org). */
+			resolvedFrom?: "local" | "keybase" | "openpgp.org";
 		}>
 	>,
 ): Promise<{
@@ -1223,6 +1326,8 @@ export async function verifyAutoDetectWithKeyFetch(
 		self?: boolean;
 		/** Expiration of the signer's key as epoch-ms, when known. */
 		expiresAt?: number | null;
+		/** Where the verification key came from. */
+		resolvedFrom?: "local" | "keybase" | "openpgp.org";
 	}>;
 }> {
 	const format = detectArmoredFormat(armored);
@@ -1448,6 +1553,7 @@ export async function verifyAutoDetectWithKeyFetch(
 				username: match?.username,
 				self: match?.self,
 				expiresAt: match?.expiresAt,
+				resolvedFrom: match?.resolvedFrom,
 				verified: verifiedStatus,
 				error,
 				name: info?.name,

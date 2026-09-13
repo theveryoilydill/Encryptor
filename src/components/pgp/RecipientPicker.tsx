@@ -7,8 +7,8 @@
  * (RecipientPicker + ManualRecipientAdd in PgpApp.tsx) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Clock3 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,6 @@ import {
 	type KeySearchResult,
 } from "@/lib/pgp/keybase";
 import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
-import { isSafeImageUrl } from "@/lib/pgp/envelope";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
@@ -90,30 +89,6 @@ function loadRecentRecipients(): RecentRecipient[] {
 	}
 }
 
-/* Curated soft avatar palette for the initials fallback (no avatar image).
- * Each entry is a light bg/fg pair + dark bg/fg pair, all WCAG-readable.
- * Classes are written as full literals so Tailwind's scanner picks them up. */
-const AVATAR_PALETTE: string[] = [
-	"bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300",
-	"bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300",
-	"bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300",
-	"bg-teal-100 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300",
-	"bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300",
-	"bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300",
-	"bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300",
-	"bg-lime-100 text-lime-700 dark:bg-lime-500/20 dark:text-lime-300",
-];
-
-/** Deterministic string hash → palette entry. Same seed always maps to the
- *  same color; visually distinct names spread across the palette. */
-function avatarPaletteClass(seed: string): string {
-	let h = 0;
-	for (let i = 0; i < seed.length; i++) {
-		h = (Math.imul(h, 31) + seed.charCodeAt(i)) | 0;
-	}
-	return AVATAR_PALETTE[(h >>> 0) % AVATAR_PALETTE.length];
-}
-
 export function RecipientPicker({
 	recipients,
 	setRecipients,
@@ -146,6 +121,17 @@ export function RecipientPicker({
 			// ignore
 		}
 	}, [recentRecipients]);
+
+	// Self is never offered as a recent entry (the include-me checkbox already
+	// covers encrypting to yourself); the whole section hides when nothing
+	// visible remains.
+	const visibleRecentRecipients = useMemo(
+		() =>
+			recentRecipients.filter(
+				(r) => !(selfRecipient?.fingerprint && r.fingerprint === selfRecipient.fingerprint),
+			),
+		[recentRecipients, selfRecipient],
+	);
 
 	/** Record a successfully added recipient (deduped, most recent first). */
 	const rememberRecentRecipient = useCallback((entry: RecentRecipient) => {
@@ -420,7 +406,13 @@ export function RecipientPicker({
 						return (
 							<li
 								key={r.fingerprint}
-								className="inline-flex items-center gap-1.5 rounded-full border bg-background py-1 pl-2.5 pr-1.5 text-xs shadow-xs"
+								className={`inline-flex items-center gap-1.5 rounded-full border py-1 pl-2.5 pr-1.5 text-xs shadow-xs transition-colors ${
+									expiry?.status === "expired"
+										? // R8: whole-chip red tint when the key is expired — the
+											// badge alone was easy to miss in a busy chip row.
+											"border-red-300/70 bg-red-50 dark:border-red-900/50 dark:bg-red-950/30"
+										: "bg-background"
+								}`}
 								title={chipTitle(r.label, r.algorithm, r.fingerprint)}
 							>
 								<span className={`font-medium ${ACCENT_TEXT}`}>{r.label}</span>
@@ -488,7 +480,6 @@ export function RecipientPicker({
 									(s.username && p.username === s.username) ||
 									(s.fingerprint && p.fingerprint === s.fingerprint),
 							);
-							const avatarSeed = s.username || s.fullName || s.label;
 							return (
 								<li
 									key={`${s.source}-${s.label}-${i}`}
@@ -506,19 +497,9 @@ export function RecipientPicker({
 												: ""
 										}`}
 									>
-										{s.pictureUrl && isSafeImageUrl(s.pictureUrl) ? (
-											<img
-												src={isSafeImageUrl(s.pictureUrl) ?? undefined}
-												alt=""
-												className="size-8 rounded-full object-cover ring-1 ring-border"
-											/>
-										) : (
-											<div
-												className={`grid size-8 shrink-0 place-items-center rounded-full text-[10px] font-medium ring-1 ring-border ${avatarPaletteClass(avatarSeed)}`}
-											>
-												{avatarSeed.slice(0, 2).toUpperCase()}
-											</div>
-										)}
+										{/* No avatar here — person photos/initials in the key
+                        picker were noise (and a privacy leak of profile
+                        pictures); results are identified by their labels. */}
 										<div className="min-w-0 flex-1">
 											<div className="truncate font-medium">{s.label}</div>
 											{s.fullName && s.username && (
@@ -559,14 +540,27 @@ export function RecipientPicker({
 
 			{/* Additive: recent recipients — shown only when the search box is empty
           and no dropdown results are on screen. Clicking routes through the
-          same addRecipient path as picking a search result. */}
+          same addRecipient path as picking a search result. Self is never
+          offered as a recent entry. */}
 			{input.trim() === "" &&
 				!(showSuggestions && visibleSuggestions.length > 0) &&
-				recentRecipients.length > 0 && (
+				visibleRecentRecipients.length > 0 && (
 					<div className="mt-2">
-						<p className="text-[10px] text-muted-foreground">Recent:</p>
+						<p className="flex items-center gap-2 text-[10px] text-muted-foreground">
+							Recent:
+							{/* Privacy affordance: wipe the recent-recipients list without
+                  touching the saved key or recipients. */}
+							<button
+								type="button"
+								onClick={() => setRecentRecipients([])}
+								aria-label="Clear recent recipients"
+								className="rounded text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-destructive hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff]"
+							>
+								Clear
+							</button>
+						</p>
 						<div className="mt-1 flex flex-wrap gap-1.5">
-							{recentRecipients.map((r, i) => {
+							{visibleRecentRecipients.map((r, i) => {
 								const alreadyAdded = recipients.some(
 									(p) =>
 										(r.username !== undefined && p.username === r.username) ||
@@ -583,7 +577,6 @@ export function RecipientPicker({
 											alreadyAdded ? "cursor-not-allowed opacity-50" : ""
 										}`}
 									>
-										<Clock3 aria-hidden="true" className="size-3" />
 										<span className="max-w-40 truncate">{r.label}</span>
 									</button>
 								);
@@ -593,8 +586,7 @@ export function RecipientPicker({
 				)}
 
 			<p className="mt-1.5 text-[11px] text-muted-foreground">
-				Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name, email, or Keybase
-				username.
+				Searches Keybase, Ubuntu keyserver, and keys.openpgp.org.
 			</p>
 
 			<ManualRecipientAdd onAdd={handleManualAdd} />

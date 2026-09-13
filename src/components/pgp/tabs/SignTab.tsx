@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { ErrorBanner, OutputBlock } from "@/components/pgp/shared";
+import { ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { signMessage } from "@/lib/pgp/pgp";
 
@@ -16,7 +16,7 @@ export function SignTab({
 	requestDecryptedKey,
 }: {
 	privateKey: PrivateKeyConfig | null;
-	requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
+	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [detached, setDetached] = useState(false);
@@ -28,7 +28,7 @@ export function SignTab({
 		setError(null);
 		setOutput("");
 		if (!plaintext.trim()) {
-			setError("Enter the text to sign.");
+			setError("Enter the text to sign below.");
 			return;
 		}
 		if (!privateKey) {
@@ -39,7 +39,7 @@ export function SignTab({
 		try {
 			// Request the decrypted key — shows passphrase prompt.
 			// The key exists only in this local variable and is cleared after.
-			const decryptedKey = await requestDecryptedKey();
+			const { key: decryptedKey } = await requestDecryptedKey();
 
 			// Pass the PrivateKey object directly to avoid re-armoring +
 			// re-parsing, which can lose key material for Keybase P3SKB keys.
@@ -57,7 +57,17 @@ export function SignTab({
 	}, [plaintext, privateKey, detached, requestDecryptedKey]);
 
 	return (
-		<section className="space-y-6">
+		<section
+			className="space-y-6"
+			onKeyDown={(e) => {
+				// Ctrl/Cmd+Enter runs the primary action from anywhere in the tab.
+				// Skips while a run is in flight — same guard as the disabled button.
+				if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+					e.preventDefault();
+					if (!busy) void handleSign();
+				}
+			}}
+		>
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
 				<div className="mb-1.5 flex items-center gap-2">
 					<span
@@ -65,7 +75,7 @@ export function SignTab({
 						className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
 					/>
 					<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-						Plain text to sign
+						Text to sign
 					</Label>
 				</div>
 				{!plaintext.trim() && !output && (
@@ -76,10 +86,7 @@ export function SignTab({
 								className="size-7 text-[#0055dc] dark:text-[#5e94ff]"
 							/>
 						</div>
-						<p className="mt-3 text-sm font-medium">Enter the text to sign</p>
-						<p className="mt-1 text-xs text-muted-foreground">
-							Signatures are generated locally — your private key never leaves this device.
-						</p>
+						<p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
 					</div>
 				)}
 				<Textarea
@@ -90,6 +97,8 @@ export function SignTab({
 					spellCheck={false}
 					className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
 				/>
+				{/* Char/word/size counter — parity with the Encrypt tab counter. */}
+				<InputSizeCounter text={plaintext} />
 			</div>
 
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">

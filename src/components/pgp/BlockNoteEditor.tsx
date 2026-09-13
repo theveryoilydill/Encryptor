@@ -72,6 +72,21 @@ export default function BlockNoteEditor({
     latest.current = { onChange, files, onNewImageDataUrl };
   });
 
+  // Accessible name + textbox semantics for the inner ProseMirror
+  // contenteditable (.tiptap). BlockNoteView does not forward aria-label to
+  // it, and axe flags a bare contenteditable div twice over: no accessible
+  // name (aria-input-field-name) and a label on a role-prohibited element
+  // (aria-prohibited-attr). Mount-only — the element is created once.
+  const viewRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = viewRef.current?.querySelector<HTMLElement>(".tiptap");
+    if (el) {
+      el.setAttribute("role", "textbox");
+      el.setAttribute("aria-multiline", "true");
+      el.setAttribute("aria-label", "Message (markdown)");
+    }
+  }, []);
+
   const editor: Editor = useCreateBlockNote({
     schema,
     pasteHandler: ({ event, defaultPasteHandler }) => {
@@ -156,10 +171,12 @@ export default function BlockNoteEditor({
   }, [editor]);
 
   return (
-    <BlockNoteView
-      editor={editor}
-      theme={resolvedTheme === "dark" ? "dark" : "light"}
-      aria-label="Message (markdown)"
-    />
+    <div ref={viewRef}>
+      <BlockNoteView
+        editor={editor}
+        theme={resolvedTheme === "dark" ? "dark" : "light"}
+        aria-label="Message (markdown)"
+      />
+    </div>
   );
 }

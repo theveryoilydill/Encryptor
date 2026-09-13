@@ -397,7 +397,7 @@ export function ConfigureModal({
 
           <hr className="my-4 border-border" />
 
-          <GenerateKeyForm onLoaded={(cfg) => onSave(cfg)} />
+          <GenerateKeyForm onLoaded={(cfg) => onSave(cfg)} autoOpen={!privateKey} />
 
           <hr className="my-4 border-border" />
 
@@ -884,7 +884,22 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 
 /* ----------------------------- Generate key form ---------------------------- */
 
-function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void }) {
+function GenerateKeyForm({
+  onLoaded,
+  autoOpen = false,
+}: {
+  onLoaded: (cfg: PrivateKeyConfig) => void;
+  /** Open the collapsed <details> section on mount — used when no key is
+   *  configured yet, so the primary setup path is one glance away. */
+  autoOpen?: boolean;
+}) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  // Mount-only effect (not the `open` prop — that would fight the user's
+  // manual collapse on every re-render). Re-runs when autoOpen flips, which
+  // only happens when the key is added or removed.
+  useEffect(() => {
+    if (autoOpen && detailsRef.current) detailsRef.current.open = true;
+  }, [autoOpen]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -945,7 +960,7 @@ function GenerateKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => vo
     "h-11 w-full rounded-md border border-input bg-transparent px-2.5 text-xs shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 dark:bg-input/30";
 
   return (
-    <details className="group">
+    <details ref={detailsRef} className="group">
       <summary className="inline-flex min-h-11 cursor-pointer select-none items-center text-sm font-semibold sm:min-h-0">
         Generate a new local key{" "}
         <span className="text-[11px] font-normal text-muted-foreground">(advanced)</span>

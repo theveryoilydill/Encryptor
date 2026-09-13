@@ -268,6 +268,15 @@ export function EncryptTab({
   return (
     <section
       className="relative space-y-6"
+      onKeyDown={(e) => {
+        // Ctrl/Cmd+Enter runs the primary action from anywhere in the tab
+        // (editor, attachment list, button). Skips while a run is in flight
+        // — same guard as the button's disabled state.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+          e.preventDefault();
+          if (!busy) void handleEncrypt();
+        }
+      }}
       onDragEnter={(e) => {
         if (!e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
@@ -356,7 +365,7 @@ export function EncryptTab({
         <Button
           onClick={handleEncrypt}
           disabled={busy}
-          className="bg-[#0055dc] text-white hover:bg-[#0046b8] transition-colors duration-150"
+          className="bg-[#0055dc] text-white hover:bg-[#0046b8] transition-colors duration-150 press-effect"
         >
           {busy ? "Encrypting…" : output ? "Re-encrypt & sign" : "Encrypt & sign"}
         </Button>

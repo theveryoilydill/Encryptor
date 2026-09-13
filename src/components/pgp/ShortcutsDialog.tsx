@@ -21,12 +21,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/** The global bindings from PgpApp.tsx (tab order: TABS array). */
+/** The global bindings from PgpApp.tsx (tab order: TABS array), plus the
+ *  per-tab Ctrl/Cmd+Enter binding handled inside each tab component. */
 const SHORTCUTS: { keys: string; description: string }[] = [
   { keys: "Alt+1", description: "Encrypt" },
   { keys: "Alt+2", description: "Decrypt" },
   { keys: "Alt+3", description: "Sign" },
   { keys: "Alt+4", description: "Verify" },
+  { keys: "Ctrl+Enter", description: "Run the tab's action (encrypt / sign / verify)" },
   { keys: "Ctrl+,", description: "Open key settings" },
 ];
 

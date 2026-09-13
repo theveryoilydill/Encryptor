@@ -57,7 +57,17 @@ export function SignTab({
   }, [plaintext, privateKey, detached, requestDecryptedKey]);
 
   return (
-    <section className="space-y-6">
+    <section
+      className="space-y-6"
+      onKeyDown={(e) => {
+        // Ctrl/Cmd+Enter runs the primary action from anywhere in the tab.
+        // Skips while a run is in flight — same guard as the disabled button.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+          e.preventDefault();
+          if (!busy) void handleSign();
+        }
+      }}
+    >
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
         <div className="mb-1.5 flex items-center gap-2">
           <span

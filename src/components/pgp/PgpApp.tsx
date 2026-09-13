@@ -196,36 +196,47 @@ export default function PgpApp() {
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
         <Tabs value={tab} onChange={setTab} />
 
-        {/* key={tab} remounts only this stateless wrapper so the enter
-            animation replays on every switch. The tab components are already
-            conditionally rendered below (their internal state resets per
-            switch today), so semantics are byte-identical to before. */}
-        <div
-          key={tab}
-          className="panel-enter mt-6"
-          role="tabpanel"
-          id={`panel-${tab}`}
-          aria-labelledby={`tab-${tab}`}
-        >
-          {tab === "encrypt" && (
-            <EncryptTab
-              privateKey={privateKey}
-              recipients={recipients}
-              setRecipients={setRecipients}
-              includeSelf={includeSelf}
-              onIncludeSelfChange={handleSetIncludeSelf}
-              requestDecryptedKey={requestDecryptedKey}
-              settings={settings}
-            />
-          )}
-          {tab === "decrypt" && (
-            <DecryptTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
-          )}
-          {tab === "sign" && (
-            <SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
-          )}
-          {tab === "verify" && <VerifyTab privateKey={privateKey} />}
-        </div>
+        {/* All four panels stay MOUNTED for the whole session; inactive ones
+            get the `hidden` attribute (display:none — unfocusable, out of
+            the a11y tree). Drafts and results survive tab switches: peeking
+            at another mode can no longer silently discard a half-written
+            message, attachments, or pasted armor. The enter animation still
+            plays on every switch because .panel-enter is re-added to the
+            newly-active panel (removing/adding the class replays it).
+            Mount-time effects in the tabs are safe: they all no-op on empty
+            input (auto-decrypt, format detection, metadata parsing). */}
+        {TABS.map((t) => {
+          const active = t.id === tab;
+          return (
+            <div
+              key={t.id}
+              role="tabpanel"
+              id={`panel-${t.id}`}
+              aria-labelledby={`tab-${t.id}`}
+              hidden={!active}
+              className={`mt-6 ${active ? "panel-enter" : ""}`}
+            >
+              {t.id === "encrypt" && (
+                <EncryptTab
+                  privateKey={privateKey}
+                  recipients={recipients}
+                  setRecipients={setRecipients}
+                  includeSelf={includeSelf}
+                  onIncludeSelfChange={handleSetIncludeSelf}
+                  requestDecryptedKey={requestDecryptedKey}
+                  settings={settings}
+                />
+              )}
+              {t.id === "decrypt" && (
+                <DecryptTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
+              )}
+              {t.id === "sign" && (
+                <SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
+              )}
+              {t.id === "verify" && <VerifyTab privateKey={privateKey} />}
+            </div>
+          );
+        })}
       </main>
 
       <Footer onSelfTest={handleSelfTest} />

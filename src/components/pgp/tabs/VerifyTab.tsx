@@ -128,7 +128,17 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
     hintDismissedFor !== armored;
 
   return (
-    <section className="space-y-6">
+    <section
+      className="space-y-6"
+      onKeyDown={(e) => {
+        // Ctrl/Cmd+Enter runs the primary action from anywhere in the tab.
+        // Skips while a run is in flight — same guard as the disabled button.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+          e.preventDefault();
+          if (!busy) void handleVerify();
+        }
+      }}
+    >
       {/* Signature card doubles as a .asc drop target (R10): relative +
           drop props + overlay (aria-hidden, pointer-events-none) — the
           textarea and paste path are untouched. */}

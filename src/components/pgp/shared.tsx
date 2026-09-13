@@ -636,7 +636,7 @@ export function AttachmentList({
                 <button
                   type="button"
                   onClick={() => onRemove(idx)}
-                  className="absolute right-1 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-full text-base leading-none text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  className="absolute right-1 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-full text-base leading-none text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff]"
                   aria-label={`Remove ${f.name}`}
                 >
                   ×

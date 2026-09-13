@@ -47,8 +47,6 @@ import { STORAGE_KEYS } from "@/lib/constants";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
-const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
-
 /** Local destructive-tinted error panel (same markup as shared ErrorBanner;
  *  kept local so this file only imports from the pinned allow-list). */
 function FormError({ message }: { message: string | null }) {

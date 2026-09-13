@@ -52,9 +52,11 @@ import {
 import { applyConfigBackup, buildConfigBackup, parseConfigBackup } from "@/lib/pgp/config-backup";
 import { STORAGE_KEYS } from "@/lib/constants";
 import {
+  AUTOLOCK_OPTIONS,
   COMPRESSION_OPTIONS,
   EDITOR_OPTIONS,
   type AppSettings,
+  type AutoLockMinutes,
   type CompressionLevel,
   type MarkdownEditorKind,
 } from "@/lib/pgp/settings";
@@ -1201,10 +1203,33 @@ function PreferencesSection({
             </SelectContent>
           </Select>
         </label>
+        <label className="grid gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Passphrase auto-lock
+          </span>
+          <Select
+            value={String(settings.autoLockMinutes)}
+            onValueChange={(v) =>
+              onSettingsChange({ ...settings, autoLockMinutes: Number(v) as AutoLockMinutes })
+            }
+          >
+            <SelectTrigger className="w-full" aria-label="Passphrase auto-lock">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {AUTOLOCK_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={String(o.value)}>
+                  {o.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
       </div>
       <p className="text-[11px] text-muted-foreground">
         Compression: Maximum (default) packs messages tightest; recipients that don&apos;t advertise
-        support fall back to uncompressed automatically.
+        support fall back to uncompressed automatically. Auto-lock drops the remembered passphrase
+        from memory after the chosen time (15 minutes by default).
       </p>
     </div>
   );

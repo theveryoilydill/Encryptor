@@ -21,17 +21,43 @@
  */
 
 let cached: string | null = null;
+/** Epoch ms when the current cache entry was stored (0 = nothing cached).
+ *  Powers the auto-lock countdown UI and the freshness gate below. */
+let cachedAt = 0;
 
 export function getCachedPassphrase(): string | null {
   return cached;
 }
 
+/** When the current cache entry was stored (epoch ms; 0 = nothing cached). */
+export function getCachedPassphraseAt(): number {
+  return cachedAt;
+}
+
 /** Store the passphrase for this session (overwrites any previous value). */
 export function cachePassphrase(passphrase: string): void {
   cached = passphrase;
+  cachedAt = Date.now();
 }
 
 /** Drop the cached passphrase (idempotent). */
 export function forgetPassphrase(): void {
   cached = null;
+  cachedAt = 0;
+}
+
+/** Freshness gate (R9 auto-lock): returns the cached passphrase only while
+ *  it is younger than `autoLockMinutes` (0 = no lock — the pre-R9 behavior).
+ *  A STALE entry is forgotten as a side effect so callers can also flip
+ *  their "cached" indicator off without a second call. Fractional minutes
+ *  are accepted on purpose — tests/QA rely on sub-minute values. */
+export function getCachedPassphraseIfFresh(autoLockMinutes: number): string | null {
+  if (!cached) return null;
+  if (!autoLockMinutes || autoLockMinutes <= 0) return cached;
+  if (Date.now() - cachedAt > autoLockMinutes * 60_000) {
+    cached = null;
+    cachedAt = 0;
+    return null;
+  }
+  return cached;
 }

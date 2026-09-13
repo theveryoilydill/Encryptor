@@ -30,13 +30,23 @@ export type MarkdownEditorKind = "notion" | "vscode";
 export interface AppSettings {
   compression: CompressionLevel;
   markdownEditor: MarkdownEditorKind;
+  /** Session passphrase cache auto-lock, in minutes. 0 = no auto-lock (the
+   *  pre-R9 behavior: cache lives until tab close / manual forget). The
+   *  cache itself stays memory-only either way. */
+  autoLockMinutes: AutoLockMinutes;
 }
+
+/** Session passphrase cache auto-lock choices (minutes). */
+export type AutoLockMinutes = 0 | 5 | 15 | 30;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   // Compress messages by default, at maximum supported compression.
   compression: "zlib",
   // Notion/Affine-style block editor by default.
   markdownEditor: "notion",
+  // Auto-lock the (opt-in) session passphrase cache after 15 idle minutes —
+  // a memory-only cache that lives forever is the weaker default.
+  autoLockMinutes: 15,
 };
 
 /** Human labels + the openpgp config value for each compression level. */
@@ -57,6 +67,16 @@ export const EDITOR_OPTIONS: ReadonlyArray<{
   { value: "vscode", label: "VS Code-style (split preview)" },
 ];
 
+export const AUTOLOCK_OPTIONS: ReadonlyArray<{
+  value: AutoLockMinutes;
+  label: string;
+}> = [
+  { value: 0, label: "No auto-lock" },
+  { value: 5, label: "5 minutes" },
+  { value: 15, label: "15 minutes" },
+  { value: 30, label: "30 minutes" },
+];
+
 /** Parse an unknown stored value into AppSettings, keeping valid fields and
  *  defaulting everything else. */
 function coerceSettings(raw: unknown): AppSettings {
@@ -68,6 +88,12 @@ function coerceSettings(raw: unknown): AppSettings {
     }
     if (r.markdownEditor === "notion" || r.markdownEditor === "vscode") {
       out.markdownEditor = r.markdownEditor;
+    }
+    if (
+      typeof r.autoLockMinutes === "number" &&
+      ([0, 5, 15, 30] as number[]).includes(r.autoLockMinutes)
+    ) {
+      out.autoLockMinutes = r.autoLockMinutes as AutoLockMinutes;
     }
   }
   return out;

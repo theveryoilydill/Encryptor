@@ -39,6 +39,7 @@ import {
   cachePassphrase,
   forgetPassphrase,
   getCachedPassphrase,
+  getCachedPassphraseIfFresh,
 } from "@/lib/pgp/session-passphrase";
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/pgp/settings";
 
@@ -220,10 +221,6 @@ export default function PgpApp() {
   // App preferences (compression + editor style). Owned here so the
   // ConfigureModal and the tabs stay in sync without a page reload.
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
-  const handleSetSettings = useCallback((next: AppSettings) => {
-    setSettings(next);
-    saveSettings(next);
-  }, []);
   // Screen-reader-only tab-change announcement (see live region below).
   const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
 
@@ -265,40 +262,83 @@ export default function PgpApp() {
   // Header indicator state for the opt-in session passphrase cache (the cache
   // itself lives in lib/pgp/session-passphrase — memory only).
   const [passphraseCached, setPassphraseCached] = useState(false);
+  // R9 auto-lock: epoch ms when the cached passphrase auto-locks (null = no
+  // auto-lock armed — setting off, or pre-R9 behavior). Drives the header
+  // countdown + the expiry interval; the freshness gate in session-passphrase
+  // is the real enforcement on unlock attempts.
+  const [passphraseCachedUntil, setPassphraseCachedUntil] = useState<number | null>(null);
 
   const requestDecryptedKey = useCallback((): Promise<OpenPGP.PrivateKey> => {
-    const cached =
-      privateKey?.source !== "keybase" && privateKey?.encryptedArmored
-        ? getCachedPassphrase()
-        : null;
-    if (cached) {
-      // Silent unlock attempt with the session-cached passphrase. On any
-      // failure (wrong passphrase, unreadable key) drop the cache and fall
-      // back to the visible prompt.
-      return (async () => {
-        try {
-          const key = await readKey(privateKey!.encryptedArmored!);
-          if (!key.isPrivate()) throw new Error("Stored key is not a private key.");
-          return await unlockPrivateKey(key as OpenPGP.PrivateKey, cached);
-        } catch {
-          forgetPassphrase();
-          setPassphraseCached(false);
-          return new Promise<OpenPGP.PrivateKey>((resolve, reject) =>
-            setKeyRequest({ resolve, reject }),
-          );
-        }
-      })();
+    // R9: consult the cache through the freshness gate — a stale entry is
+    // forgotten (inside the gate) and the visible prompt appears instead.
+    if (privateKey?.source !== "keybase" && privateKey?.encryptedArmored && getCachedPassphrase()) {
+      const cached = getCachedPassphraseIfFresh(settings.autoLockMinutes);
+      if (cached) {
+        // Silent unlock attempt with the session-cached passphrase. On any
+        // failure (wrong passphrase, unreadable key) drop the cache and fall
+        // back to the visible prompt.
+        return (async () => {
+          try {
+            const key = await readKey(privateKey!.encryptedArmored!);
+            if (!key.isPrivate()) throw new Error("Stored key is not a private key.");
+            return await unlockPrivateKey(key as OpenPGP.PrivateKey, cached);
+          } catch {
+            forgetPassphrase();
+            setPassphraseCached(false);
+            setPassphraseCachedUntil(null);
+            return new Promise<OpenPGP.PrivateKey>((resolve, reject) =>
+              setKeyRequest({ resolve, reject }),
+            );
+          }
+        })();
+      }
+      // Stale → auto-locked: drop the header indicator too. Falls through to
+      // the visible prompt below.
+      setPassphraseCached(false);
+      setPassphraseCachedUntil(null);
     }
     return new Promise((resolve, reject) => {
       setKeyRequest({ resolve, reject });
     });
-  }, [privateKey]);
+  }, [privateKey, settings.autoLockMinutes]);
 
   const handleForgetCachedPassphrase = useCallback(() => {
     forgetPassphrase();
     setPassphraseCached(false);
+    setPassphraseCachedUntil(null);
     toast({ title: "Session passphrase forgotten" });
   }, [toast]);
+
+  // R9 auto-lock enforcement for the UI state: the freshness gate covers real
+  // unlock attempts; this lightweight interval covers the header indicator +
+  // announcement when the deadline passes while the app is open.
+  useEffect(() => {
+    if (!passphraseCachedUntil) return;
+    const tick = setInterval(() => {
+      if (Date.now() >= passphraseCachedUntil) {
+        forgetPassphrase();
+        setPassphraseCached(false);
+        setPassphraseCachedUntil(null);
+        toast({ title: "Session passphrase auto-locked" });
+      }
+    }, 5000);
+    return () => clearInterval(tick);
+  }, [passphraseCachedUntil, toast]);
+
+  const handleSetSettings = useCallback(
+    (next: AppSettings) => {
+      setSettings(next);
+      saveSettings(next);
+      // R9: keep an armed auto-lock deadline in sync when the preference
+      // changes mid-session (re-arm from now; turning it off disarms).
+      setPassphraseCachedUntil(
+        passphraseCached && next.autoLockMinutes > 0
+          ? Date.now() + next.autoLockMinutes * 60_000
+          : null,
+      );
+    },
+    [passphraseCached],
+  );
 
   // Alt+1..4 switches tabs; Ctrl/Cmd+, opens the key settings dialog.
   useEffect(() => {
@@ -370,6 +410,7 @@ export default function PgpApp() {
         onConfigure={() => setConfigOpen(true)}
         privateKey={privateKey}
         passphraseCached={passphraseCached}
+        passphraseCachedUntil={passphraseCachedUntil}
         onForgetCachedPassphrase={handleForgetCachedPassphrase}
       />
 
@@ -462,7 +503,12 @@ export default function PgpApp() {
             },
           }}
           onKeyUpdated={handleSetPrivateKey}
-          onPassphraseCached={() => setPassphraseCached(true)}
+          onPassphraseCached={() => {
+            setPassphraseCached(true);
+            setPassphraseCachedUntil(
+              settings.autoLockMinutes > 0 ? Date.now() + settings.autoLockMinutes * 60_000 : null,
+            );
+          }}
         />
       )}
 
@@ -477,13 +523,21 @@ function Header({
   onConfigure,
   privateKey,
   passphraseCached,
+  passphraseCachedUntil,
   onForgetCachedPassphrase,
 }: {
   onConfigure: () => void;
   privateKey: PrivateKeyConfig | null;
   passphraseCached: boolean;
+  /** Epoch ms deadline for the auto-lock (null/undefined = none armed).
+   *  Shown as a live-ish countdown in the button tooltip (re-renders ride on
+   *  the parent's 5s auto-lock tick). */
+  passphraseCachedUntil?: number | null;
   onForgetCachedPassphrase: () => void;
 }) {
+  const autoLockMinutesLeft = passphraseCachedUntil
+    ? Math.max(1, Math.ceil((passphraseCachedUntil - Date.now()) / 60000))
+    : null;
   return (
     <header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
@@ -500,11 +554,29 @@ function Header({
               variant="ghost"
               size="icon"
               onClick={onForgetCachedPassphrase}
-              aria-label="Forget the remembered session passphrase"
-              title="Passphrase remembered for this session (memory only) — click to forget it now"
-              className="size-8 text-muted-foreground transition-colors hover:text-[#0055dc] dark:hover:text-[#5e94ff]"
+              aria-label={
+                autoLockMinutesLeft
+                  ? `Forget the remembered session passphrase (auto-locks in ${autoLockMinutesLeft} min)`
+                  : "Forget the remembered session passphrase"
+              }
+              title={
+                autoLockMinutesLeft
+                  ? `Passphrase remembered for this session (memory only) — auto-locks in ${autoLockMinutesLeft} min — click to forget it now`
+                  : "Passphrase remembered for this session (memory only) — click to forget it now"
+              }
+              className="relative size-8 text-muted-foreground transition-colors hover:text-[#0055dc] dark:hover:text-[#5e94ff]"
             >
               <Unlock className="size-4" aria-hidden />
+              {/* R9: tiny countdown badge next to the unlock glyph when an
+                  auto-lock is armed — glanceable without opening the tooltip. */}
+              {autoLockMinutesLeft !== null && (
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-1.5 -bottom-1 rounded-full border border-border bg-background px-1 text-[8px] font-medium leading-[1.3] text-muted-foreground"
+                >
+                  {autoLockMinutesLeft}m
+                </span>
+              )}
             </Button>
           )}
           <ThemeToggle />

@@ -38,31 +38,31 @@ const MAX_ASCII_DROP_BYTES = 2 * 1024 * 1024;
 const PGP_ARMOR_PREFIX = "-----BEGIN PGP";
 
 export interface UseAsciiTextDropOptions {
-  /** Called with the FULL file text and file name of the first valid file. */
-  onText: (text: string, fileName: string) => void;
-  /** Called once when no dropped file qualifies. */
-  onError?: (message: string) => void;
-  /**
-   * When true (default), the file content must start with "-----BEGIN PGP"
-   * (armor sniff). Set false for plaintext drop targets (e.g. the Verify
-   * tab's detached-signature plaintext field), where ANY text file is
-   * accepted.
-   */
-  requirePgpArmor?: boolean;
-  /** When false, all drag events are ignored entirely (default true). */
-  enabled?: boolean;
+	/** Called with the FULL file text and file name of the first valid file. */
+	onText: (text: string, fileName: string) => void;
+	/** Called once when no dropped file qualifies. */
+	onError?: (message: string) => void;
+	/**
+	 * When true (default), the file content must start with "-----BEGIN PGP"
+	 * (armor sniff). Set false for plaintext drop targets (e.g. the Verify
+	 * tab's detached-signature plaintext field), where ANY text file is
+	 * accepted.
+	 */
+	requirePgpArmor?: boolean;
+	/** When false, all drag events are ignored entirely (default true). */
+	enabled?: boolean;
 }
 
 export interface AsciiTextDrop {
-  /** > 0 while files are being dragged over the target (render overlay). */
-  dragDepth: number;
-  /** Spread onto the drop target element. */
-  dropProps: {
-    onDragEnter: (e: DragEvent<HTMLElement>) => void;
-    onDragOver: (e: DragEvent<HTMLElement>) => void;
-    onDragLeave: (e: DragEvent<HTMLElement>) => void;
-    onDrop: (e: DragEvent<HTMLElement>) => void;
-  };
+	/** > 0 while files are being dragged over the target (render overlay). */
+	dragDepth: number;
+	/** Spread onto the drop target element. */
+	dropProps: {
+		onDragEnter: (e: DragEvent<HTMLElement>) => void;
+		onDragOver: (e: DragEvent<HTMLElement>) => void;
+		onDragLeave: (e: DragEvent<HTMLElement>) => void;
+		onDrop: (e: DragEvent<HTMLElement>) => void;
+	};
 }
 
 /**
@@ -71,95 +71,95 @@ export interface AsciiTextDrop {
  * "" or "application/octet-stream") cannot.
  */
 function looksBinary(text: string): boolean {
-  return text.includes("\u0000");
+	return text.includes("\u0000");
 }
 
 export function useAsciiTextDrop({
-  onText,
-  onError,
-  requirePgpArmor = true,
-  enabled = true,
+	onText,
+	onError,
+	requirePgpArmor = true,
+	enabled = true,
 }: UseAsciiTextDropOptions): AsciiTextDrop {
-  // Drag & drop depth counter (avoids flicker when crossing child elements).
-  const [dragDepth, setDragDepth] = useState(0);
+	// Drag & drop depth counter (avoids flicker when crossing child elements).
+	const [dragDepth, setDragDepth] = useState(0);
 
-  const onDragEnter = useCallback(
-    (e: DragEvent<HTMLElement>) => {
-      if (!enabled) return;
-      if (!e.dataTransfer.types.includes("Files")) return;
-      e.preventDefault();
-      setDragDepth((d) => d + 1);
-    },
-    [enabled],
-  );
+	const onDragEnter = useCallback(
+		(e: DragEvent<HTMLElement>) => {
+			if (!enabled) return;
+			if (!e.dataTransfer.types.includes("Files")) return;
+			e.preventDefault();
+			setDragDepth((d) => d + 1);
+		},
+		[enabled],
+	);
 
-  const onDragOver = useCallback(
-    (e: DragEvent<HTMLElement>) => {
-      if (!enabled) return;
-      if (!e.dataTransfer.types.includes("Files")) return;
-      e.preventDefault();
-    },
-    [enabled],
-  );
+	const onDragOver = useCallback(
+		(e: DragEvent<HTMLElement>) => {
+			if (!enabled) return;
+			if (!e.dataTransfer.types.includes("Files")) return;
+			e.preventDefault();
+		},
+		[enabled],
+	);
 
-  const onDragLeave = useCallback(
-    (e: DragEvent<HTMLElement>) => {
-      if (!enabled) return;
-      if (!e.dataTransfer.types.includes("Files")) return;
-      setDragDepth((d) => Math.max(0, d - 1));
-    },
-    [enabled],
-  );
+	const onDragLeave = useCallback(
+		(e: DragEvent<HTMLElement>) => {
+			if (!enabled) return;
+			if (!e.dataTransfer.types.includes("Files")) return;
+			setDragDepth((d) => Math.max(0, d - 1));
+		},
+		[enabled],
+	);
 
-  const onDrop = useCallback(
-    (e: DragEvent<HTMLElement>) => {
-      if (!enabled) return;
-      if (!e.dataTransfer.types.includes("Files")) return;
-      e.preventDefault();
-      setDragDepth(0);
+	const onDrop = useCallback(
+		(e: DragEvent<HTMLElement>) => {
+			if (!enabled) return;
+			if (!e.dataTransfer.types.includes("Files")) return;
+			e.preventDefault();
+			setDragDepth(0);
 
-      // Loading files is async (file.text()); the handler itself stays
-      // synchronous so React's synthetic event cannot be pooled mid-await.
-      void (async () => {
-        const files = Array.from(e.dataTransfer.files);
-        // Last relevant reason no file qualified, for the final onError.
-        let lastError: string | null = null;
-        if (files.length === 0) {
-          lastError = requirePgpArmor
-            ? "Drop a PGP-armored text file (.asc) to load it."
-            : "Drop a text file to load it.";
-        }
-        for (const file of files) {
-          if (file.size > MAX_ASCII_DROP_BYTES) {
-            lastError = `"${file.name}" is too large — the limit is 2 MB (PGP armor files are small text files).`;
-            continue;
-          }
-          let text: string;
-          try {
-            text = await file.text();
-          } catch {
-            lastError = `Could not read "${file.name}".`;
-            continue;
-          }
-          if (looksBinary(text)) {
-            lastError = `"${file.name}" is not a text file.`;
-            continue;
-          }
-          if (requirePgpArmor && !text.trimStart().startsWith(PGP_ARMOR_PREFIX)) {
-            lastError = `"${file.name}" is not a PGP-armored text file.`;
-            continue;
-          }
-          // First qualifying file wins.
-          onText(text, file.name);
-          return;
-        }
-        if (lastError) onError?.(lastError);
-      })();
-    },
-    [enabled, onError, onText, requirePgpArmor],
-  );
+			// Loading files is async (file.text()); the handler itself stays
+			// synchronous so React's synthetic event cannot be pooled mid-await.
+			void (async () => {
+				const files = Array.from(e.dataTransfer.files);
+				// Last relevant reason no file qualified, for the final onError.
+				let lastError: string | null = null;
+				if (files.length === 0) {
+					lastError = requirePgpArmor
+						? "Drop a PGP-armored text file (.asc) to load it."
+						: "Drop a text file to load it.";
+				}
+				for (const file of files) {
+					if (file.size > MAX_ASCII_DROP_BYTES) {
+						lastError = `"${file.name}" is too large — the limit is 2 MB (PGP armor files are small text files).`;
+						continue;
+					}
+					let text: string;
+					try {
+						text = await file.text();
+					} catch {
+						lastError = `Could not read "${file.name}".`;
+						continue;
+					}
+					if (looksBinary(text)) {
+						lastError = `"${file.name}" is not a text file.`;
+						continue;
+					}
+					if (requirePgpArmor && !text.trimStart().startsWith(PGP_ARMOR_PREFIX)) {
+						lastError = `"${file.name}" is not a PGP-armored text file.`;
+						continue;
+					}
+					// First qualifying file wins.
+					onText(text, file.name);
+					return;
+				}
+				if (lastError) onError?.(lastError);
+			})();
+		},
+		[enabled, onError, onText, requirePgpArmor],
+	);
 
-  return { dragDepth, dropProps: { onDragEnter, onDragOver, onDragLeave, onDrop } };
+	return { dragDepth, dropProps: { onDragEnter, onDragOver, onDragLeave, onDrop } };
 }
 
 /**
@@ -168,15 +168,15 @@ export function useAsciiTextDrop({
  * Parent must be `relative`; `active` is typically `dragDepth > 0`.
  */
 export function AsciiDropOverlay({ active, label }: { active: boolean; label: string }) {
-  if (!active) return null;
-  return (
-    <div
-      aria-hidden
-      className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-[#0055dc] bg-[#0055dc]/5 dark:border-[#5e94ff] dark:bg-[#5e94ff]/10 animate-fade-up"
-    >
-      <span className="rounded-lg bg-background/95 px-4 py-2 text-sm font-medium text-[#0055dc] shadow-sm dark:text-[#5e94ff]">
-        {label}
-      </span>
-    </div>
-  );
+	if (!active) return null;
+	return (
+		<div
+			aria-hidden
+			className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-[#0055dc] bg-[#0055dc]/5 dark:border-[#5e94ff] dark:bg-[#5e94ff]/10 animate-fade-up"
+		>
+			<span className="rounded-lg bg-background/95 px-4 py-2 text-sm font-medium text-[#0055dc] shadow-sm dark:text-[#5e94ff]">
+				{label}
+			</span>
+		</div>
+	);
 }

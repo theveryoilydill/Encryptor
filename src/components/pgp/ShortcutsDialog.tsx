@@ -14,64 +14,64 @@ import { Keyboard } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
 } from "@/components/ui/dialog";
 
 /** Exactly the Alt+1..4 bindings from PgpApp.tsx (TABS array order). */
 const SHORTCUTS: { keys: string; description: string }[] = [
-  { keys: "Alt+1", description: "Encrypt" },
-  { keys: "Alt+2", description: "Decrypt" },
-  { keys: "Alt+3", description: "Sign" },
-  { keys: "Alt+4", description: "Verify" },
+	{ keys: "Alt+1", description: "Encrypt" },
+	{ keys: "Alt+2", description: "Decrypt" },
+	{ keys: "Alt+3", description: "Sign" },
+	{ keys: "Alt+4", description: "Verify" },
 ];
 
 export function ShortcutsDialog() {
-  const [open, setOpen] = useState(false);
+	const [open, setOpen] = useState(false);
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={() => setOpen(true)}
-        aria-label="Keyboard shortcuts"
-        title="Keyboard shortcuts"
-        className="size-11 text-muted-foreground transition-colors hover:text-foreground press-effect sm:size-8"
-      >
-        <Keyboard className="size-4" aria-hidden />
-      </Button>
-      <DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-sm">
-        <DialogHeader className="border-b px-5 py-3.5">
-          <DialogTitle className="text-base font-semibold">Keyboard shortcuts</DialogTitle>
-          <DialogDescription className="text-xs text-muted-foreground">
-            Switch modes from anywhere in the app.
-          </DialogDescription>
-        </DialogHeader>
-        <ul className="space-y-2 px-5 py-4">
-          {SHORTCUTS.map((s) => (
-            <li key={s.keys} className="flex items-center justify-between gap-3">
-              <span className="text-sm text-muted-foreground">{s.description}</span>
-              <kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
-                {s.keys}
-              </kbd>
-            </li>
-          ))}
-        </ul>
-        {/* Tips section (R11): drop-to-load affordance added by R10-a. Styled
+	return (
+		<Dialog open={open} onOpenChange={setOpen}>
+			<Button
+				variant="ghost"
+				size="icon"
+				onClick={() => setOpen(true)}
+				aria-label="Keyboard shortcuts"
+				title="Keyboard shortcuts"
+				className="size-11 text-muted-foreground transition-colors hover:text-foreground press-effect sm:size-8"
+			>
+				<Keyboard className="size-4" aria-hidden />
+			</Button>
+			<DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-sm">
+				<DialogHeader className="border-b px-5 py-3.5">
+					<DialogTitle className="text-base font-semibold">Keyboard shortcuts</DialogTitle>
+					<DialogDescription className="text-xs text-muted-foreground">
+						Switch modes from anywhere in the app.
+					</DialogDescription>
+				</DialogHeader>
+				<ul className="space-y-2 px-5 py-4">
+					{SHORTCUTS.map((s) => (
+						<li key={s.keys} className="flex items-center justify-between gap-3">
+							<span className="text-sm text-muted-foreground">{s.description}</span>
+							<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+								{s.keys}
+							</kbd>
+						</li>
+					))}
+				</ul>
+				{/* Tips section (R11): drop-to-load affordance added by R10-a. Styled
             after the dialog's existing rhythm (border-t footer band, px-5,
             muted text with an inline foreground-weighted lead label — the
             same "Detected format:" inline-label pattern the tabs use). */}
-        <div className="border-t px-5 py-3.5">
-          <p className="text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">Tip:</span> dropping a .asc file onto the
-            Decrypt or Verify input cards loads it.
-          </p>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
+				<div className="border-t px-5 py-3.5">
+					<p className="text-xs text-muted-foreground">
+						<span className="font-medium text-foreground">Tip:</span> dropping a .asc file onto the
+						Decrypt or Verify input cards loads it.
+					</p>
+				</div>
+			</DialogContent>
+		</Dialog>
+	);
 }

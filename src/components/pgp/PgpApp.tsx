@@ -234,6 +234,79 @@ function PostQuantumBanner({
 	);
 }
 
+/** First-run onboarding (no key configured): a compact three-step card that
+ *  makes the empty state teach instead of just sit there. The primary action
+ *  opens the key dialog; the other two steps are guidance only. Disappears
+ *  the moment any key is configured — no dismissal state to persist. */
+function WelcomeOnboarding({ onOpenKeySetup }: { onOpenKeySetup: () => void }) {
+	const steps = [
+		{
+			title: "Set up your key",
+			detail: "Generate one in-browser, paste your own, or log in with Keybase.",
+			action: true,
+		},
+		{
+			title: "Add recipients",
+			detail: "Look them up by Keybase username, email, or paste a public key.",
+			action: false,
+		},
+		{
+			title: "Encrypt & sign",
+			detail: "Recipients decrypt anywhere. Optional ML-KEM-768 seal protects your archive copies.",
+			action: false,
+		},
+	] as const;
+	return (
+		<div className="animate-fade-up mb-4 rounded-xl border border-border bg-card px-4 py-3.5 shadow-sm">
+			<div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+				<span
+					aria-hidden="true"
+					className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+				>
+					<ShieldCheck className="size-5" />
+				</span>
+				<div className="min-w-0 flex-1">
+					<p className="text-sm font-semibold">Welcome to Encryptor</p>
+					<p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+						OpenPGP encryption that never leaves your browser — keys, passphrases, and plaintext
+						stay on this device.
+					</p>
+					<ol className="mt-3 space-y-2">
+						{steps.map((step, i) => (
+							<li key={step.title} className="flex items-start gap-2.5">
+								<span
+									aria-hidden="true"
+									className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground"
+								>
+									{i + 1}
+								</span>
+								<div className="min-w-0 flex-1">
+									<p className="text-xs font-medium">
+										{step.title}
+										<span className="font-normal text-muted-foreground"> — {step.detail}</span>
+									</p>
+									{step.action && (
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											onClick={onOpenKeySetup}
+											className="mt-1.5 h-11 gap-1.5 bg-background/60 px-3 text-xs transition-colors hover:border-[#0055dc] hover:text-[#0055dc] sm:h-8 dark:bg-background/40 dark:hover:border-[#5e94ff] dark:hover:text-[#5e94ff]"
+										>
+											<KeyIcon />
+											Set up a key
+										</Button>
+									)}
+								</div>
+							</li>
+						))}
+					</ol>
+				</div>
+			</div>
+		</div>
+	);
+}
+
 export default function PgpApp() {
 	// Lazy initializers are safe here: page.tsx renders this component with
 	// ssr:false, so localStorage is always available on first render.
@@ -651,6 +724,7 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+				{!privateKey && <WelcomeOnboarding onOpenKeySetup={() => setConfigOpen(true)} />}
 				{showPqBanner && privateKey && (
 					<div className="mb-4">
 						<PostQuantumBanner
@@ -948,7 +1022,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 						aria-controls={`panel-${t.id}`}
 						onClick={() => onChange(t.id)}
 						title={`Alt+${n}`}
-						className={`relative inline-flex items-center justify-center gap-1.5 px-5 py-2.5 -mb-px border-b-2 text-sm font-medium transition-colors duration-150 ${
+						className={`relative inline-flex items-center justify-center gap-1.5 rounded-t-md px-5 py-2.5 -mb-px border-b-2 text-sm font-medium transition-colors duration-150 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff] ${
 							active
 								? "border-transparent text-[#0055dc] dark:text-[#5e94ff]"
 								: "border-transparent text-muted-foreground hover:text-foreground hover:border-border"

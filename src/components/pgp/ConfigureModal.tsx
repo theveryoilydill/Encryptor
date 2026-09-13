@@ -243,8 +243,17 @@ export function ConfigureModal({
 									: privateKey.label}
 							</div>
 							{privateKey.info && (
-								<div className="mt-1 break-all font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
-									{formatFingerprint(privateKey.info.fingerprint)}
+								<div className="mt-1 flex items-start justify-between gap-2">
+									<div className="min-w-0 break-all font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
+										{formatFingerprint(privateKey.info.fingerprint)}
+									</div>
+									{/* Fingerprints are shared out-of-band for verification — a one-tap
+	copy beats hand-selecting monospace text. */}
+									<CopyButton
+										text={privateKey.info.fingerprint}
+										label="Copy fingerprint"
+										ariaLabel="Copy key fingerprint to clipboard"
+									/>
 								</div>
 							)}
 							{/* Additive: collapsible metadata grid fed by describeKeyDetails
@@ -854,6 +863,10 @@ function ManualKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void
 					aria-label="Passphrase (if encrypted) — collected but never stored"
 					className="min-h-11 sm:min-h-9"
 				/>
+				{/* Consistency with the generate form: live strength feedback while
+	typing the passphrase that protects the pasted key. Hidden while empty
+	so the form stays compact until it matters. */}
+				{passphrase && <PassphraseStrength password={passphrase} />}
 				<FormError message={error} />
 				<Button
 					type="button"

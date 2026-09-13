@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Blocks,
 	BookmarkPlus,
+	ChevronDown,
 	FileDown,
 	FileUp,
+	History,
 	LayoutTemplate,
 	Loader2,
 	Lock,
@@ -14,9 +16,11 @@ import {
 	Sparkles,
 	Trash2,
 	TriangleAlert,
+	X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
 import { RecipientPicker } from "@/components/pgp/RecipientPicker";
 import {
@@ -58,6 +62,14 @@ import {
 	type UserTemplate,
 } from "@/lib/pgp/user-templates";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "@/lib/pgp/composer-draft";
+import {
+	appendSealedOutput,
+	clearSealedHistory,
+	loadSealedHistory,
+	removeSealedEntry,
+	MAX_SEALED_ENTRIES,
+	type SealedHistoryEntry,
+} from "@/lib/pgp/sealed-history";
 import { encryptAndSign, encryptMessage } from "@/lib/pgp/pgp";
 import { sealForConfig } from "@/lib/pgp/pq";
 import {
@@ -402,6 +414,7 @@ export function EncryptTab({
 	 *  persists and stays in sync with the Settings dialog. */
 	onEditorKindChange: (kind: MarkdownEditorKind) => void;
 }) {
+	const { toast } = useToast();
 	const [plaintext, setPlaintext] = useState("");
 	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
 	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
@@ -432,6 +445,15 @@ export function EncryptTab({
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{ keys: number; signed: boolean } | null>(null);
+	// Recent sealed outputs — a ciphertext-only local history (lib/pgp/
+	// sealed-history): the armored result of each encrypt is kept so an
+	// earlier sealed message can be restored after the output block is
+	// reset or replaced by a newer one. Collapsed by default.
+	const [sealedHistory, setSealedHistory] = useState<SealedHistoryEntry[]>([]);
+	const [historyOpen, setHistoryOpen] = useState(false);
+	useEffect(() => {
+		setSealedHistory(loadSealedHistory());
+	}, []);
 
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
@@ -724,15 +746,29 @@ export function EncryptTab({
 			// Quantum-sealed copy (opt-in): an ML-KEM-768 outer layer over the
 			// armored output, sealed to the configured key's quantum-seal
 			// public half. Needs no secret — sealing is passphrase-free.
+			let pqCopy: string | null = null;
 			if (settings.pqSealedCopy && privateKey?.pq) {
 				try {
-					setSealedCopy(await sealForConfig(armored, privateKey.pq, privateKey.info.fingerprint));
+					pqCopy = await sealForConfig(armored, privateKey.pq, privateKey.info.fingerprint);
+					setSealedCopy(pqCopy);
 				} catch {
 					// The classical output stays usable even if the PQ layer fails.
 				}
 			}
 			setOutput(armored);
 			setOutputMeta({ keys: recipientKeys.length, signed: signing });
+			// Ciphertext-only local history: record the sealed output (and its
+			// PQ copy, when produced) BEFORE the plaintext is wiped — the entry
+			// holds nothing but the armor the user is about to see anyway.
+			const recorded = appendSealedOutput({
+				armor: armored,
+				sealedArmor: pqCopy,
+				keys: recipientKeys.length,
+				signed: signing,
+				pqSealed: pqCopy !== null,
+			});
+			setSealedHistory(recorded.entries);
+			setHistoryOpen(true);
 
 			// The user can always decrypt their own copy (Include me) — so the
 			// plaintext is deleted from the composer as soon as the ciphertext
@@ -1054,6 +1090,118 @@ export function EncryptTab({
 					/>
 				</section>
 			)}
+
+			{sealedHistory.length > 0 && (
+				<section
+					className="animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+					aria-label="Recent sealed outputs"
+				>
+					<Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+						<div className="flex items-center gap-1 pr-3">
+							<CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0055dc]">
+								<span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#0055dc]/8 text-[#0055dc] dark:bg-[#5e94ff]/10 dark:text-[#5e94ff]">
+									<History aria-hidden="true" className="size-4" />
+								</span>
+								<span className="min-w-0 text-sm font-medium">Recent sealed outputs</span>
+								<span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+									{sealedHistory.length}
+								</span>
+								<ChevronDown
+									aria-hidden="true"
+									className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
+								/>
+							</CollapsibleTrigger>
+							<Button
+								variant="ghost"
+								size="sm"
+								onClick={() => {
+									setSealedHistory(clearSealedHistory());
+									toast({ title: "Sealed-output history cleared" });
+								}}
+								className="shrink-0 text-muted-foreground hover:text-foreground"
+							>
+								<Trash2 aria-hidden="true" className="size-4" />
+								Clear
+							</Button>
+						</div>
+						<CollapsibleContent>
+							<ul className="divide-y divide-border border-t border-border">
+								{sealedHistory.map((entry) => (
+									<li
+										key={entry.id}
+										className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
+									>
+										<time
+											dateTime={new Date(entry.at).toISOString()}
+											className="w-[7.5rem] shrink-0 font-mono text-[11px] text-muted-foreground"
+										>
+											{formatHistoryTime(entry.at)}
+										</time>
+										<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+											<span className="rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] dark:bg-[#5e94ff]/10 dark:text-[#5e94ff]">
+												{entry.keys} {entry.keys === 1 ? "key" : "keys"}
+											</span>
+											{entry.signed && (
+												<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+													signed
+												</span>
+											)}
+											{entry.pqSealed && (
+												<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+													PQ
+												</span>
+											)}
+											<span className="font-mono text-[10px] text-muted-foreground">
+												~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
+											</span>
+										</span>
+										<span className="flex shrink-0 items-center gap-1">
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={() => {
+													setOutput(entry.armor);
+													setSealedCopy(entry.sealedArmor ?? "");
+													setOutputMeta({ keys: entry.keys, signed: entry.signed });
+													setError(null);
+													toast({
+														title: "Sealed output restored",
+														description:
+															"The ciphertext is back in the output box — copy or download it from there.",
+													});
+												}}
+												className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
+											>
+												<History aria-hidden="true" className="size-3.5" />
+												Restore
+											</Button>
+											<CopyButton
+												text={entry.armor}
+												label="Copy"
+												ariaLabel="Copy sealed output to clipboard"
+											/>
+											<DownloadButton text={entry.armor} title="sealed output" />
+											<Button
+												variant="ghost"
+												size="icon"
+												onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
+												aria-label="Remove this entry from the sealed-output history"
+												className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
+											>
+												<X aria-hidden="true" className="size-3.5" />
+											</Button>
+										</span>
+									</li>
+								))}
+							</ul>
+							<p className="border-t border-border bg-muted/25 px-4 py-2 text-[11px] text-muted-foreground">
+								Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is
+								never stored — restoring puts the armor back in the output box above.
+							</p>
+						</CollapsibleContent>
+					</Collapsible>
+				</section>
+			)}
 		</section>
 	);
 }
@@ -1093,4 +1241,27 @@ function ComposerStyleButton({
 			<span className="hidden min-[420px]:inline">{kind === "notion" ? "Notion" : "Code"}</span>
 		</button>
 	);
+}
+
+/**
+ * Compact timestamp for a sealed-history row: same clock-face for today
+ * ("14:32"), a day label otherwise ("Sep 12 · 14:32"). Pure formatting —
+ * no state, no effects.
+ */
+function formatHistoryTime(at: number): string {
+	const d = new Date(at);
+	if (Number.isNaN(d.getTime())) return "";
+	const now = new Date();
+	const time = new Intl.DateTimeFormat(undefined, {
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	}).format(d);
+	const sameDay =
+		d.getFullYear() === now.getFullYear() &&
+		d.getMonth() === now.getMonth() &&
+		d.getDate() === now.getDate();
+	if (sameDay) return time;
+	const day = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(d);
+	return `${day} \u00b7 ${time}`;
 }

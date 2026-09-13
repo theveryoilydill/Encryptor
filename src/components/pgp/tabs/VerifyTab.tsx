@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import { FileSearch, WandSparkles, X } from "lucide-react";
+import { FileSearch, ShieldCheck, ShieldQuestion, ShieldX, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -398,15 +398,41 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 				// first appears (result resets to null before each verify, so
 				// re-runs replay it). Reduced-motion gated in globals.css.
 				<div className="result-enter space-y-3">
-					<div className="animate-scale-in rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-						<div className="text-sm font-medium tracking-wide mb-2">
+					<div
+						className={`animate-scale-in rounded-xl border px-4 py-3 shadow-sm ${
+							result.verified === "valid"
+								? "border-emerald-300/70 bg-emerald-50/60 dark:border-emerald-900/50 dark:bg-emerald-950/20"
+								: result.verified === "invalid"
+									? "border-red-300/70 bg-red-50/60 dark:border-red-900/50 dark:bg-red-950/20"
+									: "border-border bg-card"
+						}`}
+					>
+						<div className="mb-2 flex items-center gap-2">
 							{result.verified === "valid" ? (
-								<span className="text-emerald-700 dark:text-emerald-400">✓ Signature is valid</span>
+								<ShieldCheck
+									aria-hidden="true"
+									className="size-4.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+								/>
 							) : result.verified === "invalid" ? (
-								<span className="text-red-700 dark:text-red-400">✗ Signature is invalid</span>
+								<ShieldX
+									aria-hidden="true"
+									className="size-4.5 shrink-0 text-red-600 dark:text-red-400"
+								/>
 							) : (
-								<span className="text-foreground">? Signature could not be verified</span>
+								<ShieldQuestion
+									aria-hidden="true"
+									className="size-4.5 shrink-0 text-muted-foreground"
+								/>
 							)}
+							<div className="text-sm font-medium tracking-wide">
+								{result.verified === "valid" ? (
+									<span className="text-emerald-700 dark:text-emerald-400">Signature is valid</span>
+								) : result.verified === "invalid" ? (
+									<span className="text-red-700 dark:text-red-400">Signature is invalid</span>
+								) : (
+									<span className="text-foreground">Signature could not be verified</span>
+								)}
+							</div>
 						</div>
 						{result.signatures.length > 0 && (
 							<ul className="space-y-2 text-xs">
@@ -443,8 +469,8 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 											: null;
 									return (
 										<li key={i} className="space-y-0.5">
-											<div className="flex items-center gap-2">
-												<span className="font-medium text-[#0055dc] dark:text-[#5e94ff]">
+											<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+												<span className="min-w-0 break-words font-medium text-[#0055dc] dark:text-[#5e94ff]">
 													{displayName}
 												</span>
 												<span className={`font-medium tracking-wide ${color}`}>{label}</span>
@@ -472,7 +498,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 														{expiry.label}
 													</span>
 												)}
-												<span className="ml-auto font-mono text-[11px] text-muted-foreground">
+												<span className="ml-auto shrink-0 whitespace-nowrap rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
 													<span className="mr-1 font-sans text-[10px] tracking-wide">Key ID</span>
 													{s.keyID}
 												</span>

@@ -8,7 +8,7 @@
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Clock3 } from "lucide-react";
+import { Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,6 @@ import {
   type KeySearchResult,
 } from "@/lib/pgp/keybase";
 import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
-import { isSafeImageUrl } from "@/lib/pgp/envelope";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
@@ -88,30 +87,6 @@ function loadRecentRecipients(): RecentRecipient[] {
   } catch {
     return [];
   }
-}
-
-/* Curated soft avatar palette for the initials fallback (no avatar image).
- * Each entry is a light bg/fg pair + dark bg/fg pair, all WCAG-readable.
- * Classes are written as full literals so Tailwind's scanner picks them up. */
-const AVATAR_PALETTE: string[] = [
-  "bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300",
-  "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300",
-  "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300",
-  "bg-teal-100 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300",
-  "bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300",
-  "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-500/20 dark:text-fuchsia-300",
-  "bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300",
-  "bg-lime-100 text-lime-700 dark:bg-lime-500/20 dark:text-lime-300",
-];
-
-/** Deterministic string hash → palette entry. Same seed always maps to the
- *  same color; visually distinct names spread across the palette. */
-function avatarPaletteClass(seed: string): string {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) {
-    h = (Math.imul(h, 31) + seed.charCodeAt(i)) | 0;
-  }
-  return AVATAR_PALETTE[(h >>> 0) % AVATAR_PALETTE.length];
 }
 
 export function RecipientPicker({
@@ -483,7 +458,6 @@ export function RecipientPicker({
                   (s.username && p.username === s.username) ||
                   (s.fingerprint && p.fingerprint === s.fingerprint),
               );
-              const avatarSeed = s.username || s.fullName || s.label;
               return (
                 <li
                   key={`${s.source}-${s.label}-${i}`}
@@ -501,19 +475,9 @@ export function RecipientPicker({
                         : ""
                     }`}
                   >
-                    {s.pictureUrl && isSafeImageUrl(s.pictureUrl) ? (
-                      <img
-                        src={isSafeImageUrl(s.pictureUrl) ?? undefined}
-                        alt=""
-                        className="size-8 rounded-full object-cover ring-1 ring-border"
-                      />
-                    ) : (
-                      <div
-                        className={`grid size-8 shrink-0 place-items-center rounded-full text-[10px] font-medium ring-1 ring-border ${avatarPaletteClass(avatarSeed)}`}
-                      >
-                        {avatarSeed.slice(0, 2).toUpperCase()}
-                      </div>
-                    )}
+                    {/* No avatar here — person photos/initials in the key
+                        picker were noise (and a privacy leak of profile
+                        pictures); results are identified by their labels. */}
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium">{s.label}</div>
                       {s.fullName && s.username && (
@@ -561,35 +525,38 @@ export function RecipientPicker({
           <div className="mt-2">
             <p className="text-[10px] text-muted-foreground">Recent:</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              {recentRecipients.map((r, i) => {
-                const alreadyAdded = recipients.some(
-                  (p) =>
-                    (r.username !== undefined && p.username === r.username) ||
-                    (r.fingerprint !== undefined && p.fingerprint === r.fingerprint),
-                );
-                return (
-                  <button
-                    key={`${r.fingerprint || r.label}-${i}`}
-                    type="button"
-                    onClick={() => addRecentRecipient(r)}
-                    disabled={alreadyAdded}
-                    aria-label={`Add recent recipient ${r.label}`}
-                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[#0055dc]/5 hover:text-foreground dark:hover:bg-[#5e94ff]/5 ${
-                      alreadyAdded ? "cursor-not-allowed opacity-50" : ""
-                    }`}
-                  >
-                    <Clock3 aria-hidden="true" className="size-3" />
-                    <span className="max-w-40 truncate">{r.label}</span>
-                  </button>
-                );
-              })}
+              {recentRecipients
+                .filter(
+                  (r) =>
+                    !(selfRecipient?.fingerprint && r.fingerprint === selfRecipient.fingerprint),
+                )
+                .map((r, i) => {
+                  const alreadyAdded = recipients.some(
+                    (p) =>
+                      (r.username !== undefined && p.username === r.username) ||
+                      (r.fingerprint !== undefined && p.fingerprint === r.fingerprint),
+                  );
+                  return (
+                    <button
+                      key={`${r.fingerprint || r.label}-${i}`}
+                      type="button"
+                      onClick={() => addRecentRecipient(r)}
+                      disabled={alreadyAdded}
+                      aria-label={`Add recent recipient ${r.label}`}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[#0055dc]/5 hover:text-foreground dark:hover:bg-[#5e94ff]/5 ${
+                        alreadyAdded ? "cursor-not-allowed opacity-50" : ""
+                      }`}
+                    >
+                      <span className="max-w-40 truncate">{r.label}</span>
+                    </button>
+                  );
+                })}
             </div>
           </div>
         )}
 
       <p className="mt-1.5 text-[11px] text-muted-foreground">
-        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org. Type a name, email, or Keybase
-        username.
+        Searches Keybase, Ubuntu keyserver, and keys.openpgp.org.
       </p>
 
       <ManualRecipientAdd onAdd={handleManualAdd} />

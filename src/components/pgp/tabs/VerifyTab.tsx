@@ -6,7 +6,12 @@ import { FileSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ErrorBanner, ZipDownloadButton } from "@/components/pgp/shared";
+import {
+  ErrorBanner,
+  ZipDownloadButton,
+  KeySourcePill,
+  SignerHashLegend,
+} from "@/components/pgp/shared";
 import type {
   PrivateKeyConfig,
   SignatureInfo,
@@ -152,9 +157,6 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
             <p className="mt-3 text-sm font-medium">
               Paste a signature to verify, or drop a .asc file
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Supports cleartext-signed, detached, and encrypted formats — detected automatically.
-            </p>
           </div>
         )}
         <Textarea
@@ -168,17 +170,6 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
           spellCheck={false}
           className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
         />
-        {detected && (
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Detected format: <span className="font-medium text-foreground">{detected}</span>
-            {detected === "encrypted-message" && (
-              <span className="ml-1">— switch to the Decrypt tab to decrypt and verify.</span>
-            )}
-          </p>
-        )}
-        <p className="mt-1.5 text-[11px] text-muted-foreground">
-          The signer's public key is fetched automatically from Keybase by the signature's key ID.
-        </p>
         {showVerifyHint && detectedBlock && (
           <InputHint
             tone={detectedBlock === "encrypted" ? "info" : "amber"}
@@ -312,6 +303,9 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
                           {displayName}
                         </span>
                         <span className={`font-medium tracking-wide ${color}`}>{label}</span>
+                        {/* Where the signer's public key was resolved from —
+                            same pill as the Decrypt tab's signed card. */}
+                        <KeySourcePill source={s.resolvedFrom} />
                         {/* Self-signer marker — mirrors the Decrypt tab's
                             SignerBadges "you" pill (shared.tsx). */}
                         {s.self && (
@@ -333,7 +327,8 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
                             {expiry.label}
                           </span>
                         )}
-                        <span className="text-[11px] text-muted-foreground font-mono ml-auto">
+                        <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                          <span className="mr-1 font-sans text-[10px] tracking-wide">Key ID</span>
                           {s.keyID}
                         </span>
                       </div>
@@ -376,6 +371,9 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
                       )}
                       {s.fingerprint && (
                         <div className="text-[10px] text-muted-foreground font-mono break-all">
+                          <span className="mr-1 font-sans text-[10px] tracking-wide">
+                            Fingerprint
+                          </span>
                           {s.fingerprint}
                         </div>
                       )}
@@ -384,6 +382,8 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
                 })}
               </ul>
             )}
+            {/* What the key ID / fingerprint hex strings mean. */}
+            {result.signatures.length > 0 && <SignerHashLegend />}
           </div>
         </div>
       )}

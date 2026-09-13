@@ -43,6 +43,11 @@ export interface PrivateKeyConfig {
   info: AnyKeyInfo;
 }
 
+/** Where the signer's public key was resolved from (drives the source pill
+ *  on signature cards): the user's own configured key, Keybase, or
+ *  keys.openpgp.org. Undefined = not determined (verification never ran). */
+export type KeySource = "local" | "keybase" | "openpgp.org";
+
 /** Rich signer info extracted from a verified signature. */
 export interface SignatureInfo {
   keyID: string;
@@ -50,6 +55,9 @@ export interface SignatureInfo {
   username?: string;
   verified: "valid" | "invalid" | "unknown";
   error?: string;
+  /** Where the verification key came from (R: "say where the signature
+   *  came from" — rendered as a pill on the Verify tab + signed card). */
+  resolvedFrom?: KeySource;
   name?: string;
   email?: string;
   comment?: string;

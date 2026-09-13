@@ -11,6 +11,7 @@
  */
 import * as openpgp from "openpgp";
 
+import type { KeySource } from "@/components/pgp/contracts";
 import {
   fetchKeyByKeyIDClient,
   fetchKeyFromOpenPGP_orgClient,
@@ -41,6 +42,10 @@ export type VerificationKeyLookupResult = KeybaseKeyByIDResult & {
    *  local-match path, where the public half is already parsed; remote
    *  lookups never carry it (the field stays absent — not fabricated). */
   expiresAt?: number | null;
+  /** Which source resolved this key (local / Keybase / keys.openpgp.org) —
+   *  surfaced on signature cards so the user can see where the signature
+   *  verification came from. */
+  resolvedFrom?: KeySource;
 };
 
 /**
@@ -54,9 +59,12 @@ export async function fetchKeysFromAllSources(
   keyIDs: string[],
   keybaseProxy: string,
   opgProxy: string,
-): Promise<KeybaseKeyByIDResult[]> {
+): Promise<VerificationKeyLookupResult[]> {
   // Try Keybase first.
-  const keybaseResults = await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(() => []);
+  const keybaseResults = (await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(
+    () => [],
+  )) as VerificationKeyLookupResult[];
+  for (const k of keybaseResults) k.resolvedFrom = "keybase";
 
   // Find key IDs that Keybase didn't resolve.
   const foundKeyIDs = new Set(keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]));
@@ -68,12 +76,15 @@ export async function fetchKeysFromAllSources(
   // Try keys.openpgp.org for the missing ones.
   const opgResults =
     missingKeyIDs.length > 0
-      ? await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(() => [])
+      ? ((await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(
+          () => [],
+        )) as VerificationKeyLookupResult[])
       : [];
+  for (const k of opgResults) k.resolvedFrom = "openpgp.org";
 
   // Merge and deduplicate by fingerprint.
   const seen = new Set<string>();
-  const merged: KeybaseKeyByIDResult[] = [];
+  const merged: VerificationKeyLookupResult[] = [];
   for (const k of [...keybaseResults, ...opgResults]) {
     const fp = k.fingerprint.toUpperCase();
     if (!seen.has(fp)) {
@@ -156,6 +167,7 @@ export async function fetchKeysFromAllSourcesWithLocal(
           allKeyIDs,
           self: true,
           expiresAt,
+          resolvedFrom: "local",
         });
       }
     } catch {
@@ -165,7 +177,7 @@ export async function fetchKeysFromAllSourcesWithLocal(
 
   // Skip the proxies ONLY for key IDs the local key already resolved.
   const remainingKeyIDs = keyIDs.filter((id) => !locallyMatched.has(normalizeKeyID(id)));
-  const remoteResults: KeybaseKeyByIDResult[] =
+  const remoteResults: VerificationKeyLookupResult[] =
     remainingKeyIDs.length > 0
       ? await fetchKeysFromAllSources(remainingKeyIDs, keybaseProxy, opgProxy)
       : [];

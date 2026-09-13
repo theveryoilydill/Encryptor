@@ -69,6 +69,10 @@ export interface EncryptAndSignOptions {
   signerPassphrase?: string;
   /** Sign as a separate detached signature file (false = inline signature in the encrypted message). */
   detached?: boolean;
+  /** Message compression preference (settings-driven). openpgp.js uses the
+   *  sender's preferred algorithm only when every recipient key advertises
+   *  it, and falls back to uncompressed otherwise — see settings.ts. */
+  compression?: "uncompressed" | "zip" | "zlib";
 }
 
 export interface DecryptAndVerifyOptions {
@@ -423,6 +427,21 @@ export async function encryptAndSign(opts: EncryptAndSignOptions): Promise<strin
     encryptionKeys,
     signingKeys: [signingKey],
     signatureNotations,
+    // Compression preference (v6 replaced the old compress flag with the
+    // sender's preferredCompressionAlgorithm; openpgp.js still degrades
+    // gracefully when a recipient doesn't advertise the algorithm).
+    ...(opts.compression
+      ? {
+          config: {
+            preferredCompressionAlgorithm:
+              opts.compression === "zlib"
+                ? openpgp.enums.compression.zlib
+                : opts.compression === "zip"
+                  ? openpgp.enums.compression.zip
+                  : openpgp.enums.compression.uncompressed,
+          },
+        }
+      : {}),
     format: "armored",
   });
 
@@ -585,6 +604,8 @@ export async function decryptAndAutoVerify(
       /** Expiration of the record's key as epoch-ms, when known (R9: only
        *  locally-resolved records carry it). */
       expiresAt?: number | null;
+      /** Which source resolved this key (local / Keybase / openpgp.org). */
+      resolvedFrom?: "local" | "keybase" | "openpgp.org";
     }>
   >,
 ): Promise<{
@@ -605,6 +626,8 @@ export async function decryptAndAutoVerify(
     self?: boolean;
     /** Expiration of the signer's key as epoch-ms, when known. */
     expiresAt?: number | null;
+    /** Where the verification key came from. */
+    resolvedFrom?: "local" | "keybase" | "openpgp.org";
   }>;
 }> {
   if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
@@ -770,6 +793,7 @@ export async function decryptAndAutoVerify(
         username: match?.username,
         self: match?.self,
         expiresAt: match?.expiresAt,
+        resolvedFrom: match?.resolvedFrom,
         verified: verifiedStatus,
         error,
         name: info?.name,
@@ -1203,6 +1227,8 @@ export async function verifyAutoDetectWithKeyFetch(
       /** Expiration of the record's key as epoch-ms, when known (R9: only
        *  locally-resolved records carry it). */
       expiresAt?: number | null;
+      /** Which source resolved this key (local / Keybase / openpgp.org). */
+      resolvedFrom?: "local" | "keybase" | "openpgp.org";
     }>
   >,
 ): Promise<{
@@ -1223,6 +1249,8 @@ export async function verifyAutoDetectWithKeyFetch(
     self?: boolean;
     /** Expiration of the signer's key as epoch-ms, when known. */
     expiresAt?: number | null;
+    /** Where the verification key came from. */
+    resolvedFrom?: "local" | "keybase" | "openpgp.org";
   }>;
 }> {
   const format = detectArmoredFormat(armored);
@@ -1448,6 +1476,7 @@ export async function verifyAutoDetectWithKeyFetch(
         username: match?.username,
         self: match?.self,
         expiresAt: match?.expiresAt,
+        resolvedFrom: match?.resolvedFrom,
         verified: verifiedStatus,
         error,
         name: info?.name,

@@ -28,7 +28,7 @@ export function SignTab({
     setError(null);
     setOutput("");
     if (!plaintext.trim()) {
-      setError("Enter the text to sign.");
+      setError("Enter the text to sign below.");
       return;
     }
     if (!privateKey) {
@@ -65,7 +65,7 @@ export function SignTab({
             className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
           />
           <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Plain text to sign
+            Text to sign
           </Label>
         </div>
         {!plaintext.trim() && !output && (
@@ -76,10 +76,7 @@ export function SignTab({
                 className="size-7 text-[#0055dc] dark:text-[#5e94ff]"
               />
             </div>
-            <p className="mt-3 text-sm font-medium">Enter the text to sign</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Signatures are generated locally — your private key never leaves this device.
-            </p>
+            <p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
           </div>
         )}
         <Textarea

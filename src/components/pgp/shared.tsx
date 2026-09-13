@@ -8,9 +8,13 @@
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BadgeCheck, Check, Copy, FileSignature, FileText, Lock } from "lucide-react";
+import { BadgeCheck, Check, Copy, FileSignature, FileText, Lock, X } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -19,7 +23,7 @@ import {
   isSafeImageUrl,
   type EnvelopeFile,
 } from "@/lib/pgp/envelope";
-import { findInlineImageMarkers } from "@/lib/pgp/inline-image";
+import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import {
@@ -28,10 +32,93 @@ import {
   downloadBlob,
   zipFilename,
 } from "@/lib/pgp/zip-bundle";
-import type { SignatureInfo, VerificationResult } from "@/components/pgp/contracts";
+import type { KeySource, SignatureInfo, VerificationResult } from "@/components/pgp/contracts";
 
 /* Accent helpers (design brief: #0055dc, hover #0046b8, dark text #5e94ff). */
 const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
+
+/* ------------------------- Key source + hash labels ------------------------- */
+// # Mr. AI Acting on s183173's Behalf
+// Signature cards (Verify tab + Decrypt tab's "Signed by") must say WHERE
+// the signer's public key came from and what the key ID / fingerprint hex
+// strings actually mean — without any format talk or filler captions.
+
+/** Human label for each key-lookup source, keyed by contracts.KeySource. */
+const KEY_SOURCE_LABELS: Readonly<Record<KeySource, string>> = {
+  local: "key from your configured key",
+  keybase: "key from Keybase",
+  "openpgp.org": "key from keys.openpgp.org",
+};
+
+/** Small muted pill naming where the signer's public key was resolved from.
+ *  Renders nothing when the source is unknown (verification didn't run). */
+export function KeySourcePill({ source }: { source: KeySource | undefined }) {
+  if (!source) return null;
+  return (
+    <span className="inline-flex shrink-0 items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+      {KEY_SOURCE_LABELS[source]}
+    </span>
+  );
+}
+
+/** One-line legend explaining the key ID + fingerprint hex strings shown on
+ *  signature results ("what do the random hashes mean?"). Rendered once per
+ *  results card, under the signature list. */
+export function SignerHashLegend() {
+  return (
+    <p className="mt-2 border-t border-border pt-2 text-[10px] leading-snug text-muted-foreground">
+      <span className="font-medium">Key ID</span> — short ID of the signing key.{" "}
+      <span className="font-medium">Fingerprint</span> — the key's unique 40-character identity.
+    </p>
+  );
+}
+
+/* -------------------------------- ImageViewer ------------------------------- */
+
+/** Full-size image viewer (lightbox) for attachments. Opens from the file
+ *  name / thumbnail clicks in FileDownloadList — never from the download
+ *  button, which keeps its plain download behavior. */
+export function ImageViewer({ file, onClose }: { file: EnvelopeFile | null; onClose: () => void }) {
+  const safeSrc =
+    file && file.type.startsWith("image/") ? isSafeImageUrl(envelopeFileToDataUrl(file)) : null;
+  return (
+    <Dialog open={file !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-3xl p-0 overflow-hidden" aria-describedby={undefined}>
+        <DialogTitle className="sr-only">
+          {file ? `Viewing ${file.name}` : "Image viewer"}
+        </DialogTitle>
+        {file && safeSrc && (
+          <figure className="space-y-0">
+            <div className="flex max-h-[70vh] items-center justify-center overflow-auto bg-muted/40 p-2">
+              {}
+              <img
+                src={safeSrc}
+                alt={file.name}
+                className="max-h-[68vh] w-auto max-w-full rounded object-contain"
+              />
+            </div>
+            <figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
+              <span className="truncate text-xs font-medium">{file.name}</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                {formatFileSize(file.size)}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={onClose}
+                className="ml-auto size-7 text-muted-foreground"
+                aria-label="Close image viewer"
+              >
+                <X className="size-4" aria-hidden />
+              </Button>
+            </figcaption>
+          </figure>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /* -------------------------------- ErrorBanner ------------------------------- */
 
@@ -359,7 +446,7 @@ export function OutputBlock({
             value={output}
             readOnly
             rows={12}
-            className="field-sizing-fixed resize-y bg-muted/40 font-mono"
+            className="field-sizing-fixed bg-muted/40 font-mono"
             aria-label={title}
           />
         )}
@@ -501,18 +588,21 @@ export function AttachmentList({
 
 /* --------------------------- DecryptedMessageView --------------------------- */
 
-/** Render the decrypted message text with inline images.
+/** Render a decrypted message as markdown (GitHub-flavored), with inline
+ *  envelope images.
  *
- *  Splits `text` into a sequence of plain-text and image segments by
- *  scanning for `![alt|NN%[@dx,dy]](envelope://filename)` markers. Each image
- *  segment is resolved to a `data:` URL by looking up `filename` in `files`,
- *  then rendered as an `<img>` with `width: NN%` and `translate(dx, dy)`.
+ *  Message text is composed in a markdown editor, so it renders as markdown
+ *  here (GFM tables/lists/strikethrough; remark-breaks keeps single
+ *  newlines as line breaks so plain-text messages still read exactly as
+ *  typed). HTML in the message is never executed — react-markdown escapes
+ *  raw HTML and only allows safe URL schemes.
  *
- *  Plain-text segments preserve newlines via `whitespace-pre-wrap` so the
- *  rendered output matches what the sender typed.
- *
- *  If a marker references a filename not present in `files`, a small
- *  "[missing image: NAME]" placeholder is rendered instead of a broken img.
+ *  Envelope image markers (`![alt|NN%[@dx,dy]](envelope://filename)`) are
+ *  ordinary markdown images whose `envelope://` src is resolved to the
+ *  attachment's data URL via the `img` component override below; scale and
+ *  pixel offsets are carried in the alt text and re-applied here. Every
+ *  URL that reaches an <img src> passes through isSafeImageUrl (CodeQL
+ *  js/xss-through-dom guard) exactly as before.
  */
 export function DecryptedMessageView({ text, files }: { text: string; files: EnvelopeFile[] }) {
   // Build a filename → data URL map. First match wins (matching the
@@ -527,94 +617,64 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
     return m;
   }, [files]);
 
-  // Split plaintext into ordered text/image segments.
-  const segments = useMemo(() => {
-    const out: Array<
-      | { type: "text"; content: string }
-      | {
-          type: "image";
-          filename: string;
-          displayName: string;
-          scale: number;
-          dx: number;
-          dy: number;
-        }
-    > = [];
-    const markers = findInlineImageMarkers(text);
-    let lastIndex = 0;
-    for (const m of markers) {
-      if (m.startIndex > lastIndex) {
-        out.push({ type: "text", content: text.slice(lastIndex, m.startIndex) });
-      }
-      out.push({
-        type: "image",
-        filename: m.filename,
-        displayName: m.displayName,
-        scale: m.scale,
-        dx: m.dx,
-        dy: m.dy,
-      });
-      lastIndex = m.endIndex;
-    }
-    if (lastIndex < text.length) {
-      out.push({ type: "text", content: text.slice(lastIndex) });
-    }
-    return out;
-  }, [text]);
-
-  // Fast path: no inline images at all → just render the text. This is the
-  // common case (most messages are text-only) and avoids the extra spans.
-  if (segments.length === 1 && segments[0].type === "text") {
-    return (
-      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
-        {segments[0].content}
-      </div>
-    );
-  }
-
   return (
-    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
-      {segments.map((seg, i) => {
-        if (seg.type === "text") {
-          return <span key={i}>{seg.content}</span>;
-        }
-        const candidate = fileMap.get(seg.filename);
-        // Guard the <img src> URL sink: only strict image data:/blob:/https
-        // URLs may reach the DOM (see isSafeImageUrl) - unsafe values render
-        // the missing-image placeholder instead.
-        const src = candidate ? isSafeImageUrl(candidate) : null;
-        if (!src) {
-          return (
-            <span
-              key={i}
-              className="mx-1 inline-block rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] italic text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
-            >
-              [missing image: {seg.displayName}]
-            </span>
-          );
-        }
-        return (
-          <span
-            key={i}
-            className="my-1 inline-block align-middle"
-            style={{ transform: `translate(${seg.dx}px, ${seg.dy}px)` }}
-          >
-            <img
-              src={src}
-              alt={seg.displayName}
-              style={{ width: `${seg.scale}%`, maxWidth: "100%", minHeight: "20px" }}
-              className="my-1 rounded border border-border"
-            />
-          </span>
-        );
-      })}
+    <div className="break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_img]:my-1 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_th]:border [&_td]:border [&_th]:border-border [&_td]:border-border [&_th]:px-2 [&_td]:px-2 [&_th]:py-1 [&_td]:py-1">
+      <Markdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={{
+          a: ({ node: _node, children, ...props }) => (
+            <a {...props} target="_blank" rel="noreferrer noopener" className={ACCENT_TEXT}>
+              {children}
+            </a>
+          ),
+          img: ({ node: _node, src, alt, ...props }) => {
+            const meta = parseInlineImageAlt(alt ?? "");
+            // Resolve envelope:// handles against the attachment list; every
+            // other URL (markdown-written by the sender) is guarded by the
+            // strict isSafeImageUrl allow-list before reaching the DOM.
+            const candidate =
+              typeof src === "string" && src.startsWith("envelope://")
+                ? (fileMap.get(decodeURIComponent(src.slice("envelope://".length))) ?? null)
+                : typeof src === "string"
+                  ? src
+                  : null;
+            const safeSrc = candidate ? isSafeImageUrl(candidate) : null;
+            if (!safeSrc) {
+              return (
+                <span className="mx-1 inline-block rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] italic text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
+                  [missing image: {meta.displayName}]
+                </span>
+              );
+            }
+            return (
+              <img
+                {...props}
+                src={safeSrc}
+                alt={meta.displayName}
+                style={{
+                  width: `${meta.scale}%`,
+                  maxWidth: "100%",
+                  minHeight: "20px",
+                  transform: `translate(${meta.dx}px, ${meta.dy}px)`,
+                }}
+                className="inline-block rounded border border-border align-middle"
+              />
+            );
+          },
+        }}
+      >
+        {text}
+      </Markdown>
     </div>
   );
 }
 
 /* ------------------------------- SignerBadges ------------------------------- */
 
-/** "Signed by" panel describing each signature found on a message. */
+/** "Signed by" panel describing each signature found on a message. Same
+ *  contract as the Verify tab's result card: it names the signer, says where
+ *  the verification key came from, and labels the key ID / fingerprint hex
+ *  strings — no format talk, no filler captions. */
 export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
   return (
     <div className="rounded-xl border bg-muted/40 p-4 shadow-sm">
@@ -660,6 +720,8 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
                 >
                   {label}
                 </span>
+                {/* Where the signer's public key was resolved from. */}
+                <KeySourcePill source={s.resolvedFrom} />
                 {/* Self-signer marker: the signature verified against the
                     user's own locally-configured key (never published to
                     keyservers, hence resolved locally — R7). */}
@@ -683,6 +745,7 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
                   </span>
                 )}
                 <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  <span className="mr-1 font-sans text-[10px] tracking-wide">Key ID</span>
                   {s.keyID}
                 </span>
               </div>
@@ -727,9 +790,11 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
                   Signed at: <span className="font-mono">{formatTimestamp(s.timestampIso)}</span>
                 </div>
               )}
-              {/* Fingerprint (if available). */}
+              {/* Fingerprint (if available) — labeled so the hex string is
+                  self-explanatory. */}
               {s.fingerprint && (
                 <div className="mt-0.5 break-all font-mono text-[10px] text-muted-foreground">
+                  <span className="mr-1 font-sans text-[10px] tracking-wide">Fingerprint</span>
                   {s.fingerprint}
                 </div>
               )}
@@ -737,14 +802,23 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
           );
         })}
       </ul>
+      {/* One-line explainer for the key ID / fingerprint hex strings. */}
+      <SignerHashLegend />
     </div>
   );
 }
 
 /* ----------------------------- FileDownloadList ----------------------------- */
 
-/** Render the list of files extracted from a decrypted envelope. */
+/** Render the list of files extracted from a decrypted envelope.
+ *
+ *  Image attachments open a full-size viewer when clicking the file name or
+ *  the thumbnail (anything except the Download button, which keeps its
+ *  plain download behavior — the viewer never intercepts it). Non-image
+ *  files keep a static chip + download. */
 export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
+  const [viewing, setViewing] = useState<EnvelopeFile | null>(null);
+
   return (
     <div className="rounded-xl border bg-muted/40 p-4 shadow-sm">
       <div className="mb-1.5 flex items-center gap-2">
@@ -764,29 +838,29 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
           return (
             <li key={i} className="flex items-center gap-2.5 text-sm">
               {safeImgSrc ? (
-                <a
-                  href={url}
-                  download={f.name}
-                  className="flex items-center gap-2.5 hover:underline"
+                // Thumbnail + file name open the image viewer (not a download).
+                <button
+                  type="button"
+                  onClick={() => setViewing(f)}
+                  className="flex items-center gap-2.5 text-left transition-opacity hover:opacity-80"
+                  aria-label={`View ${f.name}`}
+                  title="View image"
                 >
+                  {}
                   <img
                     src={safeImgSrc}
                     alt={f.name}
                     className="size-8 rounded border border-border object-cover"
                   />
-                  <span className={`font-medium ${ACCENT_TEXT}`}>{f.name}</span>
-                </a>
+                  <span className={`font-medium ${ACCENT_TEXT} hover:underline`}>{f.name}</span>
+                </button>
               ) : (
-                <a
-                  href={url}
-                  download={f.name}
-                  className="flex items-center gap-2.5 hover:underline"
-                >
+                <div className="flex items-center gap-2.5">
                   <div className="grid size-8 place-items-center rounded border border-border bg-background text-[9px] font-medium text-muted-foreground">
                     {f.name.split(".").pop()?.toUpperCase().slice(0, 4) || "FILE"}
                   </div>
-                  <span className={`font-medium ${ACCENT_TEXT}`}>{f.name}</span>
-                </a>
+                  <span className="font-medium">{f.name}</span>
+                </div>
               )}
               <span className="text-[11px] text-muted-foreground">{formatFileSize(f.size)}</span>
               <a
@@ -801,6 +875,7 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
           );
         })}
       </ul>
+      <ImageViewer file={viewing} onClose={() => setViewing(null)} />
     </div>
   );
 }

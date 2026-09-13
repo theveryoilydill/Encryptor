@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  CopyButton,
   ErrorBanner,
   ZipDownloadButton,
   KeySourcePill,
@@ -28,6 +29,42 @@ import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
+
+/** Plain-text verification report for the clipboard (additive): a compact,
+ *  shareable summary of the current result — handy for pasting into an
+ *  email or an issue tracker. Pure: derives everything from the result
+ *  record (called on click, so the timestamp is always current). */
+function buildVerificationReport(result: VerificationResult): string {
+  const lines: string[] = [
+    "Encryptor — signature verification report",
+    `Checked at: ${new Date().toLocaleString()}`,
+    result.verified === "valid"
+      ? "Result: signature is valid"
+      : result.verified === "invalid"
+        ? "Result: signature is INVALID"
+        : "Result: could not be verified (signer key not found)",
+  ];
+  result.signatures.forEach((s: SignatureInfo, i: number) => {
+    const who = s.username ? `@${s.username}` : s.name || s.email || s.userID || "Unknown key";
+    lines.push("", `Signer ${i + 1}: ${who}`);
+    lines.push(
+      `  Status: ${
+        s.verified === "valid"
+          ? "verified"
+          : s.verified === "invalid"
+            ? "invalid"
+            : "unknown signer"
+      }`,
+    );
+    if (s.keyID) lines.push(`  Key ID: ${s.keyID}`);
+    if (s.fingerprint) lines.push(`  Fingerprint: ${s.fingerprint}`);
+    if (s.email) lines.push(`  Email: ${s.email}`);
+    if (s.timestampIso) lines.push(`  Signed at: ${formatTimestamp(s.timestampIso)}`);
+    if (s.resolvedFrom) lines.push(`  Key source: ${s.resolvedFrom}`);
+    if (s.self) lines.push("  Note: signed with your locally configured key");
+  });
+  return lines.join("\n");
+}
 
 export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
   const [armored, setArmored] = useState("");
@@ -245,6 +282,13 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
             >
               Reset
             </Button>
+            {result && (
+              <CopyButton
+                text={buildVerificationReport(result)}
+                label="Copy report"
+                ariaLabel="Copy verification report as plain text"
+              />
+            )}
             {result && (
               <ZipDownloadButton
                 files={[]}

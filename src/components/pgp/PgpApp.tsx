@@ -2,7 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTheme } from "next-themes";
-import { Github, Loader2, Monitor, Moon, ShieldCheck, Sun, Unlock } from "lucide-react";
+import {
+  Github,
+  Loader2,
+  Monitor,
+  Moon,
+  ShieldCheck,
+  Sun,
+  Timer,
+  TriangleAlert,
+  Unlock,
+  X,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/toaster";
@@ -22,6 +33,7 @@ import { SignTab } from "@/components/pgp/tabs/SignTab";
 import { VerifyTab } from "@/components/pgp/tabs/VerifyTab";
 import { STORAGE_KEYS } from "@/lib/constants";
 import { readKey, unlockPrivateKey } from "@/lib/pgp/pgp";
+import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { runCryptoSelfTest, type SelfTestResult } from "@/lib/pgp/self-test";
 import {
   cachePassphrase,
@@ -61,6 +73,87 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "verify", label: "Verify" },
 ];
 
+/** Persistent own-key expiry awareness (additive): the Configure dialog has
+ *  always shown an Expired/Expiring badge, but users only see it when they
+ *  open settings — signatures created with a stale key give no hint in the
+ *  main app. This banner sits above the tabs. Dismissal is keyed to
+ *  fingerprint+status (handled by the parent), so changing or renewing the
+ *  key re-arms the reminder. */
+function OwnKeyExpiryBanner({
+  label,
+  status,
+  detail,
+  onOpenSettings,
+  onDismiss,
+}: {
+  /** Configured key display label (quoted in the headline). */
+  label: string;
+  /** "expired" (red) or "expiring" (amber) — callers gate to these two. */
+  status: "expired" | "expiring";
+  /** Human timing clause, e.g. "expired on 12 March 2026" or
+   *  "expires in 6 days (12 March 2026)". */
+  detail: string;
+  onOpenSettings: () => void;
+  onDismiss: () => void;
+}) {
+  const expired = status === "expired";
+  return (
+    <div
+      role="status"
+      className={`animate-fade-up flex flex-col gap-2.5 rounded-xl border px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:gap-3 ${
+        expired
+          ? "border-red-300/70 bg-red-50 dark:border-red-900/50 dark:bg-red-950/30"
+          : "border-amber-300/70 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/30"
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`grid size-8 shrink-0 place-items-center rounded-full ${
+          expired
+            ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+            : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+        }`}
+      >
+        {expired ? <TriangleAlert className="size-4" /> : <Timer className="size-4" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p
+          className={`text-xs font-medium ${
+            expired ? "text-red-800 dark:text-red-300" : "text-amber-800 dark:text-amber-300"
+          }`}
+        >
+          Your key “{label}” {detail}.
+        </p>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">
+          Signatures made with it may be rejected by others — consider generating a new key.
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onOpenSettings}
+          className="h-11 gap-1.5 bg-background/60 px-3 text-xs transition-colors sm:h-8 dark:bg-background/40"
+        >
+          Open key settings
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={onDismiss}
+          aria-label="Dismiss key expiry reminder"
+          title="Dismiss this reminder"
+          className="size-11 text-muted-foreground transition-colors hover:text-foreground sm:size-8"
+        >
+          <X aria-hidden="true" className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function PgpApp() {
   // Lazy initializers are safe here: page.tsx renders this component with
   // ssr:false, so localStorage is always available on first render.
@@ -87,6 +180,43 @@ export default function PgpApp() {
   });
   const [configOpen, setConfigOpen] = useState(false);
   const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
+  // Own-key expiry banner dismissal (additive): keyed to
+  // "<fingerprint>:<status>" so a different key — or the same key crossing
+  // from "expiring" into "expired" — re-arms the reminder. In-memory only:
+  // a reload shows the reminder again, which is the safe default for a
+  // crypto key whose freshness matters.
+  const [expiryDismissed, setExpiryDismissed] = useState<string | null>(null);
+  const keyExpiry = privateKey?.info ? getKeyExpiryStatus(privateKey.info.expirationTime) : null;
+  const expiryKey = `${privateKey?.info?.fingerprint}:${keyExpiry?.status ?? ""}`;
+  const showExpiryBanner =
+    (keyExpiry?.status === "expired" || keyExpiry?.status === "expiring") &&
+    expiryDismissed !== expiryKey;
+  // Human timing clause for the banner headline. Expiry timestamps come
+  // back from openpgp.js as Date and from localStorage as an ISO string —
+  // new Date() accepts both; getKeyExpiryStatus already vetted parseability.
+  const expiryDate =
+    keyExpiry && keyExpiry.status !== "none" && privateKey?.info?.expirationTime
+      ? new Date(privateKey.info.expirationTime as Date).toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        })
+      : "";
+  const expiryDaysLeft =
+    keyExpiry?.status === "expiring"
+      ? Math.max(
+          1,
+          Math.ceil(
+            (new Date(privateKey?.info?.expirationTime as Date).getTime() - Date.now()) / 86400000,
+          ),
+        )
+      : 0;
+  const expiryDetail =
+    keyExpiry?.status === "expired"
+      ? `expired on ${expiryDate}`
+      : keyExpiry?.status === "expiring"
+        ? `expires in ${expiryDaysLeft} day${expiryDaysLeft === 1 ? "" : "s"} (${expiryDate})`
+        : "";
   // App preferences (compression + editor style). Owned here so the
   // ConfigureModal and the tabs stay in sync without a page reload.
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -244,6 +374,17 @@ export default function PgpApp() {
       />
 
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+        {showExpiryBanner && privateKey && keyExpiry && (
+          <div className="mb-4">
+            <OwnKeyExpiryBanner
+              label={privateKey.label}
+              status={keyExpiry.status as "expired" | "expiring"}
+              detail={expiryDetail}
+              onOpenSettings={() => setConfigOpen(true)}
+              onDismiss={() => setExpiryDismissed(expiryKey)}
+            />
+          </div>
+        )}
         <Tabs value={tab} onChange={setTab} />
 
         {/* All four panels stay MOUNTED for the whole session; inactive ones

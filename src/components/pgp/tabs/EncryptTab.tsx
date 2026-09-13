@@ -225,6 +225,15 @@ export function EncryptTab({
       );
       return;
     }
+    // Recipient validation BEFORE the passphrase prompt (R10): openpgp would
+    // surface this as a raw "no encryption keys" error mid-flight — catch it
+    // early with actionable guidance instead.
+    if (recipients.length === 0 && !includeSelf) {
+      setError(
+        'No recipients — add at least one public key, or tick "Include me" so you can still decrypt what you send.',
+      );
+      return;
+    }
 
     setBusy(true);
     try {
@@ -299,6 +308,18 @@ export function EncryptTab({
       detectedBlock === "publickey" ||
       detectedBlock === "privatekey") &&
     hintDismissedFor !== plaintext;
+
+  // Approximate input size for the output-block savings stat (R10): the
+  // message bytes plus each attachment's original size — the same numbers
+  // the envelope wire format wraps. Armor is ASCII so the output's string
+  // length ≈ byte length; the comparison is an honest "did compression do
+  // anything" signal, not an exact accounting (markers/base64 framing add
+  // a small fixed overhead on the input side too).
+  const inputBytes = useMemo(
+    () =>
+      new TextEncoder().encode(plaintext).length + attachments.reduce((sum, a) => sum + a.size, 0),
+    [plaintext, attachments],
+  );
 
   return (
     <section
@@ -440,6 +461,7 @@ export function EncryptTab({
           // detail the user should never have to look at.
           preview={plaintext}
           operation="encrypt"
+          inputBytes={inputBytes}
           nukeLabel="Nuke plaintext"
           onNuke={() => {
             setPlaintext("");

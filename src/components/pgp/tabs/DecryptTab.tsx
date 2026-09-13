@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Download, Loader2, Lock, LockKeyholeOpen } from "lucide-react";
+import { Download, Loader2, Lock, LockKeyholeOpen, LockOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +28,7 @@ import { PROXIES } from "@/components/pgp/contracts";
 import {
   decryptAndAutoVerify,
   describeEncryptedMessage,
+  listPrivateKeyIds,
   type EncryptedMessageMeta,
 } from "@/lib/pgp/pgp";
 import { parseDecryptedPlaintext, type EnvelopeFile } from "@/lib/pgp/envelope";
@@ -98,6 +99,35 @@ export function DecryptTab({
     }
   }
   const messageMeta = metaState.for === armored ? metaState.meta : null;
+
+  // "Encrypted to me" pre-check (R10): collect every key ID of the user's
+  // own key (primary + subkeys — the PKESK headers carry the encryption
+  // SUBKEY's id, so the primary id alone never matches a modern key).
+  // Reads the armored private key WITHOUT decrypting it; recomputed only
+  // when the configured key changes. Best-effort: parse failure → empty
+  // list → the chip simply never shows.
+  const ownArmored = privateKey?.encryptedArmored ?? null;
+  const [ownKeyIds, setOwnKeyIds] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!ownArmored) {
+      setOwnKeyIds([]);
+      return;
+    }
+    void listPrivateKeyIds(ownArmored).then((ids) => {
+      if (!cancelled) setOwnKeyIds(ids ?? []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ownArmored]);
+  // True when at least one PKESK recipient id is one of ours — shown as a
+  // quiet emerald chip so the user knows decryption will work BEFORE the
+  // passphrase prompt appears.
+  const includesMine =
+    messageMeta !== null &&
+    ownKeyIds.length > 0 &&
+    messageMeta.recipientKeyIDs.some((id) => ownKeyIds.includes(id));
 
   const runDecrypt = useCallback(
     async (input: string, myRunId: number) => {
@@ -232,6 +262,22 @@ export function DecryptTab({
               {messageMeta.publicKeyAlgorithms.length > 0 && (
                 <span> · {messageMeta.publicKeyAlgorithms.join(", ")}</span>
               )}
+              {/* "Yours included" chip (R10): one of the PKESK recipient ids
+                  matches this key — quiet emerald, same pill family as the
+                  signer badges' "verified" tint. title + sr-only text keep
+                  the meaning available to screen readers. */}
+              {includesMine && (
+                <span
+                  className="ml-0.5 inline-flex items-center gap-1 rounded-full border border-emerald-300/70 bg-emerald-50 px-1.5 py-px text-[10px] font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  title="One of the recipient keys matches your configured key — decryption should succeed"
+                >
+                  <LockOpen aria-hidden="true" className="size-3" />
+                  yours included
+                  <span className="sr-only">
+                    One of the recipient keys matches your configured key
+                  </span>
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -284,6 +330,12 @@ export function DecryptTab({
           {/* result-enter: one-time success ring when the panel first
               appears; reduced-motion gated in globals.css. */}
           <div className="result-enter">
+            {/* R10: live-region cue mirroring OutputBlock's — the visual
+                labels here are decorative/muted, so announce completion. */}
+            <span role="status" className="sr-only">
+              Message decrypted
+              {output.signatures.length > 0 ? ", signature checked" : ""}
+            </span>
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-2">
                 <span

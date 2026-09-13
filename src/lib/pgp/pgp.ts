@@ -1116,6 +1116,12 @@ export interface EncryptedMessageMeta {
   /** Unique humanized public-key algorithm names across those packets, in
    *  first-appearance order (e.g. ["ECDH"] or ["ECDH", "RSA"]). */
   publicKeyAlgorithms: string[];
+  /** Recipient key IDs from the PKESK packet headers (uppercase hex) —
+   *  typically SUBKEY ids, since the encryption-capable key of a modern
+   *  key pair is its ECDH/RSA subkey. Callers match these against the full
+   *  id list of their own key (listPrivateKeyIds) to detect "encrypted to
+   *  me" BEFORE any passphrase is requested. */
+  recipientKeyIDs: string[];
 }
 
 /**
@@ -1141,15 +1147,48 @@ export async function describeEncryptedMessage(
     const pkesks = msg.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
     if (pkesks.length === 0) return null;
     const publicKeyAlgorithms: string[] = [];
+    const recipientKeyIDs: string[] = [];
     for (const pkesk of pkesks) {
       const raw = (pkesk as { publicKeyAlgorithm?: unknown }).publicKeyAlgorithm;
-      if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-      const label = describePkeskAlgorithm(raw);
-      if (!publicKeyAlgorithms.includes(label)) publicKeyAlgorithms.push(label);
+      if (typeof raw === "number" && Number.isFinite(raw)) {
+        const label = describePkeskAlgorithm(raw);
+        if (!publicKeyAlgorithms.includes(label)) publicKeyAlgorithms.push(label);
+      }
+      // Recipient key ID (uppercase hex). openpgp 6.3.1 exposes it as
+      // `publicKeyID` (a KeyID with .toHex()); guarded so a future shape
+      // change degrades to an empty list instead of throwing.
+      const id = (pkesk as { publicKeyID?: { toHex?: () => string } }).publicKeyID;
+      if (typeof id?.toHex === "function") {
+        const hex = id.toHex().toUpperCase();
+        if (!recipientKeyIDs.includes(hex)) recipientKeyIDs.push(hex);
+      }
     }
-    return { recipientKeyCount: pkesks.length, publicKeyAlgorithms };
+    return { recipientKeyCount: pkesks.length, publicKeyAlgorithms, recipientKeyIDs };
   } catch {
     // Not an encrypted message / malformed — metadata is best-effort only.
+    return null;
+  }
+}
+
+/**
+ * List every key ID (primary + subkeys, uppercase hex) of an armored PRIVATE
+ * key. Reads the key WITHOUT decrypting it — no passphrase, no secret
+ * material touches the result. Used by the Decrypt tab to detect "this
+ * message was encrypted to one of my keys" from the PKESK headers alone
+ * (the PKESK carries the encryption SUBKEY's id, so the primary id alone is
+ * not enough to match).
+ *
+ * Returns null (never throws) when the armored input cannot be parsed.
+ */
+export async function listPrivateKeyIds(armored: string): Promise<string[] | null> {
+  try {
+    const key = await readKey(armored);
+    const ids = key
+      .getKeys()
+      .map((k) => k.getKeyID().toHex().toUpperCase())
+      .filter((hex) => /^[0-9A-F]{16}$/.test(hex));
+    return [...new Set(ids)];
+  } catch {
     return null;
   }
 }

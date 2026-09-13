@@ -435,6 +435,7 @@ export function OutputBlock({
   signers,
   verificationResult,
   operation,
+  inputBytes,
 }: {
   title: string;
   output: string;
@@ -456,6 +457,10 @@ export function OutputBlock({
   /** Operation tag used for the ZIP filename + metadata (e.g. "encrypt",
    *  "decrypt", "sign-cleartext"). Defaults to "output". */
   operation?: string;
+  /** Approximate INPUT byte size (message + attachments). When the armored
+   *  output is smaller, the stats line gains a quiet "N% smaller" savings
+   *  marker — an honest at-a-glance signal that compression did work. */
+  inputBytes?: number;
 }) {
   const [showRaw, setShowRaw] = useState(false);
   const [nuked, setNuked] = useState(false);
@@ -483,6 +488,14 @@ export function OutputBlock({
             each run, so re-runs replay it; showRaw toggles do not remount
             this wrapper). Reduced-motion gated in globals.css. */}
       <div className="result-enter">
+        {/* R10: screen-reader announcement when the output first appears —
+            the visual section header is aria-hidden, so live-region text is
+            the only reliable cue that the operation finished. */}
+        {output && (
+          <span role="status" className="sr-only">
+            {title} ready
+          </span>
+        )}
         <div className="mb-1 flex items-center justify-between gap-2">
           <span className="flex items-center gap-2">
             {statusIcon}
@@ -508,6 +521,19 @@ export function OutputBlock({
               >
                 {output.split("\n").length.toLocaleString()} lines ·{" "}
                 {(output.length / 1024).toFixed(1)} KB
+                {/* Savings marker (R10): only when the caller reports the
+                    input size and the armored output actually came out
+                    smaller (small messages with per-recipient overhead stay
+                    silent instead of showing a confusing negative). */}
+                {inputBytes !== undefined && output.length < inputBytes && (
+                  <span
+                    className="font-medium text-emerald-600 dark:text-emerald-400"
+                    title="Armored output is smaller than the input — compression did the work"
+                  >
+                    {" "}
+                    · {Math.max(1, Math.round((1 - output.length / inputBytes) * 100))}% smaller
+                  </span>
+                )}
               </span>
             )}
           </span>

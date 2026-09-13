@@ -29,7 +29,7 @@ const SHORTCUTS: { keys: string; description: string }[] = [
 	{ keys: "Alt+3", description: "Sign" },
 	{ keys: "Alt+4", description: "Verify" },
 	{ keys: "Ctrl+Enter", description: "Run the tab's action (encrypt / sign / verify)" },
-	{ keys: "Ctrl+,", description: "Open key settings" },
+	{ keys: "Ctrl+,", description: "Open Settings" },
 ];
 
 export function ShortcutsDialog() {

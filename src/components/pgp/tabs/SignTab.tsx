@@ -16,7 +16,7 @@ export function SignTab({
 	requestDecryptedKey,
 }: {
 	privateKey: PrivateKeyConfig | null;
-	requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
+	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [detached, setDetached] = useState(false);
@@ -39,7 +39,7 @@ export function SignTab({
 		try {
 			// Request the decrypted key — shows passphrase prompt.
 			// The key exists only in this local variable and is cleared after.
-			const decryptedKey = await requestDecryptedKey();
+			const { key: decryptedKey } = await requestDecryptedKey();
 
 			// Pass the PrivateKey object directly to avoid re-armoring +
 			// re-parsing, which can lose key material for Keybase P3SKB keys.

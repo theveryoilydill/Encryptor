@@ -34,6 +34,14 @@ export interface AppSettings {
 	 *  pre-R9 behavior: cache lives until tab close / manual forget). The
 	 *  cache itself stays memory-only either way. */
 	autoLockMinutes: AutoLockMinutes;
+	/** Sign every encrypted message with the configured private key
+	 *  (default). When off, the Encrypt tab produces an encrypted-only
+	 *  message and no longer requires a configured key. */
+	autoSign: boolean;
+	/** When on AND the configured key carries a quantum-seal (ML-KEM-768)
+	 *  key, the Encrypt tab also produces a PQ-sealed copy of the armored
+	 *  output — defense in depth against harvest-now-decrypt-later. */
+	pqSealedCopy: boolean;
 }
 
 /** Session passphrase cache auto-lock choices (minutes). */
@@ -47,6 +55,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	// Auto-lock the (opt-in) session passphrase cache after 15 idle minutes —
 	// a memory-only cache that lives forever is the weaker default.
 	autoLockMinutes: 15,
+	// Signing has been part of every encrypt since the app shipped — keep it.
+	autoSign: true,
+	// Quantum-sealed copy is opt-in (it adds a second output artifact).
+	pqSealedCopy: false,
 };
 
 /** Human labels + the openpgp config value for each compression level. */
@@ -94,6 +106,12 @@ function coerceSettings(raw: unknown): AppSettings {
 			([0, 5, 15, 30] as number[]).includes(r.autoLockMinutes)
 		) {
 			out.autoLockMinutes = r.autoLockMinutes as AutoLockMinutes;
+		}
+		if (typeof r.autoSign === "boolean") {
+			out.autoSign = r.autoSign;
+		}
+		if (typeof r.pqSealedCopy === "boolean") {
+			out.pqSealedCopy = r.pqSealedCopy;
 		}
 	}
 	return out;

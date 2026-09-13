@@ -4,17 +4,20 @@ import { useCallback, useMemo, useState } from "react";
 import { TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { RecipientPicker } from "@/components/pgp/RecipientPicker";
 import {
 	AttachmentList,
+	CopyButton,
+	DownloadButton,
 	ErrorBanner,
 	InputSizeCounter,
 	OutputBlock,
 } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
-import { encryptAndSign } from "@/lib/pgp/pgp";
+import { encryptAndSign, encryptMessage } from "@/lib/pgp/pgp";
+import { sealForConfig } from "@/lib/pgp/pq";
 import {
 	buildPlaintextForEncryption,
 	formatFileSize,
@@ -40,7 +43,7 @@ export function EncryptTab({
 	setRecipients: (updater: (prev: Recipient[]) => Recipient[]) => void;
 	includeSelf: boolean;
 	onIncludeSelfChange: (v: boolean) => void;
-	requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
+	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 	/** App preferences (compression + editor style) — owned by PgpApp so a
 	 *  settings change re-renders the open tab immediately. */
 	settings: AppSettings;
@@ -48,6 +51,10 @@ export function EncryptTab({
 	const [plaintext, setPlaintext] = useState("");
 	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
 	const [output, setOutput] = useState("");
+	// Quantum-sealed copy of the LAST output (settings.pqSealedCopy + a key
+	// with a quantum-seal pair): an ML-KEM-768 outer layer only the owner
+	// can open. Empty string = no sealed copy for the current output.
+	const [sealedCopy, setSealedCopy] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	// Drag & drop depth counter (avoids flicker when crossing child elements).
@@ -214,20 +221,25 @@ export function EncryptTab({
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
 		setOutput("");
+		setSealedCopy("");
 		if (!plaintext.trim() && attachments.length === 0) {
 			setError("Enter a message to encrypt, or attach a file.");
 			return;
 		}
-		if (!privateKey) {
+		const signing = settings.autoSign;
+		const needsOwnKey = signing || includeSelf;
+		if (needsOwnKey && !privateKey) {
 			setError(
-				"Configure your private key first (top-right button) to sign the encrypted message.",
+				signing
+					? "Auto sign is on — configure your private key (top-right button) or turn signing off in Settings to encrypt without signing."
+					: '"Include me" needs your configured key — configure it (top-right button) or untick "Include me".',
 			);
 			return;
 		}
 		// Recipient validation BEFORE the passphrase prompt (R10): openpgp would
 		// surface this as a raw "no encryption keys" error mid-flight — catch it
 		// early with actionable guidance instead.
-		if (recipients.length === 0 && !includeSelf) {
+		if (recipients.length === 0 && !(includeSelf && privateKey)) {
 			setError(
 				'No recipients — add at least one public key, or tick "Include me" so you can still decrypt what you send.',
 			);
@@ -236,15 +248,19 @@ export function EncryptTab({
 
 		setBusy(true);
 		try {
-			// Request the decrypted key — this shows the passphrase prompt.
-			// The decrypted key exists only in this local variable and is
-			// cleared when the function returns.
-			const decryptedKey = await requestDecryptedKey();
+			// Request the decrypted key only when a signature or the self-copy
+			// actually needs it (auto sign off + no include-me ⇒ no passphrase
+			// prompt at all). The decrypted key exists only in this local
+			// variable and is cleared when the function returns.
+			let decryptedKey: OpenPGP.PrivateKey | null = null;
+			if (needsOwnKey) {
+				decryptedKey = (await requestDecryptedKey()).key;
+			}
 
 			// Build the recipient key list. If "include me" is checked, derive
 			// the public key from the decrypted private key.
 			const recipientKeys: string[] = recipients.map((r) => r.armored);
-			if (includeSelf) {
+			if (includeSelf && decryptedKey) {
 				try {
 					const pubArmored = decryptedKey.toPublic().armor();
 					recipientKeys.push(pubArmored);
@@ -255,18 +271,46 @@ export function EncryptTab({
 
 			// Wrap plaintext + attachments in the envelope wire format.
 			const plaintextForEncryption = buildPlaintextForEncryption(plaintext, attachments);
+			const compression = settings.compression === "off" ? "uncompressed" : settings.compression;
 
-			// Pass the PrivateKey object directly to avoid re-armoring +
-			// re-parsing, which can lose key material for Keybase P3SKB keys.
-			const armored = await encryptAndSign({
-				plaintext: plaintextForEncryption,
-				recipientPublicKeys: recipientKeys,
-				signerPrivateKey: decryptedKey,
-				// User preference: compress by default, at maximum supported
-				// compression; "off" maps to the explicit uncompressed preference.
-				compression: settings.compression === "off" ? "uncompressed" : settings.compression,
-			});
+			let armored: string;
+			if (signing && decryptedKey) {
+				// Pass the PrivateKey object directly to avoid re-armoring +
+				// re-parsing, which can lose key material for Keybase P3SKB keys.
+				armored = await encryptAndSign({
+					plaintext: plaintextForEncryption,
+					recipientPublicKeys: recipientKeys,
+					signerPrivateKey: decryptedKey,
+					// User preference: compress by default, at maximum supported
+					// compression; "off" maps to the explicit uncompressed preference.
+					compression,
+				});
+			} else {
+				armored = await encryptMessage({
+					plaintext: plaintextForEncryption,
+					recipientPublicKeys: recipientKeys,
+					compression,
+				});
+			}
+
+			// Quantum-sealed copy (opt-in): an ML-KEM-768 outer layer over the
+			// armored output, sealed to the configured key's quantum-seal
+			// public half. Needs no secret — sealing is passphrase-free.
+			if (settings.pqSealedCopy && privateKey?.pq) {
+				try {
+					setSealedCopy(await sealForConfig(armored, privateKey.pq, privateKey.info.fingerprint));
+				} catch {
+					// The classical output stays usable even if the PQ layer fails.
+				}
+			}
 			setOutput(armored);
+
+			// The user can always decrypt their own copy (Include me) — so the
+			// plaintext is deleted from the composer as soon as the ciphertext
+			// exists. Only the output remains in memory.
+			setPlaintext("");
+			setAttachments([]);
+			setHintDismissedFor(null);
 		} catch (e) {
 			const msg = (e as Error).message ?? String(e);
 			// Expired-key failures surface as openpgp internals — translate to
@@ -292,7 +336,9 @@ export function EncryptTab({
 		privateKey,
 		includeSelf,
 		requestDecryptedKey,
+		settings.autoSign,
 		settings.compression,
+		settings.pqSealedCopy,
 	]);
 
 	// Cheap substring detection on the MESSAGE textarea, computed during render
@@ -372,16 +418,7 @@ export function EncryptTab({
 				onIncludeSelfChange={onIncludeSelfChange}
 			/>
 
-			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
-				<div className="mb-1.5 flex items-center gap-2">
-					<span
-						aria-hidden="true"
-						className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
-					/>
-					<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-						Message
-					</Label>
-				</div>
+			<div className="rounded-xl">
 				<MessageEditor
 					value={plaintext}
 					onChange={setPlaintext}
@@ -446,33 +483,65 @@ export function EncryptTab({
 					disabled={busy}
 					className="bg-[#0055dc] text-white hover:bg-[#0046b8] transition-colors duration-150 press-effect"
 				>
-					{busy ? "Encrypting…" : output ? "Re-encrypt & sign" : "Encrypt & sign"}
+					{busy
+						? "Encrypting…"
+						: output
+							? settings.autoSign
+								? "Encrypt & sign again"
+								: "Encrypt again"
+							: settings.autoSign
+								? "Encrypt & sign"
+								: "Encrypt"}
 				</Button>
 			</div>
 
 			{output && (
 				<OutputBlock
-					title="Encrypted + signed message"
+					title={settings.autoSign ? "Encrypted + signed message" : "Encrypted message"}
 					output={output}
-					files={attachments}
-					// Preview the MESSAGE (with inline images resolved against the
-					// attachments) — the envelope wire format is an implementation
-					// detail the user should never have to look at.
-					preview={plaintext}
+					files={[]}
+					// The plaintext was deleted from the composer on success —
+					// only the ciphertext remains in memory, so there is no
+					// preview and nothing to nuke. "Show raw text" IS the view.
 					operation="encrypt"
 					inputBytes={inputBytes}
-					nukeLabel="Nuke plaintext"
-					onNuke={() => {
-						setPlaintext("");
-						setAttachments([]);
-					}}
 					onReset={() => {
 						setOutput("");
-						setPlaintext("");
-						setAttachments([]);
+						setSealedCopy("");
 						setError(null);
 					}}
 				/>
+			)}
+
+			{/* Quantum-sealed copy (opt-in): only produced when the key has a
+            quantum-seal pair. Shown as a secondary output row with its own
+            copy/download actions — it is an archive artifact, not the thing
+            you send. */}
+			{sealedCopy && (
+				<section className="animate-fade-up space-y-2 rounded-xl border border-violet-300/60 bg-violet-50/60 p-4 shadow-sm dark:border-violet-900/50 dark:bg-violet-950/20">
+					<div className="flex flex-wrap items-center justify-between gap-2">
+						<div className="min-w-0">
+							<p className="text-xs font-medium text-violet-900 dark:text-violet-300">
+								Quantum-sealed copy (ML-KEM-768)
+							</p>
+							<p className="mt-0.5 text-[11px] text-muted-foreground">
+								Post-quantum outer layer for your archive — even a future quantum computer
+								can&apos;t open it without this device&apos;s key + passphrase.
+							</p>
+						</div>
+						<div className="flex shrink-0 gap-2">
+							<CopyButton text={sealedCopy} label="Copy" ariaLabel="Copy quantum-sealed copy" />
+							<DownloadButton text={sealedCopy} title="quantum-sealed copy" />
+						</div>
+					</div>
+					<Textarea
+						readOnly
+						rows={4}
+						value={sealedCopy}
+						className="field-sizing-fixed bg-muted/40 font-mono text-[11px]"
+						aria-label="Quantum-sealed copy"
+					/>
+				</section>
 			)}
 		</section>
 	);

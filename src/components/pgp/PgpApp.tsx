@@ -6,6 +6,7 @@ import {
 	Loader2,
 	Monitor,
 	Moon,
+	Settings,
 	ShieldCheck,
 	Sun,
 	Timer,
@@ -25,6 +26,7 @@ import {
 } from "@/components/pgp/contracts";
 import { ConfigureModal } from "@/components/pgp/ConfigureModal";
 import { PassphrasePrompt } from "@/components/pgp/PassphrasePrompt";
+import { SettingsDialog } from "@/components/pgp/SettingsDialog";
 import { ShortcutsDialog } from "@/components/pgp/ShortcutsDialog";
 import { EncryptTab } from "@/components/pgp/tabs/EncryptTab";
 import { DecryptTab } from "@/components/pgp/tabs/DecryptTab";
@@ -178,6 +180,10 @@ export default function PgpApp() {
 		return null;
 	});
 	const [configOpen, setConfigOpen] = useState(false);
+	// Dedicated settings dialog (round 11 feedback): app preferences no longer
+	// share a dialog with key/auth setup. Ctrl+, opens THIS dialog; the key
+	// dialog stays one click away on the key button.
+	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
 	// Own-key expiry banner dismissal (additive): keyed to
 	// "<fingerprint>:<status>" so a different key — or the same key crossing
@@ -266,7 +272,10 @@ export default function PgpApp() {
 	// is the real enforcement on unlock attempts.
 	const [passphraseCachedUntil, setPassphraseCachedUntil] = useState<number | null>(null);
 
-	const requestDecryptedKey = useCallback((): Promise<OpenPGP.PrivateKey> => {
+	const requestDecryptedKey = useCallback((): Promise<{
+		key: OpenPGP.PrivateKey;
+		passphrase: string | null;
+	}> => {
 		// R9: consult the cache through the freshness gate — a stale entry is
 		// forgotten (inside the gate) and the visible prompt appears instead.
 		if (privateKey?.source !== "keybase" && privateKey?.encryptedArmored && getCachedPassphrase()) {
@@ -279,13 +288,20 @@ export default function PgpApp() {
 					try {
 						const key = await readKey(privateKey!.encryptedArmored!);
 						if (!key.isPrivate()) throw new Error("Stored key is not a private key.");
-						return await unlockPrivateKey(key as OpenPGP.PrivateKey, cached);
+						return {
+							key: await unlockPrivateKey(key as OpenPGP.PrivateKey, cached),
+							passphrase: cached,
+						};
 					} catch {
 						forgetPassphrase();
 						setPassphraseCached(false);
 						setPassphraseCachedUntil(null);
-						return new Promise<OpenPGP.PrivateKey>((resolve, reject) =>
-							setKeyRequest({ resolve, reject }),
+						return new Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>(
+							(resolve, reject) =>
+								setKeyRequest({
+									resolve: (key, passphrase) => resolve({ key, passphrase: passphrase ?? null }),
+									reject,
+								}),
 						);
 					}
 				})();
@@ -295,9 +311,12 @@ export default function PgpApp() {
 			setPassphraseCached(false);
 			setPassphraseCachedUntil(null);
 		}
-		return new Promise((resolve, reject) => {
-			setKeyRequest({ resolve, reject });
-		});
+		return new Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>((resolve, reject) =>
+			setKeyRequest({
+				resolve: (key, passphrase) => resolve({ key, passphrase: passphrase ?? null }),
+				reject,
+			}),
+		);
 	}, [privateKey, settings.autoLockMinutes]);
 
 	const handleForgetCachedPassphrase = useCallback(() => {
@@ -338,12 +357,13 @@ export default function PgpApp() {
 		[passphraseCached],
 	);
 
-	// Alt+1..4 switches tabs; Ctrl/Cmd+, opens the key settings dialog.
+	// Alt+1..4 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
+	// key dialog stays on the header key button.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ",") {
 				e.preventDefault();
-				setConfigOpen(true);
+				setSettingsOpen(true);
 				return;
 			}
 			if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -380,6 +400,30 @@ export default function PgpApp() {
 		warm("/api/keybase/fetchkey?key_id=0000000000000000");
 	}, []);
 
+	// Crypto-library prewarm (round 11 feedback: "load crypto libraries on
+	// startup"): compile the heavy lazily-imported modules while the user is
+	// still reading the page instead of mid-operation — kbpgp (Keybase login
+	// path), the BlockNote editor chunk, the markdown-editor chunk, and the
+	// ML-KEM post-quantum module. Idle-callback so it never competes with
+	// first paint; every import is fire-and-forget.
+	useEffect(() => {
+		const prewarm = () => {
+			void import("@/lib/pgp/keybase-auth").catch(() => {});
+			void import("@/components/pgp/BlockNoteEditor").catch(() => {});
+			void import("@uiw/react-md-editor").catch(() => {});
+			void import("@/lib/pgp/pq").catch(() => {});
+		};
+		const ric =
+			typeof window.requestIdleCallback === "function"
+				? window.requestIdleCallback
+				: (cb: () => void) => window.setTimeout(cb, 200);
+		const id = ric.call(window, prewarm);
+		return () => {
+			if (typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(id as number);
+			else window.clearTimeout(id as number);
+		};
+	}, []);
+
 	const handleSelfTest = useCallback(async () => {
 		const result: SelfTestResult = await runCryptoSelfTest();
 		if (result.ok) {
@@ -406,6 +450,7 @@ export default function PgpApp() {
 
 			<Header
 				onConfigure={() => setConfigOpen(true)}
+				onOpenSettings={() => setSettingsOpen(true)}
 				privateKey={privateKey}
 				passphraseCached={passphraseCached}
 				passphraseCachedUntil={passphraseCachedUntil}
@@ -475,8 +520,7 @@ export default function PgpApp() {
 				open={configOpen}
 				onOpenChange={setConfigOpen}
 				privateKey={privateKey}
-				settings={settings}
-				onSettingsChange={handleSetSettings}
+				requestDecryptedKey={requestDecryptedKey}
 				onSave={(next) => {
 					handleSetPrivateKey(next);
 					setConfigOpen(false);
@@ -487,12 +531,20 @@ export default function PgpApp() {
 				}}
 			/>
 
+			<SettingsDialog
+				open={settingsOpen}
+				onOpenChange={setSettingsOpen}
+				settings={settings}
+				onSettingsChange={handleSetSettings}
+				privateKey={privateKey}
+			/>
+
 			{keyRequest && privateKey && (
 				<PassphrasePrompt
 					config={privateKey}
 					request={{
-						resolve: (key) => {
-							keyRequest.resolve(key);
+						resolve: (key, passphrase) => {
+							keyRequest.resolve(key, passphrase ?? null);
 							setKeyRequest(null);
 						},
 						reject: (err) => {
@@ -519,12 +571,14 @@ export default function PgpApp() {
 
 function Header({
 	onConfigure,
+	onOpenSettings,
 	privateKey,
 	passphraseCached,
 	passphraseCachedUntil,
 	onForgetCachedPassphrase,
 }: {
 	onConfigure: () => void;
+	onOpenSettings: () => void;
 	privateKey: PrivateKeyConfig | null;
 	passphraseCached: boolean;
 	/** Epoch ms deadline for the auto-lock (null/undefined = none armed).
@@ -579,6 +633,18 @@ function Header({
 					)}
 					<ThemeToggle />
 					<ShortcutsDialog />
+					{/* Dedicated settings entry (round 11 feedback): the gear owns app
+              preferences; the key button next to it owns key/auth. */}
+					<Button
+						variant="ghost"
+						size="icon"
+						onClick={onOpenSettings}
+						title="Settings (Ctrl+,)"
+						aria-label="Settings"
+						className="size-11 text-muted-foreground transition-colors hover:text-[#0055dc] press-effect sm:size-8 dark:hover:text-[#5e94ff]"
+					>
+						<Settings aria-hidden className="size-4" />
+					</Button>
 					<Button
 						variant="outline"
 						size="sm"

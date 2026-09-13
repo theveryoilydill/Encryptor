@@ -7,6 +7,7 @@
 import type { AnyKeyInfo } from "@/lib/pgp/pgp";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import type { KeySearchResult } from "@/lib/pgp/keybase";
+import type { QuantumSealConfig } from "@/lib/pgp/pq";
 
 /** Proxied Keybase/keys.openpgp.org endpoints on our own origin. */
 export const PROXIES = {
@@ -41,6 +42,11 @@ export interface PrivateKeyConfig {
 	encryptedArmored?: string;
 	/** Key metadata for display (fingerprint, key ID, algorithm). */
 	info: AnyKeyInfo;
+	/** Optional quantum-seal key (ML-KEM-768). The secret half is stored
+	 *  encrypted under the app passphrase; see lib/pgp/pq.ts. Present when
+	 *  the key was generated in-app or the user enabled the quantum seal
+	 *  from the key dialog. */
+	pq?: QuantumSealConfig;
 }
 
 /** Where the signer's public key was resolved from (drives the source pill
@@ -81,9 +87,12 @@ export interface VerificationResult {
 	signatures: SignatureInfo[];
 }
 
-/** Awaiting resolution of the private key at operation time. */
+/** Awaiting resolution of the private key at operation time. The resolver
+ *  also passes the passphrase that unlocked the key (null when the key came
+ *  from Keybase re-fetch without a passphrase) — the quantum-seal unseal
+ *  path needs it to unwrap the ML-KEM secret. */
 export interface KeyRequestState {
-	resolve: (key: OpenPGP.PrivateKey) => void;
+	resolve: (key: OpenPGP.PrivateKey, passphrase?: string | null) => void;
 	reject: (reason?: Error) => void;
 }
 

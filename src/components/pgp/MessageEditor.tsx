@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTheme } from "next-themes";
 import dynamic from "next/dynamic";
-import MDEditor from "@uiw/react-md-editor";
+import MDEditor, { commands as mdCommands } from "@uiw/react-md-editor";
 import { DEFAULT_INLINE_IMAGE_SCALE, buildInlineImageMarker } from "@/lib/pgp/inline-image";
 import { envelopeFileToDataUrl, type EnvelopeFile } from "@/lib/pgp/envelope";
 import { DecryptedMessageView } from "@/components/pgp/shared";
@@ -37,6 +37,26 @@ const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 	ssr: false,
 	loading: () => <div className="min-h-32 animate-pulse rounded-md bg-muted/40" />,
 });
+
+/** Slim, grouped source-mode toolbar — the @uiw default ships ~20 commands
+ *  (comment, table, image, fullscreen, help, live-preview triad …) that are
+ *  noise for this composer: images belong to the attachment pipeline, and
+ *  the split preview is always visible. Ten essentials, three groups. */
+const VSCODE_COMMANDS = [
+	mdCommands.bold,
+	mdCommands.italic,
+	mdCommands.strikethrough,
+	mdCommands.divider,
+	mdCommands.title,
+	mdCommands.quote,
+	mdCommands.code,
+	mdCommands.divider,
+	mdCommands.unorderedListCommand,
+	mdCommands.orderedListCommand,
+	mdCommands.checkedListCommand,
+	mdCommands.divider,
+	mdCommands.link,
+];
 
 /** Replace every `envelope://filename` image URL in the markdown with the
  *  matching attachment's data URL (resolved against `files`). Used when
@@ -178,36 +198,53 @@ export function MessageEditor({
 	const editorMd = useMemo(() => markersToDataUrls(value, files), [value, files]);
 	const previewMd = editorMd;
 
+	// @uiw/react-md-editor reads its chrome theme from data-color-mode on
+	// the document root (not from a wrapper attribute) — sync it for the
+	// lifetime of the split view, restore the previous value on unmount.
+	useEffect(() => {
+		if (editorKind !== "vscode") return;
+		const root = document.documentElement;
+		const prev = root.getAttribute("data-color-mode");
+		root.setAttribute("data-color-mode", resolvedTheme === "dark" ? "dark" : "light");
+		return () => {
+			if (prev === null) root.removeAttribute("data-color-mode");
+			else root.setAttribute("data-color-mode", prev);
+		};
+	}, [editorKind, resolvedTheme]);
+
 	if (editorKind === "vscode") {
 		return (
 			<div
 				ref={vsWrapRef}
-				data-color-mode={resolvedTheme === "dark" ? "dark" : "light"}
-				className="grid md:grid-cols-2"
+				className="overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20"
 			>
-				<MDEditor
-					value={editorMd}
-					onChange={handleMDEditorChange}
-					preview="edit"
-					textareaProps={{
-						onPaste: handleVSPaste,
-						placeholder,
-						"aria-label": "Message (markdown)",
-					}}
-					height={320}
-					className="min-w-0"
-				/>
-				<div className="min-w-0 border-t border-border bg-card p-4 md:border-l md:border-t-0">
-					<div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-						Preview
+				<div className="grid lg:grid-cols-2">
+					<div className="min-w-0 border-b border-border lg:border-b-0 lg:border-r">
+						<MDEditor
+							value={editorMd}
+							onChange={handleMDEditorChange}
+							preview="edit"
+							commands={VSCODE_COMMANDS}
+							extraCommands={[]}
+							textareaProps={{
+								onPaste: handleVSPaste,
+								placeholder,
+								"aria-label": "Message (markdown)",
+							}}
+							height={480}
+							style={{ background: "transparent" }}
+							className="min-w-0"
+						/>
 					</div>
-					{previewMd.trim() ? (
-						<DecryptedMessageView text={previewMd} files={files} />
-					) : (
-						<p className="text-xs text-muted-foreground">
-							{placeholder ?? "Nothing to preview yet."}
-						</p>
-					)}
+					<div className="h-80 overflow-y-auto bg-background/40 p-4 lg:h-[480px]">
+						{previewMd.trim() ? (
+							<DecryptedMessageView text={previewMd} files={files} />
+						) : (
+							<p className="text-xs text-muted-foreground">
+								{placeholder ?? "Nothing to preview yet."}
+							</p>
+						)}
+					</div>
 				</div>
 			</div>
 		);

@@ -448,6 +448,44 @@ export async function encryptAndSign(opts: EncryptAndSignOptions): Promise<strin
 	return encrypted as string;
 }
 
+/** Encrypt WITHOUT signing (the "auto sign off" preference path): no private
+ *  key or passphrase required — the message is only encrypted to the
+ *  recipients. Shares the compression handling with encryptAndSign. */
+export async function encryptMessage(opts: {
+	plaintext: string;
+	recipientPublicKeys: string[];
+	compression?: "zlib" | "zip" | "uncompressed";
+}): Promise<string> {
+	if (!opts.plaintext) throw new Error("Plaintext is required.");
+	if (!opts.recipientPublicKeys.length)
+		throw new Error("At least one recipient public key is required.");
+
+	const encryptionKeys: openpgp.PublicKey[] = [];
+	for (const arm of opts.recipientPublicKeys) {
+		encryptionKeys.push(await readKey(arm));
+	}
+
+	const message = await openpgp.createMessage({ text: opts.plaintext });
+	const encrypted = await openpgp.encrypt({
+		message,
+		encryptionKeys,
+		...(opts.compression
+			? {
+					config: {
+						preferredCompressionAlgorithm:
+							opts.compression === "zlib"
+								? openpgp.enums.compression.zlib
+								: opts.compression === "zip"
+									? openpgp.enums.compression.zip
+									: openpgp.enums.compression.uncompressed,
+					},
+				}
+			: {}),
+		format: "armored",
+	});
+	return encrypted as string;
+}
+
 export async function decryptAndVerify(
 	opts: DecryptAndVerifyOptions,
 ): Promise<DecryptAndVerifyResult> {

@@ -171,7 +171,10 @@ export default function BlockNoteEditor({
 	}, [editor]);
 
 	return (
-		<div ref={viewRef}>
+		<div
+			ref={viewRef}
+			className="min-h-[320px] overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20 [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed"
+		>
 			<BlockNoteView
 				editor={editor}
 				theme={resolvedTheme === "dark" ? "dark" : "light"}

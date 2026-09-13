@@ -29,6 +29,30 @@ import { readKey, unlockPrivateKey, validateArmoredKey } from "@/lib/pgp/pgp";
 import { cachePassphrase } from "@/lib/pgp/session-passphrase";
 import { PROXIES, type KeyRequestState, type PrivateKeyConfig } from "@/components/pgp/contracts";
 
+/** Session-scoped opt-in for the passphrase cache (sessionStorage). Once the
+ *  user ticks "remember for this session", every later prompt in this tab
+ *  starts ticked too — the choice outlives the prompt component's remounts,
+ *  and the auto-lock preference governs how long the cache lives. Dies with
+ *  the tab, exactly like the cache itself. */
+const REMEMBER_FLAG_KEY = "encryptor.session.rememberPassphrase";
+
+function loadRememberChoice(): boolean {
+	try {
+		return sessionStorage.getItem(REMEMBER_FLAG_KEY) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function storeRememberChoice(remember: boolean): void {
+	try {
+		if (remember) sessionStorage.setItem(REMEMBER_FLAG_KEY, "1");
+		else sessionStorage.removeItem(REMEMBER_FLAG_KEY);
+	} catch {
+		// ignore
+	}
+}
+
 /** Local destructive-tinted error panel (same markup as shared ErrorBanner;
  *  kept local so this file only imports from the pinned allow-list). Text
  *  colors match the shared banner's contrast fix (text-destructive on
@@ -58,25 +82,27 @@ export function PassphrasePrompt({
 	 *  passphrase cache — lets the app show the "remembered" header state. */
 	onPassphraseCached?: () => void;
 }) {
-	const [passphrase, setPassphrase] = useState("");
-	// Additive UX affordance: reveal/hide the passphrase input. Default stays
-	// hidden (type="password"), exactly as before.
-	const [showPassphrase, setShowPassphrase] = useState(false);
-	// Opt-in session cache (memory only, dies with the tab). Keybase passwords
-	// are never cacheable — the Keybase flow re-fetches the key bundle.
-	const [remember, setRemember] = useState(false);
-	const [busy, setBusy] = useState(false);
-	const [stage, setStage] = useState("");
-	const [error, setError] = useState<string | null>(null);
-	// Guard so resolve/reject happen exactly once even if Escape fires both the
-	// input handler and the Radix dismiss handler.
-	const settledRef = useRef(false);
-
 	const isKeybase = config.source === "keybase";
 	const promptLabel = isKeybase ? "Keybase password" : "Passphrase";
 	const promptPlaceholder = isKeybase
 		? "Your Keybase account password"
 		: "Passphrase for the private key";
+	const [passphrase, setPassphrase] = useState("");
+	// Additive UX affordance: reveal/hide the passphrase input. Default stays
+	// hidden (type="password"), exactly as before.
+	const [showPassphrase, setShowPassphrase] = useState(false);
+	// Opt-in session cache (memory only, dies with the tab). Keybase passwords
+	// are never cacheable — the Keybase flow re-fetches the key bundle. The
+	// opt-in itself persists across prompts within the session, so ticking
+	// "remember" once covers every later operation (previously each new
+	// prompt reset the checkbox to unchecked, which read as "it forgets my
+	// passphrase after every operation").
+	const [remember, setRemember] = useState(isKeybase ? false : loadRememberChoice);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	// Guard so resolve/reject happen exactly once even if Escape fires both the
+	// input handler and the Radix dismiss handler.
+	const settledRef = useRef(false);
 
 	const handleCancel = useCallback(() => {
 		if (settledRef.current) return;
@@ -94,18 +120,16 @@ export function PassphrasePrompt({
 		setBusy(true);
 		try {
 			if (isKeybase) {
-				setStage("Loading crypto libraries…");
+				// Heavy synchronous work (scrypt + PDPKA) runs inside
+				// loginWithPassword; the 50ms yields below only let THIS
+				// label paint. The startup prewarm (PgpApp) removes the
+				// module-compile chunk from this window.
 				const { loginWithPassword } = await import("@/lib/pgp/keybase-auth");
-				setStage("Fetching salt + deriving keys…");
 				await new Promise((r) => setTimeout(r, 50));
-				setStage("Generating PDPKA signatures…");
-				await new Promise((r) => setTimeout(r, 50));
-				setStage("Logging in to Keybase…");
 				const { privateKey: decrypted } = await loginWithPassword(config.username!, passphrase, {
 					getsaltUrl: PROXIES.getsaltProxy,
 					loginUrl: PROXIES.loginProxy,
 				});
-				setStage("Decrypting private key…");
 
 				const armored = decrypted.armor();
 				const info = await validateArmoredKey(armored);
@@ -117,12 +141,11 @@ export function PassphrasePrompt({
 					}
 				}
 				settledRef.current = true;
-				request.resolve(decrypted);
+				request.resolve(decrypted, null);
 			} else {
 				if (!config.encryptedArmored) {
 					throw new Error("No encrypted key found in configuration.");
 				}
-				setStage("Decrypting private key…");
 				const key = await readKey(config.encryptedArmored);
 				if (!key.isPrivate()) {
 					throw new Error("Stored key is not a private key.");
@@ -133,13 +156,12 @@ export function PassphrasePrompt({
 					onPassphraseCached?.();
 				}
 				settledRef.current = true;
-				request.resolve(decrypted);
+				request.resolve(decrypted, passphrase);
 			}
 		} catch (e) {
 			setError((e as Error).message);
 		} finally {
 			setBusy(false);
-			setStage("");
 		}
 	}, [
 		passphrase,
@@ -219,10 +241,13 @@ export function PassphrasePrompt({
 							</Button>
 						</div>
 						<FormError message={error} />
-						{busy && stage && (
+						{busy && (
 							<p className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-								<Loader2 aria-hidden="true" className="size-3 animate-spin" />
-								{stage}
+								<Loader2
+									aria-hidden="true"
+									className="size-3 animate-spin motion-reduce:animate-none"
+								/>
+								{isKeybase ? "Signing in…" : "Decrypting key…"}
 							</p>
 						)}
 						{!isKeybase && (
@@ -230,7 +255,11 @@ export function PassphrasePrompt({
 								<Checkbox
 									id="remember-passphrase-session"
 									checked={remember}
-									onCheckedChange={(v) => setRemember(v === true)}
+									onCheckedChange={(v) => {
+										const next = v === true;
+										setRemember(next);
+										storeRememberChoice(next);
+									}}
 									className="mt-0.5 size-3.5"
 									aria-label="Remember passphrase for this session"
 								/>
@@ -240,7 +269,7 @@ export function PassphrasePrompt({
 								>
 									Remember for this session{" "}
 									<span className="text-muted-foreground">
-										(browser memory only — gone when you close the tab)
+										(browser memory only — auto-locks per settings)
 									</span>
 								</label>
 							</div>

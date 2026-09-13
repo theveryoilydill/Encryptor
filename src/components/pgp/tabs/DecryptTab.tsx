@@ -32,6 +32,12 @@ import {
 	type EncryptedMessageMeta,
 } from "@/lib/pgp/pgp";
 import { parseDecryptedPlaintext, type EnvelopeFile } from "@/lib/pgp/envelope";
+import {
+	isQuantumSealed,
+	parseSealedArmor,
+	unwrapSealSecret,
+	unsealWithSecretKey,
+} from "@/lib/pgp/pq";
 import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
@@ -44,7 +50,7 @@ export function DecryptTab({
 	requestDecryptedKey,
 }: {
 	privateKey: PrivateKeyConfig | null;
-	requestDecryptedKey: () => Promise<OpenPGP.PrivateKey>;
+	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 }) {
 	const [armored, setArmored] = useState("");
 	const [output, setOutput] = useState<{
@@ -141,15 +147,37 @@ export function DecryptTab({
 			setBusy(true);
 			try {
 				// Request the decrypted key — shows the passphrase prompt. The key
-				// exists only in this local variable and is cleared after.
-				const decryptedKey = await requestDecryptedKey();
+				// exists only in this local variable and is cleared after. The
+				// passphrase rides along for the quantum-seal unseal path.
+				const { key: decryptedKey, passphrase } = await requestDecryptedKey();
 				if (runIdRef.current !== myRunId) return; // superseded mid-prompt
+
+				// Quantum-sealed input: strip the ML-KEM-768 outer layer first.
+				// Needs the SAME passphrase (it unwraps the ML-KEM secret from the
+				// key config) — a wrong passphrase surfaces as a friendly error.
+				let classicalInput = input;
+				if (isQuantumSealed(input)) {
+					if (!privateKey?.pq) {
+						throw new Error(
+							"This message has a quantum-sealed copy, but your configured key has no quantum-seal key. Open it with the key that created it.",
+						);
+					}
+					if (!passphrase) {
+						throw new Error(
+							"The quantum-sealed layer needs your passphrase (the one that protects this key), not just the key — enter it in the prompt and try again.",
+						);
+					}
+					const sealSecret = await unwrapSealSecret(privateKey.pq, passphrase);
+					if (runIdRef.current !== myRunId) return;
+					classicalInput = await unsealWithSecretKey(parseSealedArmor(input), sealSecret);
+					if (runIdRef.current !== myRunId) return;
+				}
 
 				// Pass the PrivateKey object directly to avoid re-armoring +
 				// re-parsing, which can lose key material for Keybase P3SKB keys.
 				const result = await decryptAndAutoVerify(
 					{
-						armoredMessage: input,
+						armoredMessage: classicalInput,
 						decryptionPrivateKey: decryptedKey,
 						verificationPublicKeys: [],
 					},
@@ -190,7 +218,9 @@ export function DecryptTab({
 
 	// Auto-decrypt: when the text settles (debounce) and parses as an
 	// encrypted message, decrypt it. Replaces the old Decrypt/Re-decrypt
-	// button entirely.
+	// button entirely. Quantum-sealed blocks (BEGIN ENCRYPTOR
+	// QUANTUM-SEALED) trigger the same flow — runDecrypt strips the ML-KEM
+	// layer before the classical decrypt.
 	useEffect(() => {
 		if (!armored.trim()) {
 			runIdRef.current += 1; // invalidate any in-flight run
@@ -199,7 +229,7 @@ export function DecryptTab({
 			setError(null);
 			return;
 		}
-		if (detectPgpBlock(armored) !== "encrypted") {
+		if (detectPgpBlock(armored) !== "encrypted" && !isQuantumSealed(armored)) {
 			// Not a (complete) encrypted message yet — wait for more input.
 			runIdRef.current += 1;
 			setBusy(false);

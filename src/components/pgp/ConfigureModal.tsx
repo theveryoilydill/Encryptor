@@ -20,10 +20,12 @@ import {
 	ChevronDown,
 	Dice5,
 	Download,
+	History,
 	Loader2,
 	QrCode,
 	ShieldHalf,
 	TriangleAlert,
+	X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -66,6 +68,9 @@ export function ConfigureModal({
 	open,
 	onOpenChange,
 	privateKey,
+	keyHistory,
+	onRestoreKey,
+	onForgetKey,
 	onSave,
 	onClear,
 	requestDecryptedKey,
@@ -73,6 +78,11 @@ export function ConfigureModal({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	privateKey: PrivateKeyConfig | null;
+	/** Previously configured keys (newest first) — one click switches back
+	 *  without a fresh Keybase login / armor re-paste. */
+	keyHistory: PrivateKeyConfig[];
+	onRestoreKey: (cfg: PrivateKeyConfig) => void;
+	onForgetKey: (fingerprint: string) => void;
 	onSave: (cfg: PrivateKeyConfig) => void;
 	onClear: () => void;
 	/** On-demand key unlock — used ONLY by the "enable quantum seal" flow,
@@ -507,6 +517,73 @@ export function ConfigureModal({
 						</div>
 					)}
 
+					{keyHistory.length > 0 && (
+						<div className="mb-4">
+							<p className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+								<History aria-hidden className="size-4 text-muted-foreground" />
+								Previously configured keys
+							</p>
+							<p className="mb-2 text-[11px] leading-snug text-muted-foreground">
+								Switch back with one click — no re-login, no re-pasting. Passphrases are still asked
+								when needed and are never stored.
+							</p>
+							<ul className="space-y-1.5">
+								{keyHistory.map((cfg) => {
+									const fp = cfg.info?.fingerprint;
+									return (
+										<li
+											key={fp ?? cfg.label}
+											className="flex items-center justify-between gap-2 rounded-lg border border-border px-2.5 py-2"
+										>
+											<div className="min-w-0">
+												<div className="flex items-center gap-1.5">
+													<span
+														className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+															cfg.source === "keybase"
+																? "bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+																: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+														}`}
+													>
+														{cfg.source === "keybase" ? "Keybase" : cfg.source}
+													</span>
+													<span className="truncate text-xs font-medium">{cfg.label}</span>
+												</div>
+												{fp && (
+													<div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+														{formatFingerprint(fp)}
+													</div>
+												)}
+											</div>
+											<div className="flex shrink-0 items-center gap-1">
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													onClick={() => onRestoreKey(cfg)}
+													className="h-11 gap-1 px-3 text-xs transition-colors sm:h-8"
+													title="Make this the active key"
+												>
+													Use this key
+												</Button>
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													onClick={() => fp && onForgetKey(fp)}
+													aria-label={`Forget ${cfg.label}`}
+													title="Forget this key"
+													className="size-11 text-muted-foreground transition-colors hover:text-foreground sm:size-8"
+												>
+													<X aria-hidden className="size-4" />
+												</Button>
+											</div>
+										</li>
+									);
+								})}
+							</ul>
+						</div>
+					)}
+
 					<KeybaseLoginForm onLoaded={(cfg) => onSave(cfg)} />
 
 					<hr className="my-4 border-border" />
@@ -542,6 +619,9 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 			// kbpgp + keybase-proofs) only when the user actually clicks login.
 			// The startup prewarm (PgpApp) usually has this chunk ready by now.
 			const { loginWithPassword } = await import("@/lib/pgp/keybase-auth");
+			// Same lazily-loaded chunk already exposes the armor helper
+			// (keeps kbpgp/triplesec out of the initial bundle).
+			const { privateKeyToArmored } = await import("@/lib/pgp/keybase-auth");
 
 			// Yield to the browser so the spinner paints before the
 			// synchronous scrypt + PDPKA signing work blocks the main thread.
@@ -558,19 +638,25 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 				);
 			}
 
-			const armored = decrypted.armor();
-			const info = await validateArmoredKey(armored);
+			// Store the key ENCRYPTED under the Keybase password (the password
+			// itself is never persisted). Previously only the username +
+			// metadata were kept, which forced a full network re-login for
+			// EVERY operation and made switching back from a local key to
+			// Keybase painful. With the encrypted armor on board, the config
+			// unlocks locally at operation time — same at-rest security as
+			// manual/generated keys, offline-friendly, and the passphrase
+			// prompt's session cache works too.
+			const armoredEncrypted = await privateKeyToArmored(decrypted, password);
+			const info = await validateArmoredKey(armoredEncrypted);
 			if (!info.ok || !info.info) {
 				throw new Error(info.error ?? "Decrypted key could not be parsed.");
 			}
 
-			// Store ONLY the username + metadata. The decrypted key is NOT stored.
-			// At operation time, the password will be re-requested and the key
-			// re-fetched from Keybase's me.json API.
 			onLoaded({
 				source: "keybase",
 				label: `@${me.username}`,
 				username: me.username,
+				encryptedArmored: armoredEncrypted,
 				info: info.info,
 			});
 		} catch (e) {

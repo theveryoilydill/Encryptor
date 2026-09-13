@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
 import { useTheme } from "next-themes";
 import {
 	Loader2,
@@ -8,6 +8,7 @@ import {
 	Moon,
 	Settings,
 	ShieldCheck,
+	ShieldHalf,
 	Sun,
 	Timer,
 	TriangleAlert,
@@ -33,6 +34,14 @@ import { DecryptTab } from "@/components/pgp/tabs/DecryptTab";
 import { SignTab } from "@/components/pgp/tabs/SignTab";
 import { VerifyTab } from "@/components/pgp/tabs/VerifyTab";
 import { STORAGE_KEYS } from "@/lib/constants";
+import {
+	loadKeyHistory,
+	pushKeyHistory,
+	removeKeyHistory,
+	scrubKeyHistory,
+	type KeyHistory,
+} from "@/lib/pgp/key-history";
+import { generateSealKeyPair, wrapSealSecret } from "@/lib/pgp/pq";
 import { readKey, unlockPrivateKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { runCryptoSelfTest, type SelfTestResult } from "@/lib/pgp/self-test";
@@ -155,6 +164,76 @@ function OwnKeyExpiryBanner({
 	);
 }
 
+/** Post-quantum onboarding banner (one per key until enabled/dismissed):
+ *  one click runs the whole setup — passphrase prompt, ML-KEM-768 pair
+ *  generation, sealed-copies on. Violet = the quantum-seal accent already
+ *  used by the key dialog and Settings. */
+function PostQuantumBanner({
+	label,
+	busy,
+	onEnable,
+	onDismiss,
+}: {
+	/** Configured key display label (quoted in the headline). */
+	label: string;
+	busy: boolean;
+	onEnable: () => void;
+	onDismiss: () => void;
+}) {
+	return (
+		<div
+			role="status"
+			className="animate-fade-up flex flex-col gap-2.5 rounded-xl border border-violet-300/70 bg-violet-50 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:gap-3 dark:border-violet-900/50 dark:bg-violet-950/30"
+		>
+			<span
+				aria-hidden="true"
+				className="grid size-8 shrink-0 place-items-center rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+			>
+				<ShieldHalf className="size-4" />
+			</span>
+			<div className="min-w-0 flex-1">
+				<p className="text-xs font-medium text-violet-900 dark:text-violet-300">
+					Add post-quantum protection to “{label}”
+				</p>
+				<p className="mt-0.5 text-[11px] text-muted-foreground">
+					Classical encryption can be recorded today and broken later by a quantum computer. One
+					click adds an ML-KEM-768 key and seals every archive copy you keep.
+				</p>
+			</div>
+			<div className="flex shrink-0 items-center gap-1.5">
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					onClick={onEnable}
+					disabled={busy}
+					className="h-11 gap-1.5 border-violet-300/70 bg-background/60 px-3 text-xs text-violet-800 transition-colors hover:bg-violet-50 hover:text-violet-900 sm:h-8 dark:border-violet-900/60 dark:bg-background/40 dark:text-violet-300 dark:hover:bg-violet-950/40 dark:hover:text-violet-200"
+				>
+					{busy ? (
+						<>
+							<Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
+							Generating…
+						</>
+					) : (
+						"Enable in one click"
+					)}
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon"
+					onClick={onDismiss}
+					aria-label="Dismiss post-quantum setup reminder"
+					title="Dismiss this reminder"
+					className="size-11 text-muted-foreground transition-colors hover:text-foreground sm:size-8"
+				>
+					<X aria-hidden="true" className="size-4" />
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 export default function PgpApp() {
 	// Lazy initializers are safe here: page.tsx renders this component with
 	// ssr:false, so localStorage is always available on first render.
@@ -179,6 +258,14 @@ export default function PgpApp() {
 		}
 		return null;
 	});
+	// Mirror of the active key for switch-ring bookkeeping: handleSetPrivateKey
+	// must stay dependency-free (it is passed deep into the tree), so the
+	// "previous key" for pushKeyHistory comes from this eager ref instead of a
+	// state closure.
+	const privateKeyRef = useRef<PrivateKeyConfig | null>(privateKey);
+	// Previously configured keys (the "switch back" ring, newest first) —
+	// maintained by handleSetPrivateKey below.
+	const [keyHistory, setKeyHistory] = useState<KeyHistory>(loadKeyHistory);
 	const [configOpen, setConfigOpen] = useState(false);
 	// Dedicated settings dialog (round 11 feedback): app preferences no longer
 	// share a dialog with key/auth setup. Ctrl+, opens THIS dialog; the key
@@ -225,6 +312,23 @@ export default function PgpApp() {
 	// App preferences (compression + editor style). Owned here so the
 	// ConfigureModal and the tabs stay in sync without a page reload.
 	const [settings, setSettings] = useState<AppSettings>(loadSettings);
+	const settingsRef = useRef(settings);
+	settingsRef.current = settings;
+	// Post-quantum onboarding banner: shows once per key (dismissal persisted
+	// per fingerprint) until the key carries an ML-KEM-768 pair.
+	const [pqBannerDismissedFp, setPqBannerDismissedFp] = useState<string | null>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.pqBannerDismissed);
+		} catch {
+			return null;
+		}
+	});
+	const [pqBusy, setPqBusy] = useState(false);
+	const showPqBanner =
+		!!privateKey?.encryptedArmored &&
+		!privateKey?.pq &&
+		pqBannerDismissedFp !== privateKey?.info?.fingerprint;
+
 	// Screen-reader-only tab-change announcement (see live region below).
 	const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
 
@@ -238,13 +342,23 @@ export default function PgpApp() {
 	}, []);
 
 	const handleSetPrivateKey = useCallback((next: PrivateKeyConfig | null) => {
-		setPrivateKey((prev) => {
+		const prev = privateKeyRef.current;
+		privateKeyRef.current = next;
+		setPrivateKey(next);
+		{
 			// The session passphrase cache is scoped to one key: dropping the key or
 			// switching to a different fingerprint must not keep the old secret.
 			const fingerprintChanged = prev && next && prev.info?.fingerprint !== next.info?.fingerprint;
 			if (!next || fingerprintChanged) forgetPassphrase();
-			return next;
-		});
+		}
+		// Switch-ring bookkeeping: the replaced (or cleared) key moves into the
+		// history ring (deduped by fingerprint, newest first, max 4) so the
+		// Your-key dialog can restore it with ONE click — the literal "switch
+		// back" affordance. The newly active key always leaves the ring.
+		const prevFp = prev?.info?.fingerprint;
+		const nextFp = next?.info?.fingerprint;
+		if (prev && prevFp !== nextFp) pushKeyHistory(prev);
+		setKeyHistory(scrubKeyHistory(nextFp));
 		try {
 			if (next) {
 				localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(next));
@@ -278,7 +392,9 @@ export default function PgpApp() {
 	}> => {
 		// R9: consult the cache through the freshness gate — a stale entry is
 		// forgotten (inside the gate) and the visible prompt appears instead.
-		if (privateKey?.source !== "keybase" && privateKey?.encryptedArmored && getCachedPassphrase()) {
+		// (Keybase configs now carry encrypted armor too, so the session cache
+		// and silent unlock work for them exactly like local keys.)
+		if (privateKey?.encryptedArmored && getCachedPassphrase()) {
 			const cached = getCachedPassphraseIfFresh(settings.autoLockMinutes);
 			if (cached) {
 				// Silent unlock attempt with the session-cached passphrase. On any
@@ -377,6 +493,12 @@ export default function PgpApp() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
 
+	// On mount, drop the active key from the history ring (guards duplicates
+	// written by an interrupted session).
+	useEffect(() => {
+		setKeyHistory(scrubKeyHistory(privateKeyRef.current?.info?.fingerprint));
+	}, []);
+
 	// Remember the last-used tab so the next visit reopens on it.
 	useEffect(() => {
 		try {
@@ -424,6 +546,77 @@ export default function PgpApp() {
 		};
 	}, []);
 
+	// One-click post-quantum setup (banner + Settings inline button). Unlocks
+	// the key once (passphrase prompt / session cache), generates the ML-KEM-768
+	// pair, wraps the secret under the passphrase, and turns on sealed copies.
+	// Keybase configs qualify too — they now carry encrypted armor, so the
+	// passphrase that wraps the secret is available at unlock time.
+	const handleEnableQuantumSeal = useCallback(async (): Promise<boolean> => {
+		const current = privateKeyRef.current;
+		if (!current?.encryptedArmored || !current.info || pqBusy) return false;
+		setPqBusy(true);
+		try {
+			const { passphrase } = await requestDecryptedKey();
+			if (!passphrase) {
+				toast({
+					title: "Passphrase required",
+					description:
+						"The quantum-seal secret is protected by your passphrase — enter it in the prompt and try again.",
+					variant: "destructive",
+				});
+				return false;
+			}
+			const sealPair = generateSealKeyPair();
+			const pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
+			handleSetPrivateKey({ ...current, pq });
+			handleSetSettings({ ...settingsRef.current, pqSealedCopy: true });
+			toast({
+				title: "Quantum seal enabled",
+				description:
+					"ML-KEM-768 key pair attached — sealed archive copies are produced on every encrypt.",
+			});
+			try {
+				localStorage.setItem(STORAGE_KEYS.pqBannerDismissed, current.info.fingerprint);
+			} catch {
+				// ignore
+			}
+			setPqBannerDismissedFp(current.info.fingerprint);
+			return true;
+		} catch {
+			// Cancelled prompt or wrap failure — stay unsealed, the banner stays.
+			return false;
+		} finally {
+			setPqBusy(false);
+		}
+	}, [pqBusy, requestDecryptedKey, handleSetPrivateKey, handleSetSettings, toast]);
+
+	const handleDismissPqBanner = useCallback(() => {
+		const fp = privateKeyRef.current?.info?.fingerprint;
+		if (!fp) return;
+		try {
+			localStorage.setItem(STORAGE_KEYS.pqBannerDismissed, fp);
+		} catch {
+			// ignore
+		}
+		setPqBannerDismissedFp(fp);
+	}, []);
+
+	const handleRestoreKeyFromHistory = useCallback(
+		(cfg: PrivateKeyConfig) => {
+			handleSetPrivateKey(cfg);
+			setConfigOpen(false);
+			toast({
+				title: `Switched to ${cfg.label}`,
+				description: "Unlock it with its passphrase when you next encrypt, decrypt or sign.",
+			});
+		},
+		[handleSetPrivateKey, toast],
+	);
+
+	const handleForgetKeyFromHistory = useCallback((fingerprint: string) => {
+		setKeyHistory(removeKeyHistory(fingerprint));
+	}, []);
+
 	const handleSelfTest = useCallback(async () => {
 		const result: SelfTestResult = await runCryptoSelfTest();
 		if (result.ok) {
@@ -458,6 +651,16 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+				{showPqBanner && privateKey && (
+					<div className="mb-4">
+						<PostQuantumBanner
+							label={privateKey.label}
+							busy={pqBusy}
+							onEnable={() => void handleEnableQuantumSeal()}
+							onDismiss={handleDismissPqBanner}
+						/>
+					</div>
+				)}
 				{showExpiryBanner && privateKey && keyExpiry && (
 					<div className="mb-4">
 						<OwnKeyExpiryBanner
@@ -520,6 +723,9 @@ export default function PgpApp() {
 				open={configOpen}
 				onOpenChange={setConfigOpen}
 				privateKey={privateKey}
+				keyHistory={keyHistory}
+				onRestoreKey={handleRestoreKeyFromHistory}
+				onForgetKey={handleForgetKeyFromHistory}
 				requestDecryptedKey={requestDecryptedKey}
 				onSave={(next) => {
 					handleSetPrivateKey(next);
@@ -537,6 +743,7 @@ export default function PgpApp() {
 				settings={settings}
 				onSettingsChange={handleSetSettings}
 				privateKey={privateKey}
+				onEnableQuantumSeal={handleEnableQuantumSeal}
 			/>
 
 			{keyRequest && privateKey && (
@@ -593,13 +800,13 @@ function Header({
 	return (
 		<header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
 			<div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
-				<div className="flex items-center gap-2.5">
+				<div className="flex min-w-0 items-center gap-2.5">
 					<img src="/logo.svg" alt="Encryptor logo" width={28} height={28} className="rounded" />
 					{/* h1: the page's only level-one heading (axe page-has-heading-one);
               styled identically to the previous span. */}
-					<h1 className="text-base font-semibold tracking-tight">Encryptor</h1>
+					<h1 className="min-w-0 truncate text-base font-semibold tracking-tight">Encryptor</h1>
 				</div>
-				<div className="flex items-center gap-2">
+				<div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
 					{passphraseCached && privateKey && (
 						<Button
 							type="button"
@@ -632,7 +839,9 @@ function Header({
 						</Button>
 					)}
 					<ThemeToggle />
-					<ShortcutsDialog />
+					<div className="hidden sm:inline-flex">
+						<ShortcutsDialog />
+					</div>
 					{/* Dedicated settings entry (round 11 feedback): the gear owns app
               preferences; the key button next to it owns key/auth. */}
 					<Button
@@ -653,7 +862,7 @@ function Header({
 					>
 						<KeyIcon />
 						{privateKey ? (
-							<span>
+							<span className="max-w-[34vw] truncate sm:max-w-[14rem]">
 								{privateKey.source === "keybase" ? `@${privateKey.username}` : privateKey.label}
 							</span>
 						) : (

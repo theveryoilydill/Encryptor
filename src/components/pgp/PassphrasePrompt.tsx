@@ -10,8 +10,13 @@
  * only in the resolver's scope and is cleared after the operation.
  *
  * SECURITY (unchanged): the passphrase is never stored and is cleared as soon
- * as this component unmounts. Keybase logins re-fetch the private key bundle
- * from Keybase each time.
+ * as this component unmounts.
+ *
+ * Keybase configs now normally carry their private key ENCRYPTED under the
+ * Keybase password (stored at login), so unlock is LOCAL — the network
+ * re-fetch from Keybase is only the fallback for legacy configs or a password
+ * mismatch. This is what makes switching back from a local key to Keybase
+ * work without a full re-login every time.
  */
 import { useCallback, useRef, useState } from "react";
 import { Eye, EyeOff, KeyRound, Loader2 } from "lucide-react";
@@ -83,6 +88,10 @@ export function PassphrasePrompt({
 	onPassphraseCached?: () => void;
 }) {
 	const isKeybase = config.source === "keybase";
+	// Local-first: when the config carries encrypted armor (all new Keybase
+	// logins + manual + generated), the entered passphrase unlocks it right
+	// here. Only legacy Keybase configs (no armor) REQUIRE the network path.
+	const canUnlockLocally = !!config.encryptedArmored;
 	const promptLabel = isKeybase ? "Keybase password" : "Passphrase";
 	const promptPlaceholder = isKeybase
 		? "Your Keybase account password"
@@ -91,13 +100,11 @@ export function PassphrasePrompt({
 	// Additive UX affordance: reveal/hide the passphrase input. Default stays
 	// hidden (type="password"), exactly as before.
 	const [showPassphrase, setShowPassphrase] = useState(false);
-	// Opt-in session cache (memory only, dies with the tab). Keybase passwords
-	// are never cacheable — the Keybase flow re-fetches the key bundle. The
-	// opt-in itself persists across prompts within the session, so ticking
-	// "remember" once covers every later operation (previously each new
-	// prompt reset the checkbox to unchecked, which read as "it forgets my
-	// passphrase after every operation").
-	const [remember, setRemember] = useState(isKeybase ? false : loadRememberChoice);
+	// Opt-in session cache (memory only, dies with the tab). Available for
+	// EVERY config that unlocks locally (manual, generated, and modern
+	// Keybase logins with stored armor). Legacy armor-less Keybase configs
+	// still re-fetch over the network, so their password stays non-cacheable.
+	const [remember, setRemember] = useState(canUnlockLocally ? loadRememberChoice : false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	// Guard so resolve/reject happen exactly once even if Escape fires both the
@@ -119,7 +126,24 @@ export function PassphrasePrompt({
 		}
 		setBusy(true);
 		try {
-			if (isKeybase) {
+			if (canUnlockLocally) {
+				// Local-first path (manual, generated, and modern Keybase
+				// configs): decrypt the stored armored key with the entered
+				// passphrase. Wrong passphrase -> error, no network involved.
+				const key = await readKey(config.encryptedArmored!);
+				if (!key.isPrivate()) {
+					throw new Error("Stored key is not a private key.");
+				}
+				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
+				if (remember) {
+					cachePassphrase(passphrase);
+					onPassphraseCached?.();
+				}
+				settledRef.current = true;
+				request.resolve(decrypted, passphrase);
+			} else if (isKeybase) {
+				// Legacy armor-less Keybase config: the ONLY path — re-run the
+				// full Keybase login (scrypt + PDPKA + me.json re-fetch).
 				// Heavy synchronous work (scrypt + PDPKA) runs inside
 				// loginWithPassword; the 50ms yields below only let THIS
 				// label paint. The startup prewarm (PgpApp) removes the
@@ -143,20 +167,7 @@ export function PassphrasePrompt({
 				settledRef.current = true;
 				request.resolve(decrypted, null);
 			} else {
-				if (!config.encryptedArmored) {
-					throw new Error("No encrypted key found in configuration.");
-				}
-				const key = await readKey(config.encryptedArmored);
-				if (!key.isPrivate()) {
-					throw new Error("Stored key is not a private key.");
-				}
-				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
-				if (remember) {
-					cachePassphrase(passphrase);
-					onPassphraseCached?.();
-				}
-				settledRef.current = true;
-				request.resolve(decrypted, passphrase);
+				throw new Error("No encrypted key found in configuration.");
 			}
 		} catch (e) {
 			setError((e as Error).message);
@@ -196,7 +207,9 @@ export function PassphrasePrompt({
 				<div className="px-5 py-4">
 					<DialogDescription className="mb-3 text-xs">
 						{isKeybase
-							? "Your password is used to re-fetch and decrypt your private key from Keybase. It is never stored — only kept in RAM for this operation."
+							? canUnlockLocally
+								? "Your password unlocks your stored Keybase key right here — it is never stored. (Network re-fetch only if the password no longer matches.)"
+								: "Your password is used to re-fetch and decrypt your private key from Keybase. It is never stored — only kept in RAM for this operation."
 							: "Your passphrase decrypts the private key in memory. It is never stored and is cleared immediately after the operation."}
 					</DialogDescription>
 					<div className="space-y-2">
@@ -218,7 +231,7 @@ export function PassphrasePrompt({
 								placeholder={promptPlaceholder}
 								aria-label={promptLabel}
 								autoFocus
-								autoComplete="off"
+								autoComplete={isKeybase ? "current-password" : "off"}
 								className="min-h-11 pl-9 pr-10 sm:min-h-9"
 								disabled={busy}
 							/>
@@ -247,10 +260,10 @@ export function PassphrasePrompt({
 									aria-hidden="true"
 									className="size-3 animate-spin motion-reduce:animate-none"
 								/>
-								{isKeybase ? "Signing in…" : "Decrypting key…"}
+								{canUnlockLocally ? "Unlocking…" : "Signing in…"}
 							</p>
 						)}
-						{!isKeybase && (
+						{!canUnlockLocally ? null : (
 							<div className="flex min-h-11 items-start gap-2 py-1 text-xs sm:min-h-0">
 								<Checkbox
 									id="remember-passphrase-session"

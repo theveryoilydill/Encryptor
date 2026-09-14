@@ -27,6 +27,9 @@ export const STORAGE_KEYS = {
 	lastTab: "encryptor.lastTab",
 	recentRecipients: "encryptor.recentRecipients",
 	settings: "encryptor.settings.v1",
+	/** Full-screen first-run onboarding dismissal ("skip the entire thing").
+	 *  Persisted so a user who skipped the takeover is never nagged again. */
+	onboardingDismissed: "encryptor.onboarding-dismissed.v1",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

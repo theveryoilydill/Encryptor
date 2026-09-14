@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ComponentProps } from "react";
 import { useTheme } from "next-themes";
 import {
+	ArrowLeft,
+	ArrowRight,
+	Check,
+	ChevronsRight,
+	KeyRound,
 	Loader2,
+	Lock,
 	Monitor,
 	Moon,
 	Settings,
@@ -13,6 +19,7 @@ import {
 	Timer,
 	TriangleAlert,
 	Unlock,
+	Users,
 	X,
 } from "lucide-react";
 
@@ -239,76 +246,218 @@ function PostQuantumBanner({
 	);
 }
 
-/** First-run onboarding (no key configured): a compact three-step card that
- *  makes the empty state teach instead of just sit there. The primary action
- *  opens the key dialog; the other two steps are guidance only. Disappears
- *  the moment any key is configured — no dismissal state to persist. */
-function WelcomeOnboarding({ onOpenKeySetup }: { onOpenKeySetup: () => void }) {
+/**
+ * First-run onboarding (no key configured): a FULL-SCREEN walkthrough —
+ * round-12 human feedback ("it should take up the whole screen at startup
+ * when there is nothing"). Three steps, each individually skippable
+ * ("Skip this step", clickable progress dots, Back) plus a global
+ * "Skip setup" control that PERSISTS its dismissal so the takeover never
+ * nags a returning user. Unmounts the moment any key is configured — the
+ * regular app shell takes over.
+ */
+function WelcomeOnboarding({
+	onOpenKeySetup,
+	onDismiss,
+}: {
+	onOpenKeySetup: () => void;
+	onDismiss: () => void;
+}) {
+	const [step, setStep] = useState(0);
 	const steps = [
 		{
+			id: "key",
+			icon: KeyRound,
 			title: "Set up your key",
-			detail: "Generate one in-browser, paste your own, or log in with Keybase.",
-			action: true,
+			detail:
+				"Your key is your identity in the PGP world. Generate one right here, paste an existing private key, or log in with Keybase.",
+			bullets: [
+				"Generated keys and passphrases never leave this device",
+				"The passphrase is asked for only when it is actually needed",
+			],
 		},
 		{
+			id: "recipients",
+			icon: Users,
 			title: "Add recipients",
-			detail: "Look them up by Keybase username, email, or paste a public key.",
-			action: false,
+			detail:
+				"Look people up by Keybase username or email, or paste a public key block straight out of a message.",
+			bullets: [
+				"Recent recipients are remembered for one-tap reuse",
+				"Mangled key armor is detected and repaired automatically",
+			],
 		},
 		{
+			id: "encrypt",
+			icon: ShieldCheck,
 			title: "Encrypt & sign",
-			detail: "Recipients decrypt anywhere. Optional ML-KEM-768 seal protects your archive copies.",
-			action: false,
+			detail:
+				"Write your message, press Encrypt & sign, and share the armored output. Recipients can decrypt anywhere — even without an account.",
+			bullets: [
+				"Optional ML-KEM-768 sealing hardens archive copies against future quantum computers",
+				"Decrypt and verify work the same way: paste, then go",
+			],
 		},
 	] as const;
+	const current = steps[step];
+	const isLast = step === steps.length - 1;
+	const CurrentIcon = current.icon;
+
 	return (
-		<div className="animate-fade-up mb-4 rounded-xl border border-border bg-card px-4 py-3.5 shadow-sm">
-			<div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-				<span
-					aria-hidden="true"
-					className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
-				>
-					<ShieldCheck className="size-5" />
-				</span>
-				<div className="min-w-0 flex-1">
-					<p className="text-sm font-semibold">Welcome to Encryptor</p>
-					<p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-						OpenPGP encryption that never leaves your browser — keys, passphrases, and plaintext
-						stay on this device.
-					</p>
-					<ol className="mt-3 space-y-2">
-						{steps.map((step, i) => (
-							<li key={step.title} className="flex items-start gap-2.5">
-								<span
-									aria-hidden="true"
-									className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground"
-								>
-									{i + 1}
-								</span>
-								<div className="min-w-0 flex-1">
-									<p className="text-xs font-medium">
-										{step.title}
-										<span className="font-normal text-muted-foreground"> — {step.detail}</span>
-									</p>
-									{step.action && (
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											onClick={onOpenKeySetup}
-											className="mt-1.5 h-11 gap-1.5 bg-background/60 px-3 text-xs transition-colors hover:border-[#0055dc] hover:text-[#0055dc] sm:h-8 dark:bg-background/40 dark:hover:border-[#5e94ff] dark:hover:text-[#5e94ff]"
-										>
-											<KeyIcon />
-											Set up a key
-										</Button>
-									)}
-								</div>
-							</li>
-						))}
-					</ol>
-				</div>
+		<section
+			aria-label="Welcome to Encryptor"
+			className="relative flex min-h-dvh flex-1 flex-col overflow-hidden"
+		>
+			{/* Decorative brand wash — pure CSS, hidden from the a11y tree. */}
+			<div aria-hidden="true" className="pointer-events-none absolute inset-0">
+				<div className="absolute -top-44 right-[-12%] size-[30rem] rounded-full bg-[#0055dc]/10 blur-3xl dark:bg-[#5e94ff]/10" />
+				<div className="absolute bottom-[-22%] left-[-12%] size-[28rem] rounded-full bg-violet-500/10 blur-3xl dark:bg-violet-400/10" />
 			</div>
-		</div>
+
+			{/* Top bar: wordmark + the global skip. */}
+			<header className="relative z-10 flex items-center justify-between px-4 py-3.5 sm:px-6">
+				<div className="flex items-center gap-2">
+					<span
+						aria-hidden="true"
+						className="grid size-8 place-items-center rounded-lg bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+					>
+						<ShieldCheck className="size-4.5" />
+					</span>
+					<span className="text-sm font-semibold tracking-tight">Encryptor</span>
+				</div>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					onClick={onDismiss}
+					className="h-11 gap-1 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground sm:h-8 sm:gap-1.5"
+				>
+					Skip setup
+					<ChevronsRight aria-hidden="true" className="size-3.5" />
+				</Button>
+			</header>
+
+			{/* Centered step card. key={current.id} remounts per step so the
+                                    fade-up entrance replays on every navigation. */}
+			<main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-8 pt-2 sm:pb-14">
+				<div key={current.id} className="animate-fade-up w-full max-w-xl">
+					<div className="rounded-2xl border border-border bg-card/80 p-6 shadow-xl shadow-black/5 backdrop-blur-sm sm:p-8 dark:bg-card/70">
+						<div className="flex items-center justify-between gap-3">
+							<p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+								Step {step + 1} of {steps.length}
+							</p>
+							{/* Clickable progress dots — jump straight to any step
+                                                                    (another way to skip past one). */}
+							<div
+								role="group"
+								aria-label="Onboarding progress"
+								className="flex items-center gap-1.5"
+							>
+								{steps.map((s, i) => (
+									<button
+										key={s.id}
+										type="button"
+										onClick={() => setStep(i)}
+										aria-label={`Go to step ${i + 1}: ${s.title}`}
+										aria-current={i === step ? "step" : undefined}
+										className={`h-2 rounded-full transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/50 dark:focus-visible:ring-[#5e94ff]/50 ${
+											i === step
+												? "w-6 bg-[#0055dc] dark:bg-[#5e94ff]"
+												: "w-2 bg-muted-foreground/30 hover:bg-muted-foreground/50"
+										}`}
+									/>
+								))}
+							</div>
+						</div>
+
+						<span
+							aria-hidden="true"
+							className="mt-5 grid size-12 place-items-center rounded-xl bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+						>
+							<CurrentIcon className="size-6" />
+						</span>
+						<h2 className="mt-4 text-xl font-semibold tracking-tight sm:text-2xl">
+							{current.title}
+						</h2>
+						<p className="mt-2 text-sm leading-relaxed text-muted-foreground">{current.detail}</p>
+
+						<ul className="mt-4 space-y-2">
+							{current.bullets.map((b) => (
+								<li
+									key={b}
+									className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"
+								>
+									<Check
+										aria-hidden="true"
+										className="mt-0.5 size-3.5 shrink-0 text-emerald-500 dark:text-emerald-400"
+									/>
+									<span>{b}</span>
+								</li>
+							))}
+						</ul>
+
+						<div className="mt-6 flex flex-wrap items-center gap-2">
+							{step > 0 && (
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									onClick={() => setStep(step - 1)}
+									className="h-11 gap-1.5 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground sm:h-8"
+								>
+									<ArrowLeft aria-hidden="true" className="size-3.5" />
+									Back
+								</Button>
+							)}
+							<div className="ml-auto flex items-center gap-2">
+								{!isLast && (
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={() => setStep(step + 1)}
+										className="h-11 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground sm:h-8"
+									>
+										Skip this step
+									</Button>
+								)}
+								{step === 0 ? (
+									<Button
+										type="button"
+										size="sm"
+										onClick={onOpenKeySetup}
+										autoFocus
+										className="h-11 gap-1.5 px-4 text-xs sm:h-9 sm:text-sm"
+									>
+										<KeyRound aria-hidden="true" className="size-4" />
+										Set up a key
+									</Button>
+								) : (
+									<Button
+										type="button"
+										size="sm"
+										onClick={isLast ? onDismiss : () => setStep(step + 1)}
+										autoFocus
+										className="h-11 gap-1.5 px-4 text-xs sm:h-9 sm:text-sm"
+									>
+										{isLast ? "Get started" : "Next"}
+										{!isLast && <ArrowRight aria-hidden="true" className="size-4" />}
+									</Button>
+								)}
+							</div>
+						</div>
+					</div>
+				</div>
+			</main>
+
+			{/* Privacy line — the product's core promise, repeated at eye level. */}
+			<footer className="relative z-10 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-center">
+				<p className="mx-auto flex max-w-md items-center justify-center gap-1.5 text-xs text-muted-foreground">
+					<Lock aria-hidden="true" className="size-3.5 shrink-0" />
+					Everything stays on this device — keys, passphrases, and messages never leave your
+					browser.
+				</p>
+			</footer>
+		</section>
 	);
 }
 
@@ -406,6 +555,50 @@ export default function PgpApp() {
 		!!privateKey?.encryptedArmored &&
 		!privateKey?.pq &&
 		pqBannerDismissedFp !== privateKey?.info?.fingerprint;
+	// First-run onboarding (round-12 human feedback): a FULL-SCREEN takeover
+	// while NOTHING is configured. "Skip setup" persists its dismissal so a
+	// returning user is never re-taken over; Settings can replay it on demand
+	// (tourActive overrides both conditions).
+	const [onboardingDismissed, setOnboardingDismissed] = useState<boolean>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.onboardingDismissed) === "true";
+		} catch {
+			return false;
+		}
+	});
+	const [tourActive, setTourActive] = useState(false);
+	const handleDismissOnboarding = useCallback(() => {
+		setOnboardingDismissed(true);
+		setTourActive(false);
+		try {
+			localStorage.setItem(STORAGE_KEYS.onboardingDismissed, "true");
+		} catch {
+			// ignore — in-memory dismissal still covers this visit
+		}
+	}, []);
+	const handleReplayWelcomeTour = useCallback(() => {
+		setTourActive(true);
+	}, []);
+	const showOnboarding = tourActive || (!privateKey && !onboardingDismissed);
+
+	// Escape skips the takeover — but never while a dialog owns the
+	// keystroke. CAPTURE phase is essential here: it runs before Radix's
+	// document-level Escape handling and before the re-render that the
+	// dialog close triggers. (A bubble-phase listener + configOpen guard
+	// proved unreliable: closing the dialog flushed React BEFORE the
+	// window listener fired, so the stale configOpen=false dismissed the
+	// tour alongside the dialog. The DOM check at capture time is
+	// always pre-close truth.)
+	useEffect(() => {
+		if (!showOnboarding) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			if (document.querySelector("[role='dialog']")) return;
+			handleDismissOnboarding();
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, [showOnboarding, handleDismissOnboarding]);
 
 	// Screen-reader-only tab-change announcement (see live region below).
 	const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
@@ -423,6 +616,8 @@ export default function PgpApp() {
 		const prev = privateKeyRef.current;
 		privateKeyRef.current = next;
 		setPrivateKey(next);
+		// A configured key ends the welcome tour (replay case) immediately.
+		if (next) setTourActive(false);
 		{
 			// The session passphrase cache is scoped to one key: dropping the key or
 			// switching to a different fingerprint must not keep the old secret.
@@ -746,6 +941,41 @@ export default function PgpApp() {
 		}
 	}, [toast]);
 
+	// Full-screen first-run takeover (round-12 human feedback): when NOTHING
+	// is configured — and the user has not skipped the tour — the welcome
+	// flow IS the app. Everything else (header, tabs, composers) stays
+	// unmounted until the tour is finished, skipped step-by-step, or skipped
+	// entirely. The key dialog and toaster stay mounted so "Set up a key"
+	// works straight from the tour.
+	if (showOnboarding) {
+		return (
+			<div className="flex min-h-dvh flex-col bg-background text-foreground">
+				<WelcomeOnboarding
+					onOpenKeySetup={() => setConfigOpen(true)}
+					onDismiss={handleDismissOnboarding}
+				/>
+				<ConfigureModal
+					open={configOpen}
+					onOpenChange={setConfigOpen}
+					privateKey={privateKey}
+					keyHistory={keyHistory}
+					onRestoreKey={handleRestoreKeyFromHistory}
+					onForgetKey={handleForgetKeyFromHistory}
+					requestDecryptedKey={requestDecryptedKey}
+					onSave={(next) => {
+						handleSetPrivateKey(next);
+						setConfigOpen(false);
+					}}
+					onClear={() => {
+						handleSetPrivateKey(null);
+						setConfigOpen(false);
+					}}
+				/>
+				<Toaster />
+			</div>
+		);
+	}
+
 	return (
 		<div className="flex min-h-dvh flex-col bg-background text-foreground">
 			{/* Screen-reader-only announcement when the active tab changes. */}
@@ -763,7 +993,6 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-				{!privateKey && <WelcomeOnboarding onOpenKeySetup={() => setConfigOpen(true)} />}
 				{showPqBanner && privateKey && (
 					<div className="mb-4">
 						<PostQuantumBanner
@@ -858,6 +1087,7 @@ export default function PgpApp() {
 				onSettingsChange={handleSetSettings}
 				privateKey={privateKey}
 				onEnableQuantumSeal={handleEnableQuantumSeal}
+				onReplayWelcomeTour={handleReplayWelcomeTour}
 			/>
 
 			{keyRequest && privateKey && (

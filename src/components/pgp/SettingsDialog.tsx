@@ -274,6 +274,7 @@ export function SettingsDialog({
 	onSettingsChange,
 	privateKey,
 	onEnableQuantumSeal,
+	onReplayWelcomeTour,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -284,6 +285,9 @@ export function SettingsDialog({
 	 *  generation). Resolves true when the key gained a quantum-seal pair.
 	 *  Optional for stories/tests that render the dialog standalone. */
 	onEnableQuantumSeal?: () => Promise<boolean>;
+	/** Re-shows the full-screen welcome tour (skipping must never be a
+	 *  dead end — round-12 human feedback). */
+	onReplayWelcomeTour?: () => void;
 }) {
 	const [query, setQuery] = useState("");
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -298,7 +302,9 @@ export function SettingsDialog({
 			composer: !q || hits("composer editor markdown notion vscode auto sign signature"),
 			encryption: !q || hits("encryption compression zlib zip quantum sealed post pq ml-kem"),
 			security: !q || hits("security passphrase auto lock cache session"),
-			data: !q || hits("data backup restore import export reset defaults"),
+			data:
+				!q ||
+				hits("data backup restore import export reset defaults welcome tour onboarding replay"),
 		} as Record<SectionId, boolean>;
 	}, [q]);
 
@@ -524,6 +530,24 @@ export function SettingsDialog({
 								Data
 							</p>
 							<BackupRestoreSection privateKey={privateKey} />
+							<SettingRow
+								title="Replay welcome tour"
+								description="Skipped the first-run walkthrough? Bring the full-screen welcome back at any time."
+							>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									className="h-11 gap-1.5 px-3 text-xs sm:h-8 sm:text-[13px]"
+									onClick={() => {
+										onReplayWelcomeTour?.();
+										onOpenChange(false);
+									}}
+								>
+									<RotateCcw aria-hidden="true" className="size-3.5" />
+									Show tour
+								</Button>
+							</SettingRow>
 						</section>
 					)}
 

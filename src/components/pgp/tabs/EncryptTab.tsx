@@ -444,7 +444,11 @@ export function EncryptTab({
 	const [draftNotice, setDraftNotice] = useState(false);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
-	const [outputMeta, setOutputMeta] = useState<{ keys: number; signed: boolean } | null>(null);
+	const [outputMeta, setOutputMeta] = useState<{
+		keys: number;
+		signed: boolean;
+		labels: string[];
+	} | null>(null);
 	// Recent sealed outputs — a ciphertext-only local history (lib/pgp/
 	// sealed-history): the armored result of each encrypt is kept so an
 	// earlier sealed message can be restored after the output block is
@@ -756,7 +760,16 @@ export function EncryptTab({
 				}
 			}
 			setOutput(armored);
-			setOutputMeta({ keys: recipientKeys.length, signed: signing });
+			// Display-only recipient labels for the "Sealed to: …" tooltip —
+			// capped like every other display list so a 50-recipient paste can't
+			// blow up the strip.
+			const recipientLabels = [
+				...recipients.map((r) => r.label),
+				...(includeSelf && decryptedKey ? [`${privateKey?.label ?? "me"} (you)`] : []),
+			]
+				.slice(0, 8)
+				.map((l) => l.trim().slice(0, 48));
+			setOutputMeta({ keys: recipientKeys.length, signed: signing, labels: recipientLabels });
 			// Ciphertext-only local history: record the sealed output (and its
 			// PQ copy, when produced) BEFORE the plaintext is wiped — the entry
 			// holds nothing but the armor the user is about to see anyway.
@@ -766,6 +779,7 @@ export function EncryptTab({
 				keys: recipientKeys.length,
 				signed: signing,
 				pqSealed: pqCopy !== null,
+				labels: recipientLabels,
 			});
 			setSealedHistory(recorded.entries);
 			setHistoryOpen(true);
@@ -1030,7 +1044,14 @@ export function EncryptTab({
 					<p className="text-xs font-medium text-emerald-900 dark:text-emerald-200">
 						Message sealed — plaintext cleared from the composer.
 					</p>
-					<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+					<span
+						title={
+							outputMeta.labels.length > 0
+								? `Sealed to: ${outputMeta.labels.join(", ")}`
+								: undefined
+						}
+						className="cursor-help rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 underline decoration-dotted decoration-emerald-400/60 underline-offset-2 dark:bg-emerald-900/40 dark:text-emerald-300 dark:decoration-emerald-500/50"
+					>
 						{outputMeta.keys} {outputMeta.keys === 1 ? "key" : "keys"}
 					</span>
 					{outputMeta.signed && (
@@ -1138,7 +1159,14 @@ export function EncryptTab({
 											{formatHistoryTime(entry.at)}
 										</time>
 										<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-											<span className="rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] dark:bg-[#5e94ff]/10 dark:text-[#5e94ff]">
+											<span
+												title={
+													entry.labels && entry.labels.length > 0
+														? `Sealed to: ${entry.labels.join(", ")}`
+														: undefined
+												}
+												className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
+											>
 												{entry.keys} {entry.keys === 1 ? "key" : "keys"}
 											</span>
 											{entry.signed && (
@@ -1162,7 +1190,11 @@ export function EncryptTab({
 												onClick={() => {
 													setOutput(entry.armor);
 													setSealedCopy(entry.sealedArmor ?? "");
-													setOutputMeta({ keys: entry.keys, signed: entry.signed });
+													setOutputMeta({
+														keys: entry.keys,
+														signed: entry.signed,
+														labels: entry.labels ?? [],
+													});
 													setError(null);
 													toast({
 														title: "Sealed output restored",

@@ -31,6 +31,10 @@ export interface SealedHistoryEntry {
 	armor: string;
 	/** The ML-KEM-768 quantum-sealed copy, when one was produced. */
 	sealedArmor: string | null;
+	/** Recipient labels at seal time (display-only, capped) — powers the
+	 *  "Sealed to: …" tooltip on the vault's key-count chip. Optional so
+	 *  entries written before this field shipped still load. */
+	labels?: string[];
 }
 
 const HISTORY_KEY = "encryptor.sealed.history.v1";
@@ -38,6 +42,18 @@ const HISTORY_KEY = "encryptor.sealed.history.v1";
  *  engine quota even alongside templates, drafts and config backup. */
 export const MAX_SEALED_ENTRIES = 8;
 export const MAX_SEALED_ARMOR_CHARS = 64 * 1024;
+
+/** Display-only caps for the recipient-label list (8 names × 48 chars). */
+export const MAX_SEALED_LABELS = 8;
+export const MAX_SEALED_LABEL_CHARS = 48;
+
+function sanitizeLabels(input: unknown): string[] {
+	if (!Array.isArray(input)) return [];
+	return input
+		.filter((l): l is string => typeof l === "string" && l.trim() !== "")
+		.slice(0, MAX_SEALED_LABELS)
+		.map((l) => l.trim().slice(0, MAX_SEALED_LABEL_CHARS));
+}
 
 function makeId(): string {
 	try {
@@ -77,6 +93,7 @@ export function loadSealedHistory(): SealedHistoryEntry[] {
 				pqSealed: e.pqSealed === true,
 				armor: e.armor,
 				sealedArmor: typeof e.sealedArmor === "string" ? e.sealedArmor : null,
+				labels: sanitizeLabels(e.labels),
 			});
 		}
 		return entries.sort((a, b) => b.at - a.at).slice(0, MAX_SEALED_ENTRIES);
@@ -102,6 +119,7 @@ export function appendSealedOutput(input: {
 	keys: number;
 	signed: boolean;
 	pqSealed: boolean;
+	labels?: string[];
 }): { entries: SealedHistoryEntry[]; stored: boolean } {
 	if (input.armor.length > MAX_SEALED_ARMOR_CHARS) {
 		// Deliberate skip: a truncated ciphertext would decrypt to garbage —
@@ -116,6 +134,7 @@ export function appendSealedOutput(input: {
 		pqSealed: input.pqSealed,
 		armor: input.armor,
 		sealedArmor: input.sealedArmor ?? null,
+		labels: sanitizeLabels(input.labels),
 	};
 	const entries = [entry, ...loadSealedHistory().filter((e) => e.armor !== input.armor)].slice(
 		0,

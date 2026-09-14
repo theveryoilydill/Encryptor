@@ -57,7 +57,17 @@ interface RecentRecipient {
 	label: string;
 	fingerprint?: string;
 	username?: string;
+	/** The recipient's armored PUBLIC key, kept when it was in hand at
+	 *  add time (manual paste, keyserver/Keybase fetch). Public material —
+	 *  the same bytes a keyserver serves — so a locally-pasted key can be
+	 *  re-added OFFLINE instead of dead-ending on a fetch that can never
+	 *  succeed (the key was never uploaded anywhere). */
+	armored?: string;
 }
+
+/** Size cap for a stored recent-recipient armor (same bound as the
+ *  sealed-output history; keys are typically 1-8 KB). */
+const MAX_RECENT_ARMOR_CHARS = 64 * 1024;
 
 /** Load + sanitize the recent-recipients list (deduped by fingerprint||label,
  *  most recent first, capped) — guarded like every other storage access. */
@@ -75,6 +85,9 @@ function loadRecentRecipients(): RecentRecipient[] {
 			const entry: RecentRecipient = { label: r.label };
 			if (typeof r.fingerprint === "string" && r.fingerprint) entry.fingerprint = r.fingerprint;
 			if (typeof r.username === "string" && r.username) entry.username = r.username;
+			if (typeof r.armored === "string" && r.armored.length <= MAX_RECENT_ARMOR_CHARS) {
+				entry.armored = r.armored;
+			}
 			cleaned.push(entry);
 		}
 		const seen = new Set<string>();
@@ -143,6 +156,9 @@ export function RecipientPicker({
 			const stored: RecentRecipient = { label: entry.label };
 			if (entry.fingerprint) stored.fingerprint = entry.fingerprint;
 			if (entry.username) stored.username = entry.username;
+			if (entry.armored && entry.armored.length <= MAX_RECENT_ARMOR_CHARS) {
+				stored.armored = entry.armored;
+			}
 			return [stored, ...rest].slice(0, MAX_RECENT_RECIPIENTS);
 		});
 	}, []);
@@ -224,6 +240,7 @@ export function RecipientPicker({
 						label: `@${k.username}`,
 						username: k.username,
 						fingerprint: k.fingerprint,
+						armored: k.armored,
 					});
 				} else if (result.fingerprint) {
 					// Fetch the key from keys.openpgp.org or Ubuntu keyserver
@@ -283,7 +300,11 @@ export function RecipientPicker({
 							expiresAt,
 						},
 					]);
-					rememberRecentRecipient({ label: addedLabel, fingerprint: k.fingerprint });
+					rememberRecentRecipient({
+						label: addedLabel,
+						fingerprint: k.fingerprint,
+						armored: k.armored,
+					});
 				} else {
 					setError("No key fingerprint available for this result.");
 				}
@@ -302,13 +323,50 @@ export function RecipientPicker({
 	/** Add a recent recipient via the exact same path as picking a search
 	 *  result (dedupe/validation inside addRecipient still applies). */
 	const addRecentRecipient = useCallback(
-		(r: RecentRecipient) => {
+		async (r: RecentRecipient) => {
+			// Offline-first: when the entry kept its armored PUBLIC key (manual
+			// paste, or a keyserver/Keybase fetch that already had it in hand),
+			// add straight from storage — no network. This is the only path a
+			// locally-pasted key can EVER be re-added by: it was never uploaded
+			// anywhere, so the old re-fetch always dead-ended with "Could not
+			// fetch key …". Falls back to the fetch path for armor-less legacy
+			// entries or a failed validation.
+			if (r.armored) {
+				try {
+					const v = await validateArmoredKey(r.armored);
+					const info = v.info;
+					const armoredKey = r.armored;
+					if (v.ok && info && armoredKey) {
+						if (!recipients.some((p) => p.fingerprint === info.fingerprint)) {
+							setRecipients((prev) =>
+								prev.some((p) => p.fingerprint === info.fingerprint)
+									? prev
+									: [
+											...prev,
+											{
+												source: "local",
+												label: r.label,
+												armored: armoredKey,
+												fingerprint: info.fingerprint,
+												keyID: info.keyID,
+												algorithm: info.algorithm,
+												expiresAt: info.expirationTime?.getTime() ?? null,
+											},
+										],
+							);
+						}
+						return;
+					}
+				} catch {
+					// fall through to the network path
+				}
+			}
 			const result: KeySearchResult = r.username
 				? { source: "keybase", label: r.label, username: r.username, fingerprint: r.fingerprint }
 				: { source: "openpgp.org", label: r.label, fingerprint: r.fingerprint };
 			void addRecipient(result);
 		},
-		[addRecipient],
+		[addRecipient, recipients, setRecipients],
 	);
 
 	/** Manual-paste path — same commit as before, plus recent-recipients
@@ -320,6 +378,7 @@ export function RecipientPicker({
 					label: r.label,
 					fingerprint: r.fingerprint || undefined,
 					username: r.username,
+					armored: r.armored,
 				});
 			}
 			setRecipients((prev) =>

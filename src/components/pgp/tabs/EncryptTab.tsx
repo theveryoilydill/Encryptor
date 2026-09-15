@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
 	BookmarkPlus,
 	ChevronDown,
@@ -8,8 +9,11 @@ import {
 	FileUp,
 	History,
 	LayoutTemplate,
+	List,
 	Loader2,
 	Lock,
+	Maximize2,
+	Minimize2,
 	ShieldCheck,
 	Sparkles,
 	Trash2,
@@ -220,6 +224,37 @@ const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] 
 		].join("\n"),
 	},
 ];
+
+/** GitHub-style anchor slug for a heading title: lowercase, strip every
+ *  character that is not a letter, number, space or hyphen, then spaces
+ *  become hyphens. Mirrors the anchors GitHub generates for its own
+ *  headings, so TOC links keep working when the message is pasted into a
+ *  GitHub issue, README or comment.
+ *
+ *  # Mr. AI Acting on s183173's Behalf
+ */
+function githubSlug(title: string): string {
+	return title
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}\s-]/gu, "")
+		.replace(/\s+/g, "-");
+}
+
+/** Build a GitHub-style table of contents from the composer's markdown:
+ *  every ATX heading (`#` through `######`) becomes an indented
+ *  `- [Title](#slug)` row (2 spaces of indent per level below h1).
+ *  Returns "" when the message has no headings — the caller toasts
+ *  instead of inserting an empty TOC. */
+function buildTableOfContents(markdown: string): string {
+	const rows: string[] = [];
+	for (const line of markdown.split("\n")) {
+		const match = /^(#{1,6})\s+(.*)$/.exec(line);
+		if (!match) continue;
+		const title = match[2].trim();
+		rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${githubSlug(title)})`);
+	}
+	return rows.join("\n");
+}
 
 /** Small right-aligned utility above the composer: the template menu works
  *  for BOTH editor styles (Notion blocks + VS Code textarea) because it
@@ -546,6 +581,23 @@ export function EncryptTab({
 	// the textarea (or typing different content) re-arms the hint without
 	// needing a state-reset effect.
 	const [hintDismissedFor, setHintDismissedFor] = useState<string | null>(null);
+
+	// Full-screen composer overlay ("blow up the editor"): when expanded, the
+	// whole composer — editor + utility row incl. the template menu — moves
+	// into a portal dialog filling the viewport. The state lives HERE in the
+	// tab; the editor engine simply re-mounts with the same value props, so
+	// text, files and attachments survive expand AND collapse untouched.
+	const [composerExpanded, setComposerExpanded] = useState(false);
+	// Body scroll lock while the overlay is up; the previous inline value is
+	// restored on cleanup (also fires if the tab unmounts mid-expanded).
+	useEffect(() => {
+		if (!composerExpanded) return;
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	}, [composerExpanded]);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{
@@ -753,6 +805,19 @@ export function EncryptTab({
 		setPlaintext(body);
 	}, []);
 
+	// "Insert table of contents" (round-12 editor pass): parse the CURRENT
+	// composer markdown for ATX headings and PREPEND a GitHub-style TOC
+	// (slug anchors, one blank line after). Heading-less messages get a
+	// toast and are left completely untouched.
+	const insertTableOfContents = useCallback(() => {
+		const toc = buildTableOfContents(plaintext);
+		if (!toc) {
+			toast({ title: "No headings found — add some `#` headings first" });
+			return;
+		}
+		setPlaintext(`${toc}\n\n${plaintext}`);
+	}, [plaintext, toast]);
+
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
 		setOutput("");
@@ -927,6 +992,69 @@ export function EncryptTab({
 		[plaintext, attachments],
 	);
 
+	// The whole composer — utility row (TOC, Expand, template menu) + editor
+	// + counter + smart-input hint — as one value, rendered EITHER inline OR
+	// inside the full-screen portal overlay further down. Moving it in and
+	// out of the overlay is therefore a pure re-mount: no state lives in the
+	// subtree.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	const composerBody = (
+		<>
+			{/* Composer utility row: table-of-contents insert, full-screen
+			    toggle and the template menu, right-aligned. */}
+			<div className="mb-1.5 flex items-center justify-end gap-2">
+				<button
+					type="button"
+					aria-label="Insert table of contents"
+					title="Insert table of contents"
+					onClick={insertTableOfContents}
+					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+				>
+					<List aria-hidden="true" className="size-3.5" />
+				</button>
+				<button
+					type="button"
+					aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
+					title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
+					onClick={() => setComposerExpanded((v) => !v)}
+					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+				>
+					{composerExpanded ? (
+						<Minimize2 aria-hidden="true" className="size-3.5" />
+					) : (
+						<Maximize2 aria-hidden="true" className="size-3.5" />
+					)}
+				</button>
+				<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
+			</div>
+			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
+			    the viewport; plain block inline. */}
+			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
+				<MessageEditor
+					value={plaintext}
+					onChange={setPlaintext}
+					files={attachments}
+					onNewImageDataUrl={handleNewImageDataUrl}
+					editorKind={settings.markdownEditor}
+					placeholder="Type the message you want to encrypt + sign…"
+					expanded={composerExpanded}
+				/>
+			</div>
+			{/* Char/word/size counter (visual feedback only). */}
+			<InputSizeCounter text={plaintext} />
+			{showEncryptHint && detectedBlock && (
+				<InputHint
+					tone={detectedBlock === "encrypted" ? "amber" : "info"}
+					onDismiss={() => setHintDismissedFor(plaintext)}
+				>
+					{detectedBlock === "encrypted"
+						? "This looks like an already-encrypted message. Encrypting it again is rarely what you want."
+						: "This looks like a PGP key. Keys are imported in the key configuration dialog, not encrypted as messages."}
+				</InputHint>
+			)}
+		</>
+	);
 	return (
 		<section
 			className="relative space-y-6"
@@ -979,35 +1107,51 @@ export function EncryptTab({
 				onIncludeSelfChange={onIncludeSelfChange}
 			/>
 
-			<div className="rounded-xl">
-				{/* Composer utility row (round-12 product pass): the editor-style
-				    quick toggle moved OUT of the composer row — Settings owns the
-				    choice now (settings.markdownEditor) — only the template menu
-				    remains, right-aligned. */}
-				<div className="mb-1.5 flex items-center justify-end gap-2">
-					<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
-				</div>
-				<MessageEditor
-					value={plaintext}
-					onChange={setPlaintext}
-					files={attachments}
-					onNewImageDataUrl={handleNewImageDataUrl}
-					editorKind={settings.markdownEditor}
-					placeholder="Type the message you want to encrypt + sign…"
-				/>
-				{/* Char/word/size counter (visual feedback only). */}
-				<InputSizeCounter text={plaintext} />
-				{showEncryptHint && detectedBlock && (
-					<InputHint
-						tone={detectedBlock === "encrypted" ? "amber" : "info"}
-						onDismiss={() => setHintDismissedFor(plaintext)}
+			{!composerExpanded && <div className="rounded-xl">{composerBody}</div>}
+			{/* Full-screen composer overlay ("blow up the editor"): a portal
+			    dialog filling the viewport. Escape collapses it — EXCEPT when a
+			    Radix surface opened FROM the composer is on stage (template
+			    dropdown, save-template dialog, …): those consume Escape
+			    themselves and must never come back to a collapsed composer.
+			    Most Radix layers portal OUTSIDE this overlay, so their Escapes
+			    never even bubble through it; the target checks + the
+			    defaultPrevented guard cover the paths that still do. */}
+			{composerExpanded &&
+				createPortal(
+					<div
+						data-composer-overlay
+						role="dialog"
+						aria-modal="true"
+						aria-label="Composer, full screen"
+						onKeyDownCapture={(e) => {
+							if (e.key !== "Escape" || e.defaultPrevented) return;
+							const target = e.target as HTMLElement | null;
+							if (
+								target?.closest(
+									'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+								)
+							) {
+								return;
+							}
+							e.preventDefault();
+							setComposerExpanded(false);
+						}}
+						onKeyDown={(e) => {
+							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
+							// portal sits outside the <section> keydown handler.
+							if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+								e.preventDefault();
+								if (!busy) void handleEncrypt();
+							}
+						}}
+						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						{detectedBlock === "encrypted"
-							? "This looks like an already-encrypted message. Encrypting it again is rarely what you want."
-							: "This looks like a PGP key. Keys are imported in the key configuration dialog, not encrypted as messages."}
-					</InputHint>
+						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
+							{composerBody}
+						</div>
+					</div>,
+					document.body,
 				)}
-			</div>
 
 			<AttachmentList
 				attachments={attachments}

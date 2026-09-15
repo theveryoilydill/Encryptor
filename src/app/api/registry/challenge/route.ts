@@ -53,11 +53,11 @@ export async function GET(req: NextRequest) {
 		if (key.revoked === 1) throw new RegistryError("Key is already revoked", 409);
 
 		const now = nowSeconds();
-		// Bound live nonces per fingerprint: older ones are purged first.
-		await db
-			.prepare("DELETE FROM registry_challenges WHERE fingerprint = ?1 OR expires_at < ?2")
-			.bind(fingerprint, now)
-			.run();
+		// Purge ONLY expired nonces (indexed on expires_at). Live nonces are
+		// never swept here: deleting a victim's outstanding nonce would hand
+		// anyone who can fetch challenges a nuisance invalidation vector.
+		// Live rows stay bounded by the 10-minute TTL + per-IP rate limit.
+		await db.prepare("DELETE FROM registry_challenges WHERE expires_at < ?1").bind(now).run();
 
 		const nonce = randomHex(32);
 		const expiresAt = now + LIMITS.registryChallengeTtlSec;

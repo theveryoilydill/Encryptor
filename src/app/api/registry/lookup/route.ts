@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
-import { RegistryError, getRegistryDB } from "@/lib/registry/db";
+import { RegistryError, getRegistryDB, rateLimit } from "@/lib/registry/db";
 import { normalizeEmail, normalizeFingerprint, normalizeKeyID } from "@/lib/registry/keys";
-import { REGISTRY_CACHE_PUBLIC, registryErrorResponse } from "@/lib/registry/routes";
+import { REGISTRY_CACHE_PUBLIC, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,6 +54,20 @@ export async function GET(req: NextRequest) {
 		const email = url.searchParams.get("email");
 
 		const db = getRegistryDB();
+		// Public read endpoint — still rate limited (read-first limiter: an
+		// abusive caller costs ~1 indexed read, zero writes). Legit callers
+		// get 120 lookups/hour/IP, and identical URLs are edge-cached.
+		if (
+			!(await rateLimit(
+				db,
+				"lookup",
+				clientIP(req),
+				LIMITS.registryLookupLimit,
+				LIMITS.registryLookupWindowSec,
+			))
+		) {
+			throw new RegistryError("Too many lookup requests — try again later", 429);
+		}
 		let rows: RegistryRow[] = [];
 
 		if (fingerprint) {
@@ -68,25 +82,31 @@ export async function GET(req: NextRequest) {
 			const id = normalizeKeyID(keyID);
 			if (!id) throw new RegistryError("key_id must be 16 hex characters", 400);
 			// A subkey ID resolves to its primary key via the subkeys table.
+			// Bounded by LIMIT: key IDs are only 64 bits, so a determined
+			// attacker could publish many fingerprints sharing one key ID.
 			const result = await db
 				.prepare(
 					`SELECT ${SELECT_COLUMNS} FROM registry_keys
                                          WHERE key_id = ?1
                                          UNION
                                          SELECT ${SELECT_COLUMNS} FROM registry_keys
-                                         WHERE fingerprint IN (SELECT fingerprint FROM registry_subkeys WHERE key_id = ?1)`,
+                                         WHERE fingerprint IN (SELECT fingerprint FROM registry_subkeys WHERE key_id = ?1)
+                                         LIMIT ?2`,
 				)
-				.bind(id)
+				.bind(id, LIMITS.registryMaxLookupResults)
 				.all<RegistryRow>();
 			rows = result.results ?? [];
 		} else if (email) {
 			const normalized = normalizeEmail(email);
 			if (!normalized) throw new RegistryError("email is not a valid address", 400);
+			// The inner LIMIT keeps the subquery bounded even if one email
+			// was claimed by many keys; ORDER BY keeps results deterministic.
 			const result = await db
 				.prepare(
 					`SELECT ${SELECT_COLUMNS} FROM registry_keys
                                          WHERE fingerprint IN
-                                         (SELECT fingerprint FROM registry_emails WHERE email = ?1)
+                                         (SELECT fingerprint FROM registry_emails WHERE email = ?1 LIMIT ?2)
+                                         ORDER BY created_at
                                          LIMIT ?2`,
 				)
 				.bind(normalized, LIMITS.registryMaxLookupResults)

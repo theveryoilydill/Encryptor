@@ -44,7 +44,7 @@ export class RegistryError extends Error {
 	}
 }
 
-/** Development-only fallback salt (production MUST set RE_SALT). */
+/** Development-only fallback salt — NEVER used in production builds. */
 const DEV_SALT = "encryptor-registry-dev-salt";
 
 /** Resolve the full Cloudflare env (bindings + secrets), or undefined. */
@@ -64,9 +64,19 @@ export function getRegistryDB(): D1DatabaseLike {
 	return db;
 }
 
-/** Resolve the rate-limit/privacy salt. */
+/**
+ * Resolve the rate-limit/privacy salt. In production a missing RE_SALT
+ * fails CLOSED (503): a known constant salt would make rate buckets
+ * brute-forceable from a DB dump, turning it into an IP-disclosure leak.
+ * Local development supplies it via .dev.vars.
+ */
 function getSalt(): string {
-	return getCloudflareEnv()?.RE_SALT ?? DEV_SALT;
+	const salt = getCloudflareEnv()?.RE_SALT;
+	if (salt) return salt;
+	if (process.env.NODE_ENV === "production") {
+		throw new RegistryError("RE_SALT secret is not configured on this deployment", 503);
+	}
+	return DEV_SALT;
 }
 
 /** SHA-256 of a UTF-8 string, as lowercase hex. */
@@ -116,6 +126,14 @@ export async function rateLimit(
 	const window = Math.floor(Date.now() / 1000 / windowSeconds);
 	const bucket = await sha256Hex(`${getSalt()}|${action}|${ip}|${window}`);
 	const resetAt = (window + 1) * windowSeconds;
+	// Read-first: over-limit requests cost one indexed read and ZERO
+	// writes, so abuse cannot exhaust the daily D1 write quota via the
+	// limiter itself.
+	const existing = await db
+		.prepare("SELECT count FROM registry_rate WHERE bucket = ?1")
+		.bind(bucket)
+		.first<{ count: number }>();
+	if (existing && existing.count >= limit) return false;
 	const stmt = db
 		.prepare(
 			`INSERT INTO registry_rate (bucket, count, reset_at) VALUES (?1, 1, ?2)
@@ -125,8 +143,8 @@ export async function rateLimit(
 		.bind(bucket, resetAt);
 	const row = await stmt.first<{ count: number }>();
 	if ((row?.count ?? 0) > limit) return false;
-	// Opportunistic cleanup: ~10% of calls purge expired windows.
-	if (Math.random() < 0.1) {
+	// Opportunistic cleanup: ~2% of calls purge expired windows (indexed).
+	if (Math.random() < 0.02) {
 		await db.prepare("DELETE FROM registry_rate WHERE reset_at < ?1").bind(nowSeconds()).run();
 	}
 	return true;

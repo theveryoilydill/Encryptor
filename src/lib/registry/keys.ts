@@ -99,6 +99,29 @@ export async function parsePublicArmored(
 		throw new RegistryError("Private key material detected — publish the PUBLIC key only", 400);
 	}
 
+	// Structural validation: the primary key and EVERY subkey must carry
+	// valid self-/binding signatures. Without this, an attacker could glue
+	// someone else's subkey packet onto their own primary key ("subkey
+	// squatting") and hijack that subkey's key-ID lookup.
+	try {
+		await key.verifyPrimaryKey();
+	} catch {
+		throw new RegistryError("Key has an invalid primary key self-signature", 400);
+	}
+	if (key.subkeys.length > maxSubkeys()) {
+		throw new RegistryError(`Key exceeds the maximum of ${maxSubkeys()} subkeys`, 400);
+	}
+	for (const subkey of key.subkeys) {
+		try {
+			// verify() checks the binding signatures against the key this
+			// subkey was parsed under — a foreign subkey glued onto another
+			// primary key fails here.
+			await subkey.verify();
+		} catch {
+			throw new RegistryError("Key contains a subkey with an invalid binding signature", 400);
+		}
+	}
+
 	const fingerprint = key.getFingerprint().toUpperCase();
 	const allIds = key.getKeyIDs().map((id) => id.toHex().toUpperCase());
 	const [primary] = allIds;
@@ -107,7 +130,7 @@ export async function parsePublicArmored(
 	}
 
 	// Extract and normalize self-reported User ID emails (deduped, capped).
-	const emails = extractEmails(key, 10);
+	const emails = extractEmails(key, maxEmails());
 
 	// Best-effort creation time (epoch seconds); 0 when unavailable.
 	const creation = key.getCreationTime();
@@ -179,6 +202,9 @@ export async function verifyChallengeSignature(
 			verificationKeys: key,
 			expectSigned: true,
 		});
+		// Verify EXPLICITLY: a forged/invalid signature also yields a
+		// signatures entry, so length alone would be a false positive.
+		await Promise.all(result.signatures.map((sig) => sig.verified));
 		return result.signatures.length > 0;
 	} catch {
 		return false;
@@ -188,4 +214,14 @@ export async function verifyChallengeSignature(
 /** Cap for the posted cleartext-signed challenge (signed message is small). */
 export function maxChallengeSignatureBytes(): number {
 	return 16 * 1024;
+}
+
+/** Maximum subkeys accepted per published key (bounds storage + batches). */
+export function maxSubkeys(): number {
+	return 16;
+}
+
+/** Maximum self-reported emails indexed per key (single source of truth). */
+export function maxEmails(): number {
+	return 10;
 }

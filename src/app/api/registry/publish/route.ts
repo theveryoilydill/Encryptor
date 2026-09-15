@@ -95,13 +95,16 @@ export async function POST(req: NextRequest) {
 			}
 			await replaceKeyRecord(db, parsed);
 			await auditSafe(db, "replace", parsed.fingerprint, "authorized by stored key signature");
-			return NextResponse.json({
-				fingerprint: parsed.fingerprint,
-				keyId: parsed.keyId,
-				subkeyIds: parsed.subkeyIds,
-				emails: parsed.emails,
-				replaced: true,
-			});
+			return NextResponse.json(
+				{
+					fingerprint: parsed.fingerprint,
+					keyId: parsed.keyId,
+					subkeyIds: parsed.subkeyIds,
+					emails: parsed.emails,
+					replaced: true,
+				},
+				{ headers: { "Cache-Control": "no-store" } },
+			);
 		}
 
 		// Fresh publish: generate the one-time revocation token.
@@ -109,29 +112,68 @@ export async function POST(req: NextRequest) {
 		const tokenHash = await sha256Hex(revocationToken);
 		const now = nowSeconds();
 
-		await db.batch([
-			db
-				.prepare(
-					`INSERT INTO registry_keys
-                                 (fingerprint, key_id, armored, revoked, token_hash, created_at, updated_at)
-                                 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)`,
-				)
-				.bind(parsed.fingerprint, parsed.keyId, parsed.armored, tokenHash, now),
-			...parsed.subkeyIds.map((id) =>
+		// Email-squatting budget: an email may be claimed by at most N keys
+		// (emails are self-reported; lookups must stay bounded and useful).
+		for (const email of parsed.emails) {
+			const claimed = await db
+				.prepare("SELECT COUNT(*) AS n FROM registry_emails WHERE email = ?1")
+				.bind(email)
+				.first<{ n: number }>();
+			if ((claimed?.n ?? 0) >= LIMITS.registryMaxKeysPerEmail) {
+				throw new RegistryError(
+					"This email address is already associated with the maximum number of keys",
+					409,
+				);
+			}
+		}
+
+		// Global storage budget guard (sampled): refuse publishes once the
+		// registry reaches a hard cap so free-tier storage cannot be filled.
+		if (Math.random() < 0.02) {
+			const total = await db
+				.prepare("SELECT COUNT(*) AS n FROM registry_keys")
+				.first<{ n: number }>();
+			if ((total?.n ?? 0) >= LIMITS.registryStorageCapKeys) {
+				throw new RegistryError("Registry is at capacity — contact the operator", 503);
+			}
+		}
+
+		try {
+			await db.batch([
 				db
 					.prepare(
-						"INSERT INTO registry_subkeys (key_id, fingerprint) VALUES (?1, ?2) ON CONFLICT (key_id) DO NOTHING",
+						`INSERT INTO registry_keys
+				 (fingerprint, key_id, armored, revoked, token_hash, created_at, updated_at)
+				 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)`,
 					)
-					.bind(id, parsed.fingerprint),
-			),
-			...parsed.emails.map((email) =>
-				db
-					.prepare(
-						"INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2) ON CONFLICT (email, fingerprint) DO NOTHING",
-					)
-					.bind(email, parsed.fingerprint),
-			),
-		]);
+					.bind(parsed.fingerprint, parsed.keyId, parsed.armored, tokenHash, now),
+				...parsed.subkeyIds.map((id) =>
+					db
+						.prepare(
+							"INSERT INTO registry_subkeys (key_id, fingerprint) VALUES (?1, ?2) ON CONFLICT (key_id) DO NOTHING",
+						)
+						.bind(id, parsed.fingerprint),
+				),
+				...parsed.emails.map((email) =>
+					db
+						.prepare(
+							"INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2) ON CONFLICT (email, fingerprint) DO NOTHING",
+						)
+						.bind(email, parsed.fingerprint),
+				),
+			]);
+		} catch (e) {
+			// Concurrent first-publish of the same fingerprint loses the PK
+			// race — map it to the same 409 a pre-check would give (fail-closed).
+			const message = (e as Error).message ?? "";
+			if (message.includes("UNIQUE")) {
+				throw new RegistryError(
+					"Key already exists. To replace it, fetch a challenge from /api/registry/challenge and sign it with the stored key (send nonce + signature).",
+					409,
+				);
+			}
+			throw e;
+		}
 		await auditSafe(
 			db,
 			"publish",
@@ -150,7 +192,7 @@ export async function POST(req: NextRequest) {
 				warning:
 					"Store this revocation token offline NOW — it is shown only once and is required to retract the key if you lose access to the private key.",
 			},
-			{ status: 201 },
+			{ status: 201, headers: { "Cache-Control": "no-store" } },
 		);
 	} catch (e) {
 		return registryErrorResponse(e);
@@ -163,22 +205,31 @@ async function replaceKeyRecord(
 	parsed: Awaited<ReturnType<typeof parsePublicArmored>>,
 ) {
 	const now = nowSeconds();
+	// `AND revoked = 0` closes the TOCTOU window where a concurrent revocation
+	// lands between the earlier read and this write — a revoked record must
+	// never be mutated. Subkey/email re-inserts mirror the fresh-publish
+	// conflict policy (drop colliding IDs instead of failing the batch).
 	await db.batch([
 		db
 			.prepare(
-				`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4 WHERE fingerprint = ?1`,
+				`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4
+			 WHERE fingerprint = ?1 AND revoked = 0`,
 			)
 			.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now),
 		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(parsed.fingerprint),
 		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(parsed.fingerprint),
 		...parsed.subkeyIds.map((id) =>
 			db
-				.prepare("INSERT INTO registry_subkeys (key_id, fingerprint) VALUES (?1, ?2)")
+				.prepare(
+					"INSERT INTO registry_subkeys (key_id, fingerprint) VALUES (?1, ?2) ON CONFLICT (key_id) DO NOTHING",
+				)
 				.bind(id, parsed.fingerprint),
 		),
 		...parsed.emails.map((email) =>
 			db
-				.prepare("INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2)")
+				.prepare(
+					"INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2) ON CONFLICT (email, fingerprint) DO NOTHING",
+				)
 				.bind(email, parsed.fingerprint),
 		),
 	]);

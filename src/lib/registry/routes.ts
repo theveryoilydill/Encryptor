@@ -29,24 +29,14 @@ export function clientIP(req: NextRequest): string {
 
 /** Uniform JSON error response; RegistryError carries its own status. */
 export function registryErrorResponse(e: unknown, cors = false): NextResponse {
+	const headers: Record<string, string> = { "Cache-Control": "no-store" };
+	if (cors) headers["Access-Control-Allow-Origin"] = "*";
 	if (e instanceof RegistryError) {
-		return NextResponse.json(
-			{ error: e.message },
-			{
-				status: e.status,
-				headers: cors ? { "Access-Control-Allow-Origin": "*" } : undefined,
-			},
-		);
+		return NextResponse.json({ error: e.message }, { status: e.status, headers });
 	}
 	// Unexpected errors must be observable — log before the generic 500.
 	console.error("[registry] unhandled error:", e);
-	return NextResponse.json(
-		{ error: "Internal registry error" },
-		{
-			status: 500,
-			headers: cors ? { "Access-Control-Allow-Origin": "*" } : undefined,
-		},
-	);
+	return NextResponse.json({ error: "Internal registry error" }, { status: 500, headers });
 }
 
 /**
@@ -59,7 +49,13 @@ export async function readJsonBody(req: NextRequest): Promise<Record<string, unk
 	if (!contentType.toLowerCase().includes("application/json")) {
 		throw new RegistryError("Content-Type must be application/json", 415);
 	}
+	// Reject oversized bodies BEFORE buffering them (memory-exhaustion guard).
+	const declaredLength = Number(req.headers.get("content-length") ?? "0");
+	if (declaredLength > LIMITS.registryMaxBodyBytes) {
+		throw new RegistryError("Request body too large", 413);
+	}
 	const raw = await req.text();
+	// Belt-and-braces: chunked bodies can omit Content-Length.
 	if (raw.length > LIMITS.registryMaxBodyBytes) {
 		throw new RegistryError("Request body too large", 413);
 	}

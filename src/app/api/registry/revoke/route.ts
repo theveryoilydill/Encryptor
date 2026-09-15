@@ -74,7 +74,10 @@ export async function POST(req: NextRequest) {
 			.first<{ revoked: number; token_hash: string }>();
 		if (!key) throw new RegistryError("Key not found", 404);
 		if (key.revoked === 1) {
-			return NextResponse.json({ ok: true, alreadyRevoked: true });
+			return NextResponse.json(
+				{ ok: true, alreadyRevoked: true },
+				{ headers: { "Cache-Control": "no-store" } },
+			);
 		}
 
 		const viaToken = await revokeByToken(db, body, key.token_hash, fingerprint, reason);
@@ -112,7 +115,10 @@ async function revokeByToken(
 	}
 	await markRevoked(db, fingerprint, reason);
 	await auditSafe(db, "revoke-token", fingerprint, "offline token");
-	return NextResponse.json({ ok: true, via: "token" });
+	return NextResponse.json(
+		{ ok: true, via: "token" },
+		{ headers: { "Cache-Control": "no-store" } },
+	);
 }
 
 async function revokeBySignature(
@@ -149,7 +155,10 @@ async function revokeBySignature(
 	}
 	await markRevoked(db, fingerprint, reason);
 	await auditSafe(db, "revoke-signed", fingerprint, "key-signed challenge");
-	return NextResponse.json({ ok: true, via: "signature" });
+	return NextResponse.json(
+		{ ok: true, via: "signature" },
+		{ headers: { "Cache-Control": "no-store" } },
+	);
 }
 
 async function revokeByAdmin(
@@ -171,7 +180,10 @@ async function revokeByAdmin(
 	}
 	await markRevoked(db, fingerprint, reason);
 	await auditSafe(db, "revoke-admin", fingerprint, "admin override");
-	return NextResponse.json({ ok: true, via: "admin" });
+	return NextResponse.json(
+		{ ok: true, via: "admin" },
+		{ headers: { "Cache-Control": "no-store" } },
+	);
 }
 
 /** Flip the revoked flag permanently and drop any live challenge nonces. */

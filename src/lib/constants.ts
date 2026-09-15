@@ -27,8 +27,14 @@ export const LIMITS = {
 	registryChallengeWindowSec: 3600,
 	registryRevokeLimit: 10,
 	registryRevokeWindowSec: 3600,
+	registryLookupLimit: 120,
+	registryLookupWindowSec: 3600,
 	/** Challenge nonces expire after this many seconds (one-time use). */
 	registryChallengeTtlSec: 600,
+	/** Email-squatting budget: max keys claiming one email address. */
+	registryMaxKeysPerEmail: 5,
+	/** Hard cap on stored keys (free-tier storage budget guard). */
+	registryStorageCapKeys: 50000,
 } as const;
 
 export const STORAGE_KEYS = {

@@ -77,14 +77,22 @@ the existing Encryptor Worker deployment:
 
 ### Threat model coverage
 
-- **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF).
-- **Key replacement attack** → replacement requires a signature from the CURRENTLY stored key; the offline token cannot replace, only revoke (fail-safe).
-- **DB dump leak** → only public keys + token hashes + hashed-IP rate buckets; no raw IPs, no plaintext tokens, no PII beyond self-published User IDs.
-- **Replay** → challenges are single-use (atomic DELETE-consume before verify) with 10-minute expiry.
-- **Timing attacks** → token/admin comparisons run on SHA-256 digests with a constant-time compare.
-- **Rate abuse** → D1-backed fixed windows (publish 5/h, challenge 10/h, revoke 10/h per IP); lookups are cheap and edge-cached.
+- **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.
+- **Structural key attacks** → publish verifies the primary self-signature and EVERY subkey binding signature (blocks foreign-subkey "squatting" that would hijack key-ID lookups), caps subkeys at 16 and emails at 10.
+- **Key replacement attack** → replacement requires a signature from the CURRENTLY stored key; the challenge nonce is consumed atomically (scoped to the fingerprint) BEFORE verification; the replacement UPDATE is guarded by `AND revoked = 0` so a record cannot be mutated after a concurrent revocation; the offline token cannot replace, only revoke (fail-safe).
+- **DB dump leak** → only public keys + token hashes + hashed-IP rate buckets; no raw IPs, no plaintext tokens, no PII beyond self-published User IDs. Rate buckets use a server-side salt that fails CLOSED in production if unset.
+- **Replay** → challenges are single-use with 10-minute expiry, consumed before verification (failed verification attempts burn the nonce — fail-closed).
+- **Timing attacks** → token/admin comparisons run on SHA-256 digests with a constant-time compare; challenge-signature validity is verified explicitly (every signature's `verified` promise), never inferred from array length.
+- **Quota exhaustion (free tier)** → the D1 rate limiter is read-first: over-limit requests cost one indexed read and ZERO writes, so abuse cannot burn the daily write quota through the limiter itself. Lookups are rate limited too (120/h/IP, read-first). Email lookups, key-ID lookups and results are bounded; one email can be claimed by at most 5 keys; a sampled global storage guard caps total keys at 50,000.
 - **Revocation suppression** → revoked records stay visible (`revoked: true`), and re-publication of a revoked fingerprint is refused forever.
+- **Index hygiene** → cleanup queries hit indexed columns (`reset_at`, `expires_at` — migration 0002) so purges never full-scan.
 - **Admin compromise path** → `ADMIN_REVOKE_TOKEN` secret enables emergency revocation; set via `wrangler secret put`.
+
+### Production hardening recommendations (outside the app)
+
+- Add a free Cloudflare WAF rate-limiting rule for `/api/registry/*` as the outer layer (the D1 limiter is the second line).
+- Monitor D1 metrics (`rows_read`, `rows_written`) and set alerts; the storage guard caps keys at `LIMITS.registryStorageCapKeys`.
+- Set `RE_SALT` (long random string) and optionally `ADMIN_REVOKE_TOKEN` via `wrangler secret put` — the registry fails closed (503) in production without `RE_SALT`.
 
 ## Deployment (free tier, ~5 minutes)
 

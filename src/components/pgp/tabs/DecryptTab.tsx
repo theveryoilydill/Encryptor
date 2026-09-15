@@ -49,9 +49,18 @@ const AUTO_DECRYPT_DEBOUNCE_MS = 600;
 export function DecryptTab({
 	privateKey,
 	requestDecryptedKey,
+	pendingLoad,
+	onPendingLoadConsumed,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
+	/** Vault "Open in Decrypt" hand-off (round 14): when set, the armor is
+	 *  written into the input and the hand-off is consumed via
+	 *  onPendingLoadConsumed. seq (Date.now() per open) disambiguates
+	 *  repeat opens of the same armor. Optional so the tab also works
+	 *  standalone. */
+	pendingLoad?: { armor: string; seq: number } | null;
+	onPendingLoadConsumed?: () => void;
 }) {
 	const [armored, setArmored] = useState("");
 	const [output, setOutput] = useState<{
@@ -248,6 +257,20 @@ export function DecryptTab({
 			clearTimeout(timer);
 		};
 	}, [armored, runDecrypt]);
+
+	// Vault "Open in Decrypt" hand-off (round 14): write the armor into the
+	// input, then let the parent clear the hand-off. seq changes on every
+	// open, so re-opening the SAME entry re-runs this effect even though the
+	// armor text is identical — and because setArmored with an unchanged
+	// value is a no-op, the still-correct plaintext from the previous open
+	// stays on screen (a repeat open never lands in an empty, stuck state).
+	// Fresh text (empty or a different input) rides the normal auto-decrypt
+	// debounce above — no extra decrypt call here.
+	useEffect(() => {
+		if (!pendingLoad) return;
+		setArmored(pendingLoad.armor);
+		onPendingLoadConsumed?.();
+	}, [pendingLoad, onPendingLoadConsumed]);
 
 	// Cheap substring detection computed during render (no effect needed).
 	// Hints never appear for empty input, nor when the text already looks like

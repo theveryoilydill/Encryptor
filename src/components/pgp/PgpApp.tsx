@@ -509,6 +509,15 @@ export default function PgpApp() {
 	// Lazy initializers are safe here: page.tsx renders this component with
 	// ssr:false, so localStorage is always available on first render.
 	const [tab, setTab] = useState<Tab>(loadLastTab);
+	// "Open in Decrypt" deep-link hand-off (round 14): the Encrypt tab's
+	// vault hands over { armor, seq }; the handler below flips to the
+	// Decrypt tab, DecryptTab loads the armor into its input and consumes
+	// the hand-off via onPendingLoadConsumed. seq = Date.now() makes every
+	// open a fresh payload, so re-opening the SAME entry re-triggers.
+	const [pendingDecryptLoad, setPendingDecryptLoad] = useState<{
+		armor: string;
+		seq: number;
+	} | null>(null);
 	const { toast } = useToast();
 	const [recipients, setRecipients] = useState<Recipient[]>([]);
 	// Lazy initializers are safe here: page.tsx renders this component with
@@ -687,6 +696,16 @@ export default function PgpApp() {
 			// ignore
 		}
 	}, []);
+
+	// Vault "Open in Decrypt" deep-link: stash the payload, flip to the
+	// Decrypt tab. DecryptTab's pendingLoad effect writes the armor into
+	// its input (the 600 ms auto-decrypt debounce does the rest) and then
+	// consumes the hand-off — the two tabs stay decoupled.
+	const handleOpenInDecrypt = useCallback((payload: { armor: string; seq: number }) => {
+		setPendingDecryptLoad(payload);
+		setTab("decrypt");
+	}, []);
+	const consumePendingDecryptLoad = useCallback(() => setPendingDecryptLoad(null), []);
 
 	const handleSetPrivateKey = useCallback((next: PrivateKeyConfig | null) => {
 		const prev = privateKeyRef.current;
@@ -1119,11 +1138,17 @@ export default function PgpApp() {
 									includeSelf={includeSelf}
 									onIncludeSelfChange={handleSetIncludeSelf}
 									requestDecryptedKey={requestDecryptedKey}
+									onOpenInDecrypt={handleOpenInDecrypt}
 									settings={settings}
 								/>
 							)}
 							{t.id === "decrypt" && (
-								<DecryptTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
+								<DecryptTab
+									privateKey={privateKey}
+									requestDecryptedKey={requestDecryptedKey}
+									pendingLoad={pendingDecryptLoad}
+									onPendingLoadConsumed={consumePendingDecryptLoad}
+								/>
 							)}
 							{t.id === "sign" && (
 								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />

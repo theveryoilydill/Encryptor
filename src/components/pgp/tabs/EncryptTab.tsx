@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+	ArrowRight,
 	BookmarkPlus,
+	Check,
 	ChevronDown,
+	Copy,
 	FileDown,
 	FileUp,
 	History,
@@ -544,6 +547,7 @@ export function EncryptTab({
 	includeSelf,
 	onIncludeSelfChange,
 	requestDecryptedKey,
+	onOpenInDecrypt,
 	settings,
 }: {
 	privateKey: PrivateKeyConfig | null;
@@ -552,6 +556,11 @@ export function EncryptTab({
 	includeSelf: boolean;
 	onIncludeSelfChange: (v: boolean) => void;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
+	/** Vault "Open in Decrypt" deep-link (round 14): the row hands over the
+	 *  entry's armor (sealed copy preferred) plus a Date.now() seq; PgpApp
+	 *  switches to the Decrypt tab and feeds the payload to DecryptTab's
+	 *  pendingLoad effect. Optional — the tab renders fine unwired. */
+	onOpenInDecrypt?: (payload: { armor: string; seq: number }) => void;
 	/** App preferences (compression + editor style) — owned by PgpApp so a
 	 *  settings change re-renders the open tab immediately. */
 	settings: AppSettings;
@@ -1357,13 +1366,23 @@ export function EncryptTab({
 								{sealedHistory.map((entry) => (
 									<li
 										key={entry.id}
-										className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
+										className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
 									>
+										{/* PQ edge accent (round 14): a violet gradient strip on the left
+										    edge mirrors the PQ chip/badge color language — rows carrying a
+										    quantum-sealed copy are spottable at a glance. */}
+										{entry.sealedArmor && (
+											<span
+												aria-hidden="true"
+												className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
+											/>
+										)}
 										<time
 											dateTime={new Date(entry.at).toISOString()}
-											className="w-[7.5rem] shrink-0 font-mono text-[11px] text-muted-foreground"
+											title={formatHistoryTime(entry.at)}
+											className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
 										>
-											{formatHistoryTime(entry.at)}
+											{formatRelativeHistoryTime(entry.at)}
 										</time>
 										<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
 											<span
@@ -1390,7 +1409,11 @@ export function EncryptTab({
 												~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 											</span>
 										</span>
-										<span className="flex shrink-0 items-center gap-1">
+										{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
+										    actions the group must wrap at narrow widths — nowrap plus the
+										    section's overflow-hidden silently clipped the trailing
+										    txt/remove buttons at 390 px. */}
+										<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
 											<Button
 												variant="ghost"
 												size="sm"
@@ -1414,11 +1437,26 @@ export function EncryptTab({
 												<History aria-hidden="true" className="size-3.5" />
 												Restore
 											</Button>
+											<Button
+												variant="ghost"
+												size="sm"
+												onClick={() =>
+													onOpenInDecrypt?.({
+														armor: entry.sealedArmor ?? entry.armor,
+														seq: Date.now(),
+													})
+												}
+												className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
+											>
+												<ArrowRight aria-hidden="true" className="size-3.5" />
+												<span className="whitespace-nowrap">Open in Decrypt</span>
+											</Button>
 											<CopyButton
 												text={entry.armor}
 												label="Copy"
 												ariaLabel="Copy sealed output to clipboard"
 											/>
+											{entry.sealedArmor && <SealedCopyButton sealedArmor={entry.sealedArmor} />}
 											<DownloadButton text={entry.armor} title="sealed output" />
 											<Button
 												variant="ghost"
@@ -1435,7 +1473,9 @@ export function EncryptTab({
 							</ul>
 							<p className="border-t border-border bg-muted/25 px-4 py-2 text-[11px] text-muted-foreground">
 								Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is
-								never stored — restoring puts the armor back in the output box above.
+								never stored — Restore puts the armor back in the output box above, Open in Decrypt
+								re-opens it directly, and the violet button copies the quantum-sealed copy when the
+								entry has one.
 							</p>
 						</CollapsibleContent>
 					</Collapsible>
@@ -1446,9 +1486,11 @@ export function EncryptTab({
 }
 
 /**
- * Compact timestamp for a sealed-history row: same clock-face for today
- * ("14:32"), a day label otherwise ("Sep 12 · 14:32"). Pure formatting —
- * no state, no effects.
+ * Exact clock time for a sealed-history row: same clock-face for today
+ * ("14:32"), a day label otherwise ("Sep 12 · 14:32"). Since round 14 it
+ * backs the row time element's native title tooltip while the visible
+ * label is the coarse relative time (formatRelativeHistoryTime). Pure
+ * formatting — no state, no effects.
  */
 function formatHistoryTime(at: number): string {
 	const d = new Date(at);
@@ -1466,4 +1508,89 @@ function formatHistoryTime(at: number): string {
 	if (sameDay) return time;
 	const day = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(d);
 	return `${day} \u00b7 ${time}`;
+}
+
+/**
+ * Relative timestamp for a sealed-history row (round 14): "just now" /
+ * "N min ago" / "N h ago", falling back to the absolute locale string
+ * past 24 h. The exact clock time (formatHistoryTime) moves into the
+ * row's native title tooltip. Pure formatting — no state, no effects;
+ * rows re-render on the next vault interaction, plenty precise for a
+ * coarse "N min ago" label.
+ */
+function formatRelativeHistoryTime(at: number): string {
+	const d = new Date(at);
+	if (Number.isNaN(d.getTime())) return "";
+	const elapsed = Date.now() - d.getTime();
+	// Future timestamps (clock skew) read saner as absolute strings.
+	if (elapsed < 0) return formatHistoryTime(at);
+	const minutes = Math.floor(elapsed / 60000);
+	if (minutes < 1) return "just now";
+	if (minutes < 60) return `${minutes} min ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours} h ago`;
+	return new Intl.DateTimeFormat(undefined, {
+		hour: "2-digit",
+		minute: "2-digit",
+		month: "short",
+		day: "numeric",
+		hour12: false,
+	}).format(d);
+}
+
+/**
+ * Per-row "Copy quantum-sealed copy" button (round 14): an icon-only
+ * violet action for entries that carry an ML-KEM-768 sealed copy —
+ * distinct from the classical armor the regular Copy button handles.
+ * The icon swaps Copy → Check for ~1.6 s after a successful copy and
+ * the toast names WHAT was copied, so the two copy actions never read
+ * the same.
+ */
+function SealedCopyButton({ sealedArmor }: { sealedArmor: string }) {
+	const [copied, setCopied] = useState(false);
+	const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const { toast } = useToast();
+
+	// Clear the pending icon-swap timer on unmount.
+	useEffect(() => {
+		return () => {
+			if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
+		};
+	}, []);
+
+	return (
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon"
+			onClick={async () => {
+				try {
+					await navigator.clipboard.writeText(sealedArmor);
+					setCopied(true);
+					if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
+					checkTimerRef.current = setTimeout(() => setCopied(false), 1600);
+					toast({
+						title: "Quantum-sealed copy copied to clipboard",
+						description:
+							"The ML-KEM-768 sealed armor is on your clipboard — it unwraps on this device without the recipient's passphrase.",
+					});
+				} catch (e) {
+					toast({
+						title: "Copy failed",
+						description: (e as Error)?.message || "Clipboard unavailable",
+						variant: "destructive",
+					});
+				}
+			}}
+			title="Copy quantum-sealed copy"
+			aria-label="Copy quantum-sealed copy"
+			className="size-7 text-violet-600 hover:bg-violet-500/10 hover:text-violet-700 dark:text-violet-400 dark:hover:bg-violet-400/10 dark:hover:text-violet-300"
+		>
+			{copied ? (
+				<Check aria-hidden="true" className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+			) : (
+				<Copy aria-hidden="true" className="size-3.5" />
+			)}
+		</Button>
+	);
 }

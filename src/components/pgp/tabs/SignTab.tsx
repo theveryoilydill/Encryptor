@@ -162,11 +162,6 @@ export function SignTab({
 					title={detached ? "Detached signature" : "Cleartext signed message"}
 					output={output}
 					operation={detached ? "sign-detached" : "sign-cleartext"}
-					onReset={() => {
-						setOutput("");
-						setPlaintext("");
-						setError(null);
-					}}
 				/>
 			)}
 		</section>

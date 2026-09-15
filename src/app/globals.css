@@ -388,16 +388,14 @@
  * .md-editor-wrap so the plain Textareas and BlockNote stay untouched.
  * # Mr. AI Acting on s183173's Behalf
  * ------------------------------------------------------------------------- */
-[data-color-mode="light"] .md-editor-wrap .w-md-editor {
-	--md-editor-border: var(--border);
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	overflow: hidden;
-}
-[data-color-mode="dark"] .md-editor-wrap .w-md-editor {
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	overflow: hidden;
+/* [R12] ONE chrome only: the .md-editor-wrap card owns the border; the
+   editor's own default outer ring (a box-shadow on .w-md-editor) is a
+   duplicate inside it — drop it. Keep the app-token color alignment for
+   the hairlines the library still draws (split-view divider etc.), and
+   the toolbar/content alignment below. */
+.md-editor-wrap .w-md-editor {
+	box-shadow: none;
+	--md-editor-box-shadow-color: var(--border);
 }
 /* Title/toolbar bar: quieter background, app-token border. */
 .md-editor-wrap .w-md-editor-toolbar {
@@ -429,4 +427,45 @@
 .md-editor-wrap .w-md-editor-text-pre > .w-md-editor-text-input {
 	font-size: 13px !important;
 	line-height: 1.7 !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Markdown preview (.msg-md-view — DecryptedMessageView) + BlockNote editor:
+ * GFM task-list checkboxes and nested-list indentation rails.
+ * # Mr. AI Acting on s183173's Behalf
+ * ------------------------------------------------------------------------- */
+/* GFM task lists: the checkbox IS the bullet — drop the disc and align the
+   box optically with the first text line. Brand-accented in both modes
+   (#0055dc light / #5e94ff dark), ~0.95em so it reads as text, not chrome. */
+.msg-md-view li:has(> input[type="checkbox"]) {
+	list-style: none;
+}
+.msg-md-view input[type="checkbox"] {
+	accent-color: #0055dc;
+	inline-size: 0.95em;
+	block-size: 0.95em;
+	margin: 0 0.45em 0.1em 0;
+	vertical-align: middle;
+}
+.dark .msg-md-view input[type="checkbox"] {
+	accent-color: #5e94ff;
+}
+/* Nested-list indentation rails: a quiet left border on every nesting level
+   BELOW the first, so deep lists stay readable (light + dark via token). */
+.msg-md-view ul ul,
+.msg-md-view ol ul,
+.msg-md-view ul ol,
+.msg-md-view ol ol {
+	border-left: 2px solid var(--border);
+	margin-left: 0.125rem;
+	padding-left: calc(1.5rem - 0.125rem);
+}
+/* BlockNote (Notion-style composer): same quiet rail on nested block
+   children. The spec'd `.bn-block-children` name does not exist in
+   BlockNote 0.54's DOM — the nested-children container is a .bn-block-group
+   inside another .bn-block-group — so both selectors carry the rail. */
+.bn-block-children,
+.bn-block-group .bn-block-group {
+	border-left: 2px solid var(--border);
+	padding-left: 0.25rem;
 }

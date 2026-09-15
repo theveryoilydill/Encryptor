@@ -46,7 +46,12 @@ import {
 	downloadKeyName,
 	getKeyExpiryStatus,
 } from "@/lib/pgp/key-details";
-import { generateSealKeyPair, wrapSealSecret, type QuantumSealConfig } from "@/lib/pgp/pq";
+import {
+	generateSealKeyPair,
+	wrapSealSecret,
+	wrapSealSecretAuto,
+	type QuantumSealConfig,
+} from "@/lib/pgp/pq";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
@@ -972,13 +977,18 @@ function GenerateKeyForm({
 			const label = name || email || (type === "ecc" ? "ECC key" : "RSA key");
 			// Quantum-seal pair (ML-KEM-768): generated alongside every
 			// in-app key. The public half is stored in the clear; the secret
-			// half is wrapped under the chosen passphrase (an empty passphrase
-			// is no worse than the unprotected private key itself). Failure is
-			// non-fatal — the classical key works without the PQ layer.
+			// half is wrapped under the chosen passphrase — or, for
+			// passphrase-less keys, under a random device key stored in the
+			// config (wrapSealSecretAuto; WebCrypto PBKDF2 rejects empty key
+			// material, so the passphrase path cannot exist there). Without
+			// this, an empty passphrase used to THROW and the key silently
+			// lost its PQ layer at creation. Failure is non-fatal — the
+			// classical key works without the PQ layer.
 			let pq: QuantumSealConfig | undefined;
 			try {
 				const sealPair = generateSealKeyPair();
-				pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, pass);
+				// # Mr. AI Acting on s183173's Behalf
+				pq = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, pass);
 			} catch {
 				pq = undefined;
 			}

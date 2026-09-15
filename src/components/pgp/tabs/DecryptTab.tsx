@@ -35,7 +35,7 @@ import { parseDecryptedPlaintext, type EnvelopeFile } from "@/lib/pgp/envelope";
 import {
 	isQuantumSealed,
 	parseSealedArmor,
-	unwrapSealSecret,
+	unwrapSealSecretAuto,
 	unsealWithSecretKey,
 } from "@/lib/pgp/pq";
 import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
@@ -159,8 +159,11 @@ export function DecryptTab({
 				if (runIdRef.current !== myRunId) return; // superseded mid-prompt
 
 				// Quantum-sealed input: strip the ML-KEM-768 outer layer first.
-				// Needs the SAME passphrase (it unwraps the ML-KEM secret from the
-				// key config) — a wrong passphrase surfaces as a friendly error.
+				// The ML-KEM secret unwraps with the passphrase OR the stored
+				// device key, whichever the key config carries (passphrase-less
+				// keys wrap under a device key — no "needs your passphrase"
+				// dead-end). A wrong passphrase / corrupt config surfaces as a
+				// friendly error.
 				let classicalInput = input;
 				if (isQuantumSealed(input)) {
 					if (!privateKey?.pq) {
@@ -168,12 +171,8 @@ export function DecryptTab({
 							"This message has a quantum-sealed copy, but your configured key has no quantum-seal key. Open it with the key that created it.",
 						);
 					}
-					if (!passphrase) {
-						throw new Error(
-							"The quantum-sealed layer needs your passphrase (the one that protects this key), not just the key — enter it in the prompt and try again.",
-						);
-					}
-					const sealSecret = await unwrapSealSecret(privateKey.pq, passphrase);
+					// # Mr. AI Acting on s183173's Behalf
+					const sealSecret = await unwrapSealSecretAuto(privateKey.pq, passphrase);
 					if (runIdRef.current !== myRunId) return;
 					classicalInput = await unsealWithSecretKey(parseSealedArmor(input), sealSecret);
 					if (runIdRef.current !== myRunId) return;
@@ -281,15 +280,6 @@ export function DecryptTab({
 		// No success toast needed: the repaired text re-enters the normal
 		// auto-decrypt flow, so the result speaks for itself.
 	}, [armored]);
-
-	const reset = useCallback(() => {
-		runIdRef.current += 1;
-		setArmored("");
-		setOutput(null);
-		setError(null);
-		setBusy(false);
-		setShowRaw(false);
-	}, []);
 
 	return (
 		<section className="space-y-6">
@@ -520,22 +510,6 @@ export function DecryptTab({
 							output={armored}
 							signers={output.signatures}
 						/>
-						{armored && (
-							<Button
-								type="button"
-								variant="outline"
-								onClick={() => {
-									// Nuke the encrypted input from memory, keep the result.
-									setArmored("");
-								}}
-								className="h-11 px-3 text-xs transition-colors sm:h-8"
-							>
-								Nuke encrypted input
-							</Button>
-						)}
-						<Button type="button" variant="ghost" onClick={reset} className="h-11 text-sm sm:h-9">
-							Start over
-						</Button>
 					</div>
 				</div>
 			)}

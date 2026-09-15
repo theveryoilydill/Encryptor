@@ -216,7 +216,7 @@ export function MessageEditor({
 		return (
 			<div
 				ref={vsWrapRef}
-				className="overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20"
+				className="md-editor-wrap overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20"
 			>
 				<div className="grid lg:grid-cols-2">
 					<div className="min-w-0 border-b border-border lg:border-b-0 lg:border-r">

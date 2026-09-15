@@ -21,7 +21,6 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Textarea } from "@/components/ui/textarea";
 import { RecipientPicker } from "@/components/pgp/RecipientPicker";
 import {
 	AttachmentList,
@@ -1069,47 +1068,14 @@ export function EncryptTab({
 					files={[]}
 					// The plaintext was deleted from the composer on success —
 					// only the ciphertext remains in memory, so there is no
-					// preview and nothing to nuke. "Show raw text" IS the view.
+					// preview. "Show raw text" IS the view.
 					operation="encrypt"
 					inputBytes={inputBytes}
-					onReset={() => {
-						setOutput("");
-						setSealedCopy("");
-						setOutputMeta(null);
-						setError(null);
-					}}
+					// Quantum-sealed copy REPLACES the output box (no second
+					// box): violet PQ treatment + in-box Sealed/Recipient switch.
+					sealedCopy={sealedCopy || undefined}
+					sealedNote="Post-quantum outer layer for your archive — even a future quantum computer can't open it without the key on this device."
 				/>
-			)}
-
-			{/* Quantum-sealed copy (opt-in): only produced when the key has a
-            quantum-seal pair. Shown as a secondary output row with its own
-            copy/download actions — it is an archive artifact, not the thing
-            you send. */}
-			{sealedCopy && (
-				<section className="animate-fade-up space-y-2 rounded-xl border border-violet-300/60 bg-violet-50/60 p-4 shadow-sm dark:border-violet-900/50 dark:bg-violet-950/20">
-					<div className="flex flex-wrap items-center justify-between gap-2">
-						<div className="min-w-0">
-							<p className="text-xs font-medium text-violet-900 dark:text-violet-300">
-								Quantum-sealed copy (ML-KEM-768)
-							</p>
-							<p className="mt-0.5 text-[11px] text-muted-foreground">
-								Post-quantum outer layer for your archive — even a future quantum computer
-								can&apos;t open it without this device&apos;s key + passphrase.
-							</p>
-						</div>
-						<div className="flex shrink-0 gap-2">
-							<CopyButton text={sealedCopy} label="Copy" ariaLabel="Copy quantum-sealed copy" />
-							<DownloadButton text={sealedCopy} title="quantum-sealed copy" />
-						</div>
-					</div>
-					<Textarea
-						readOnly
-						rows={4}
-						value={sealedCopy}
-						className="field-sizing-fixed bg-muted/40 font-mono text-[11px]"
-						aria-label="Quantum-sealed copy"
-					/>
-				</section>
 			)}
 
 			{sealedHistory.length > 0 && (

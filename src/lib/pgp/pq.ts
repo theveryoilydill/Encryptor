@@ -27,6 +27,11 @@
  *   disk in the clear:
  *     wrapped = AES-256-GCM(PBKDF2-SHA256(passphrase, salt), secretKey)
  *   and the config carries { pk, wrappedSk, salt, nonce } as base64.
+ *   For keys created WITHOUT a passphrase there is no key material to run
+ *   PBKDF2 over (WebCrypto rejects zero-length input), so the secret half
+ *   is instead wrapped under a random 32-byte DEVICE key stored in the
+ *   clear in the config (deviceKey) — no new exposure, since the classical
+ *   private key already sits in the clear in the very same config.
  *
  * All primitives: @noble/post-quantum (ml_kem768) + WebCrypto.
  */
@@ -50,6 +55,14 @@ export interface QuantumSealConfig {
 	salt: string;
 	/** AES-GCM nonce for wrappedSk (base64, 12 bytes raw). */
 	nonce: string;
+	/** Random 32-byte device key (base64) for PASSPHRASE-LESS keys: the
+	 *  ML-KEM secret is wrapped under THIS key (AES-GCM, `nonce` above)
+	 *  instead of a passphrase-derived one. WebCrypto PBKDF2 rejects
+	 *  zero-length key material, so a passphrase path cannot exist for
+	 *  these keys — and storing the wrapping key adds no new exposure,
+	 *  because the classical private key is already stored in the clear
+	 *  in the same config. Absent for passphrase-wrapped keys. */
+	deviceKey?: string;
 }
 
 /** b64 helpers (std alphabet, padding — matches btoa/atob usage elsewhere). */
@@ -75,7 +88,7 @@ function assertCrypto(): SubtleCrypto {
 /* ------------------------------ key material ------------------------------ */
 
 /** Generate a fresh ML-KEM-768 keypair. Callers MUST wrap the returned secret
- *  key (wrapSealSecret) before persisting anything. */
+ *  key (wrapSealSecretAuto) before persisting anything. */
 export function generateSealKeyPair(): { publicKey: Uint8Array; secretKey: Uint8Array } {
 	return ml_kem768.keygen();
 }
@@ -142,6 +155,91 @@ export async function unwrapSealSecret(
 		fromB64(seal.wrappedSk) as unknown as ArrayBuffer,
 	);
 	return new Uint8Array(plain);
+}
+
+// # Mr. AI Acting on s183173's Behalf
+/** Wrap (encrypt) the raw ML-KEM secret key, choosing the wrapping scheme
+ *  from the passphrase:
+ *   - non-empty passphrase → the classic PBKDF2 wrap (identical to
+ *     `wrapSealSecret`, which stays exported for back-compat);
+ *   - EMPTY passphrase → wrap under a random 32-byte device key stored in
+ *     the clear in the config (`deviceKey`). WebCrypto PBKDF2 rejects
+ *     zero-length key material, so the old code THREW here and a
+ *     passphrase-less key silently lost its PQ layer at keygen. The device
+ *     key adds no new exposure: the classical private key is already
+ *     stored in the clear in the same config. The `salt` field still
+ *     carries a fresh random salt for forward-compat; the PBKDF2 path is
+ *     simply not used for these keys. */
+export async function wrapSealSecretAuto(
+	publicKey: Uint8Array,
+	secretKey: Uint8Array,
+	passphrase: string,
+): Promise<QuantumSealConfig> {
+	if (passphrase.length > 0) {
+		return wrapSealSecret(publicKey, secretKey, passphrase);
+	}
+	const subtle = assertCrypto();
+	const deviceKey = crypto.getRandomValues(new Uint8Array(32));
+	const nonce = crypto.getRandomValues(new Uint8Array(12));
+	const key = await subtle.importKey(
+		"raw",
+		deviceKey as unknown as ArrayBuffer,
+		{ name: "AES-GCM" },
+		false,
+		["encrypt"],
+	);
+	const wrapped = await subtle.encrypt(
+		{ name: "AES-GCM", iv: nonce as unknown as ArrayBuffer },
+		key,
+		secretKey as unknown as ArrayBuffer,
+	);
+	return {
+		pk: toB64(publicKey),
+		wrappedSk: toB64(new Uint8Array(wrapped)),
+		salt: toB64(crypto.getRandomValues(new Uint8Array(16))),
+		nonce: toB64(nonce),
+		deviceKey: toB64(deviceKey),
+	};
+}
+
+// # Mr. AI Acting on s183173's Behalf
+/** Unwrap the ML-KEM secret key, opening whichever wrapping the config
+ *  carries: the stored device key when present (passphrase-less keys — the
+ *  passphrase is ignored entirely, so there is no "needs your passphrase"
+ *  dead-end), otherwise the PBKDF2 passphrase wrap. Throws with a clear
+ *  message when the record cannot be opened. */
+export async function unwrapSealSecretAuto(
+	seal: QuantumSealConfig,
+	passphrase: string | null | undefined,
+): Promise<Uint8Array> {
+	const subtle = assertCrypto();
+	if (seal.deviceKey) {
+		const key = await subtle.importKey(
+			"raw",
+			fromB64(seal.deviceKey) as unknown as ArrayBuffer,
+			{ name: "AES-GCM" },
+			false,
+			["decrypt"],
+		);
+		try {
+			const plain = await subtle.decrypt(
+				{ name: "AES-GCM", iv: fromB64(seal.nonce) as unknown as ArrayBuffer },
+				key,
+				fromB64(seal.wrappedSk) as unknown as ArrayBuffer,
+			);
+			return new Uint8Array(plain);
+		} catch {
+			throw new Error(
+				"Couldn't open the quantum-seal secret with this device's key — the key config looks corrupted or was re-wrapped elsewhere.",
+			);
+		}
+	}
+	if (!passphrase) {
+		throw new Error(
+			"The quantum-sealed layer needs your passphrase (the one that protects this key), not just the key — enter it in the prompt and try again.",
+		);
+	}
+	return unwrapSealSecret(seal, passphrase);
 }
 
 /* --------------------------------- seal ----------------------------------- */

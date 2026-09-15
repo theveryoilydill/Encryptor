@@ -43,6 +43,12 @@ export interface SealedHistoryEntry {
 	/** Attachment count wrapped into the envelope at seal time (0-99).
 	 *  Optional so legacy entries still load. */
 	files?: number;
+	/** Signing key fingerprint at seal time (round 16): hex only, lower-
+	 *  cased, capped at 64 chars (sanitizeFingerprint). Powers the
+	 *  verify-style tooltips — the FULL grouped fingerprint on the vault
+	 *  row, the short key id on the strip. Optional so entries written
+	 *  before this field shipped still load. */
+	signerFp?: string;
 }
 
 const HISTORY_KEY = "encryptor.sealed.history.v1";
@@ -90,6 +96,21 @@ function sanitizeFiles(input: unknown): number | undefined {
 	return Math.min(MAX_SEALED_FILES, Math.floor(input));
 }
 
+/** Fingerprint (round 16): display metadata, not a security check — hex
+ *  digits only, lowercased, capped at 64 (v4 fingerprints are 40 chars,
+ *  v6 are 64); at least 8 hex chars must survive the strip or the value
+ *  is treated as garbage (undefined → the tooltip falls back to the
+ *  plain "captured at seal time" wording). Exported so tests and future
+ *  importers share the exact same tolerance. */
+export function sanitizeFingerprint(input: unknown): string | undefined {
+	if (typeof input !== "string") return undefined;
+	const hex = input
+		.replace(/[^0-9a-fA-F]/g, "")
+		.toLowerCase()
+		.slice(0, 64);
+	return hex.length >= 8 ? hex : undefined;
+}
+
 function makeId(): string {
 	try {
 		if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -131,6 +152,7 @@ export function loadSealedHistory(): SealedHistoryEntry[] {
 				labels: sanitizeLabels(e.labels),
 				signer: sanitizeSigner(e.signer),
 				files: sanitizeFiles(e.files),
+				signerFp: sanitizeFingerprint(e.signerFp),
 			});
 		}
 		return entries.sort((a, b) => b.at - a.at).slice(0, MAX_SEALED_ENTRIES);
@@ -159,6 +181,7 @@ export function appendSealedOutput(input: {
 	labels?: string[];
 	signer?: string;
 	files?: number;
+	signerFp?: string;
 }): { entries: SealedHistoryEntry[]; stored: boolean } {
 	if (input.armor.length > MAX_SEALED_ARMOR_CHARS) {
 		// Deliberate skip: a truncated ciphertext would decrypt to garbage —
@@ -176,6 +199,7 @@ export function appendSealedOutput(input: {
 		labels: sanitizeLabels(input.labels),
 		signer: sanitizeSigner(input.signer),
 		files: sanitizeFiles(input.files),
+		signerFp: sanitizeFingerprint(input.signerFp),
 	};
 	const entries = [entry, ...loadSealedHistory().filter((e) => e.armor !== input.armor)].slice(
 		0,

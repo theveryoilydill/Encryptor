@@ -17,6 +17,7 @@ import {
 	Lock,
 	Maximize2,
 	Minimize2,
+	Paperclip,
 	ShieldCheck,
 	Sparkles,
 	Trash2,
@@ -620,6 +621,12 @@ export function EncryptTab({
 		// keeps its chips.
 		signer?: string;
 		files?: number;
+		// Round 16: the signing key's full fingerprint (sanitized hex) —
+		// drives the verify-style tooltips: the vault ROW chip shows the
+		// FULL grouped fingerprint, the STRIP chip the short key id (last
+		// 16 hex chars). Absent → the round-15 "captured at seal time"
+		// wording.
+		signerFp?: string;
 	} | null>(null);
 	// Recent sealed outputs — a ciphertext-only local history (lib/pgp/
 	// sealed-history): the armored result of each encrypt is kept so an
@@ -630,6 +637,24 @@ export function EncryptTab({
 	useEffect(() => {
 		setSealedHistory(loadSealedHistory());
 	}, []);
+
+	// Vault summary-strip totals (round 16): computed over the (≤8) entries
+	// with a cheap useMemo — combined armor bytes (classical + PQ copies)
+	// feed the "~X KB sealed" segment; the signed / quantum-sealed /
+	// attached counts only render when non-zero.
+	const sealedTotals = useMemo(() => {
+		let bytes = 0;
+		let signed = 0;
+		let pq = 0;
+		let files = 0;
+		for (const e of sealedHistory) {
+			bytes += e.armor.length + (e.sealedArmor?.length ?? 0);
+			if (e.signer) signed += 1;
+			if (e.pqSealed) pq += 1;
+			files += e.files ?? 0;
+		}
+		return { bytes, signed, pq, files };
+	}, [sealedHistory]);
 
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
@@ -936,11 +961,17 @@ export function EncryptTab({
 			// (only meaningful when the output is actually signed) + the
 			// attachment count — recorded on the strip AND in the vault entry.
 			const signerLabel = signing ? privateKey?.label : undefined;
+			// Round 16: the signing key's fingerprint, captured at seal time from
+			// the configured key's info (optional-chained — a key configured
+			// without metadata simply records no fingerprint). Same signing gate
+			// as the label: a non-signed seal records no provenance.
+			const signerFp = signing ? privateKey?.info.fingerprint : undefined;
 			setOutputMeta({
 				keys: recipientKeys.length,
 				signed: signing,
 				labels: recipientLabels,
 				signer: signerLabel,
+				signerFp,
 				files: attachments.length,
 			});
 			// Ciphertext-only local history: record the sealed output (and its
@@ -954,6 +985,7 @@ export function EncryptTab({
 				pqSealed: pqCopy !== null,
 				labels: recipientLabels,
 				signer: signerLabel,
+				signerFp,
 				files: attachments.length,
 			});
 			setSealedHistory(recorded.entries);
@@ -1345,7 +1377,11 @@ export function EncryptTab({
 							// chip when the seal captured a signer label. The label is
 							// recorded at seal time — displayed, not verified here.
 							<span
-								title={`Signed by ${outputMeta.signer} — display label captured at seal time (not verified here).`}
+								title={
+									outputMeta.signerFp
+										? `Signed by ${outputMeta.signer} at seal time · key id ${formatFingerprint(outputMeta.signerFp.slice(-16))}`
+										: `Signed by ${outputMeta.signer} — display label captured at seal time (not verified here).`
+								}
 								className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-500"
 							>
 								signed by {outputMeta.signer}
@@ -1355,8 +1391,11 @@ export function EncryptTab({
 								signed
 							</span>
 						))}
+					{/* Paperclip icon (round 16): files chips read as attachments at
+					    a glance — strip + vault rows + summary strip share the motif. */}
 					{outputMeta.files !== undefined && outputMeta.files > 0 && (
-						<span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+						<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+							<Paperclip aria-hidden="true" className="size-3" />
 							{outputMeta.files} {outputMeta.files === 1 ? "file" : "files"}
 						</span>
 					)}
@@ -1422,6 +1461,40 @@ export function EncryptTab({
 							</Button>
 						</div>
 						<CollapsibleContent>
+							{/* Vault summary strip (round 16): a thin muted at-a-glance bar —
+							    "N entries · ~X KB sealed · N signed · N quantum-sealed · N
+							    attached". Only the segments that apply render; the size
+							    combines classical + PQ armor bytes. */}
+							<div className="flex flex-wrap items-center gap-x-1 px-4 pb-1 pt-2 text-[11px] text-muted-foreground">
+								<span>
+									{sealedHistory.length} {sealedHistory.length === 1 ? "entry" : "entries"}
+								</span>
+								<span aria-hidden="true">·</span>
+								<span>~{(sealedTotals.bytes / 1024).toFixed(1)} KB sealed</span>
+								{sealedTotals.signed > 0 && (
+									<>
+										<span aria-hidden="true">·</span>
+										<span>{sealedTotals.signed} signed</span>
+									</>
+								)}
+								{sealedTotals.pq > 0 && (
+									<>
+										<span aria-hidden="true">·</span>
+										<span className="text-violet-600 dark:text-violet-400">
+											{sealedTotals.pq} quantum-sealed
+										</span>
+									</>
+								)}
+								{sealedTotals.files > 0 && (
+									<>
+										<span aria-hidden="true">·</span>
+										<span className="inline-flex items-center gap-1">
+											<Paperclip aria-hidden="true" className="size-3" />
+											{sealedTotals.files} attached
+										</span>
+									</>
+								)}
+							</div>
 							<ul className="divide-y divide-border border-t border-border">
 								{sealedHistory.map((entry) => (
 									<li
@@ -1458,7 +1531,11 @@ export function EncryptTab({
 											{entry.signed &&
 												(entry.signer ? (
 													<span
-														title={`Signed by ${entry.signer} — display label captured at seal time (not verified here).`}
+														title={
+															entry.signerFp
+																? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
+																: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
+														}
 														className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
 													>
 														signed by {entry.signer}
@@ -1474,7 +1551,8 @@ export function EncryptTab({
 												</span>
 											)}
 											{entry.files !== undefined && entry.files > 0 && (
-												<span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+												<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+													<Paperclip aria-hidden="true" className="size-3" />
 													{entry.files} {entry.files === 1 ? "file" : "files"}
 												</span>
 											)}
@@ -1498,6 +1576,7 @@ export function EncryptTab({
 														signed: entry.signed,
 														labels: entry.labels ?? [],
 														signer: entry.signer,
+														signerFp: entry.signerFp,
 														files: entry.files,
 													});
 													setError(null);
@@ -1558,6 +1637,23 @@ export function EncryptTab({
 			)}
 		</section>
 	);
+}
+
+/**
+ * Grouped fingerprint display for the seal provenance tooltips (round 16):
+ * hex digits only (already-sanitized values pass through untouched), cut
+ * into runs of `group` (default 4) joined by spaces and UPPERCASED for
+ * display — exactly the grouping the key-details panel shows. Pure
+ * formatting, no state.
+ */
+function formatFingerprint(fp: string, group = 4): string {
+	const hex = (fp || "").replace(/[^0-9a-fA-F]/g, "");
+	if (!hex) return "";
+	const chunks: string[] = [];
+	for (let i = 0; i < hex.length; i += group) {
+		chunks.push(hex.slice(i, i + group));
+	}
+	return chunks.join(" ").toUpperCase();
 }
 
 /**

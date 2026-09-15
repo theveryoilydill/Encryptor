@@ -7,7 +7,9 @@ import {
 	BookmarkPlus,
 	Check,
 	ChevronDown,
+	CircleSlash,
 	Copy,
+	Download,
 	FileDown,
 	FileUp,
 	History,
@@ -19,6 +21,7 @@ import {
 	Minimize2,
 	Paperclip,
 	ShieldCheck,
+	ShieldX,
 	Sparkles,
 	Trash2,
 	TriangleAlert,
@@ -39,6 +42,7 @@ import {
 } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
+import { PROXIES } from "@/components/pgp/contracts";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -75,8 +79,22 @@ import {
 	MAX_SEALED_ENTRIES,
 	type SealedHistoryEntry,
 } from "@/lib/pgp/sealed-history";
-import { encryptAndSign, encryptMessage } from "@/lib/pgp/pgp";
-import { sealForConfig } from "@/lib/pgp/pq";
+import {
+	decryptAndAutoVerify,
+	describeEncryptedMessage,
+	encryptAndSign,
+	encryptMessage,
+	listPrivateKeyIds,
+} from "@/lib/pgp/pgp";
+import {
+	isQuantumSealed,
+	parseSealedArmor,
+	sealForConfig,
+	unwrapSealSecretAuto,
+	unsealWithSecretKey,
+} from "@/lib/pgp/pq";
+import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
+import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import {
 	buildPlaintextForEncryption,
 	formatFileSize,
@@ -87,6 +105,9 @@ import { LIMITS } from "@/lib/constants";
 import type { AppSettings } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
+
+/** Vault health-check verdicts (round 17) — runtime-only, keyed by entry id. */
+type VaultHealthVerdict = "ok" | "not-mine" | "failed" | "running";
 
 /** Curated starter templates for the composer (round-12 product pass:
  *  eight complete fill-in documents). Applying one REPLACES the composer
@@ -656,6 +677,32 @@ export function EncryptTab({
 		return { bytes, signed, pq, files };
 	}, [sealedHistory]);
 
+	// Vault health check (round 17): per-entry decrypt verdicts keyed by
+	// entry id. RUNTIME ONLY — never persisted. Any vault mutation replaces
+	// the sealedHistory array identity (append / remove / clear), so this
+	// effect wipes the map and a stale verdict can never outlive the
+	// ciphertext it described.
+	const [healthMap, setHealthMap] = useState<Record<string, VaultHealthVerdict>>({});
+	const [healthRunning, setHealthRunning] = useState(false);
+	useEffect(() => {
+		setHealthMap({});
+	}, [sealedHistory]);
+	// "N/M decryptable" tallies for the strip segment + closing toast: only
+	// entries holding a verdict count (during a run the map fills entry by
+	// entry; after it every entry carries one).
+	const healthTotals = useMemo(() => {
+		let ok = 0;
+		let notMine = 0;
+		let failed = 0;
+		for (const e of sealedHistory) {
+			const v = healthMap[e.id];
+			if (v === "ok") ok += 1;
+			else if (v === "not-mine") notMine += 1;
+			else if (v === "failed") failed += 1;
+		}
+		return { checked: ok + notMine + failed, ok, notMine, failed };
+	}, [sealedHistory, healthMap]);
+
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
 	// (getKeyExpiryStatus), so the banner and the badge can never disagree.
@@ -1051,6 +1098,170 @@ export function EncryptTab({
 		settings.compression,
 		settings.pqSealedCopy,
 	]);
+
+	// Vault health check (round 17): "do my sealed outputs still decrypt?"
+	// ONE requestDecryptedKey() up front — silent for passphrase-less keys
+	// (device-key unwrap), the standard single prompt otherwise — then every
+	// entry is tried with that SAME decrypted key. A PKESK-header pre-check
+	// (describeEncryptedMessage — packet headers only, no secret material)
+	// first separates "not yours" (sealed to other recipients only, expected
+	// non-decryptable) from a real failure BEFORE any decryption. The
+	// quantum-sealed copy is preferred (deep-link parity with Open in
+	// Decrypt) with one classical fallback attempt.
+	const runVaultHealthCheck = useCallback(async () => {
+		if (!privateKey || healthRunning) return;
+		setHealthRunning(true);
+		try {
+			// One unlock up front; the key exists only in this local variable.
+			const { key: decryptedKey, passphrase } = await requestDecryptedKey();
+
+			// Own key IDs (primary + subkeys) for the PKESK pre-check — read
+			// WITHOUT decrypting anything (no passphrase, no secret material).
+			const ownKeyIds = (await listPrivateKeyIds(privateKey.encryptedArmored ?? "")) ?? [];
+
+			let okCount = 0;
+			let notMineCount = 0;
+			let failedCount = 0;
+
+			for (const entry of sealedHistory) {
+				setHealthMap((prev) => ({ ...prev, [entry.id]: "running" }));
+				// Small await point: the amber per-row spinner must render
+				// before the (potentially heavy) decrypt work starts.
+				await new Promise((resolve) => setTimeout(resolve, 30));
+
+				// (a) PKESK pre-check on the CLASSICAL armor: when the packet
+				// headers list recipient keys and NONE of them is ours, the
+				// message was sealed to other recipients only — not decryptable
+				// by design, so "not yours" without a decryption attempt.
+				const meta = await describeEncryptedMessage(entry.armor);
+				if (
+					meta &&
+					ownKeyIds.length > 0 &&
+					!meta.recipientKeyIDs.some((id) => ownKeyIds.includes(id))
+				) {
+					setHealthMap((prev) => ({ ...prev, [entry.id]: "not-mine" }));
+					notMineCount += 1;
+					continue;
+				}
+
+				// (b) Decrypt trial: quantum-sealed copy first (same path as
+				// Open in Decrypt), one classical fallback attempt.
+				const tryDecrypt = async (armored: string): Promise<string> => {
+					let classicalInput = armored;
+					if (isQuantumSealed(armored)) {
+						if (!privateKey.pq) throw new Error("No quantum-seal key configured for this key.");
+						const sealSecret = await unwrapSealSecretAuto(privateKey.pq, passphrase);
+						classicalInput = await unsealWithSecretKey(parseSealedArmor(armored), sealSecret);
+					}
+					const result = await decryptAndAutoVerify(
+						{
+							armoredMessage: classicalInput,
+							decryptionPrivateKey: decryptedKey,
+							verificationPublicKeys: [],
+						},
+						(keyIDs) =>
+							fetchKeysFromAllSourcesWithLocal(
+								keyIDs,
+								PROXIES.fetchkeyProxy,
+								PROXIES.fetchkeyOpgProxy,
+								{
+									encryptedArmored: privateKey.encryptedArmored ?? "",
+									label: privateKey.label,
+								},
+							),
+					);
+					return result.plaintext;
+				};
+
+				let verdict: VaultHealthVerdict = "failed";
+				if (entry.sealedArmor) {
+					try {
+						await tryDecrypt(entry.sealedArmor);
+						verdict = "ok";
+					} catch {
+						// Sealed copy did not open — one classical fallback below.
+					}
+				}
+				if (verdict !== "ok") {
+					try {
+						await tryDecrypt(entry.armor);
+						verdict = "ok";
+					} catch {
+						verdict = "failed";
+					}
+				}
+				setHealthMap((prev) => ({ ...prev, [entry.id]: verdict }));
+				if (verdict === "ok") okCount += 1;
+				else failedCount += 1;
+			}
+
+			// Closing tally, worded honestly: only entries that actually
+			// opened count as decryptable; not-mine entries are the expected
+			// non-decryptables and get their own mention.
+			const total = sealedHistory.length;
+			const notes: string[] = [];
+			if (notMineCount > 0)
+				notes.push(
+					`${notMineCount} ${notMineCount === 1 ? "entry is" : "entries are"} sealed to other recipients only`,
+				);
+			if (failedCount > 0) notes.push(`${failedCount} failed to decrypt`);
+			toast({
+				title: `Health check: ${okCount}/${total} decryptable`,
+				description:
+					notes.length > 0
+						? `${notes.join(" \u00b7 ")}. Verdicts are runtime-only and clear on the next vault change.`
+						: "Every sealed output opened with your key.",
+			});
+		} catch (e) {
+			// requestDecryptedKey rejected (the prompt was cancelled) — no
+			// verdicts were produced, nothing to report per row.
+			toast({
+				title: "Health check cancelled",
+				description:
+					e instanceof Error && e.message
+						? e.message
+						: "Your key was not unlocked, so nothing was checked.",
+			});
+		} finally {
+			setHealthRunning(false);
+		}
+	}, [privateKey, healthRunning, sealedHistory, requestDecryptedKey, toast]);
+
+	// Vault manifest export (round 17): the whole vault as one portable JSON
+	// file — kind/version/exportedAt/count/entries with the classical armor,
+	// the quantum-sealed copy and every scrap of seal-time provenance.
+	// Ciphertext-only BY CONSTRUCTION: vault entries never hold plaintext,
+	// so the manifest cannot leak it.
+	const handleExportManifest = useCallback(() => {
+		if (sealedHistory.length === 0) return;
+		const manifest = {
+			kind: "encryptor-vault-manifest",
+			version: 1,
+			exportedAt: new Date().toISOString(),
+			count: sealedHistory.length,
+			entries: sealedHistory.map((entry) => ({
+				id: entry.id,
+				createdAt: new Date(entry.at).toISOString(),
+				keys: entry.keys,
+				signed: entry.signed,
+				pqSealed: entry.pqSealed,
+				labels: entry.labels ?? [],
+				signer: entry.signer,
+				signerFp: entry.signerFp,
+				files: entry.files,
+				armor: entry.armor,
+				sealedArmor: entry.sealedArmor,
+			})),
+		};
+		const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
+		downloadBlob(blob, vaultManifestFilename());
+		toast({
+			title: `Vault manifest exported — ${sealedHistory.length} ${
+				sealedHistory.length === 1 ? "entry" : "entries"
+			}`,
+			description: "Ciphertext only: the manifest carries armor + provenance, never plaintext.",
+		});
+	}, [sealedHistory, toast]);
 
 	// Cheap substring detection on the MESSAGE textarea, computed during render
 	// (no effect needed). Hints never appear for empty input; signed input is
@@ -1494,6 +1705,59 @@ export function EncryptTab({
 										</span>
 									</>
 								)}
+								{healthTotals.checked > 0 && (
+									<>
+										<span aria-hidden="true">·</span>
+										<span
+											className="text-emerald-600 dark:text-emerald-400"
+											title={`Opened with your key during the last health check — ${healthTotals.ok} of ${sealedHistory.length} decryptable${
+												healthTotals.notMine > 0
+													? `, ${healthTotals.notMine} not addressed to your key`
+													: ""
+											}${healthTotals.failed > 0 ? `, ${healthTotals.failed} failed` : ""}.`}
+										>
+											{healthTotals.ok}/{sealedHistory.length} decryptable
+										</span>
+									</>
+								)}
+								<span className="ml-auto flex items-center gap-1">
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={runVaultHealthCheck}
+										disabled={!privateKey || healthRunning}
+										title={
+											!privateKey
+												? "Configure your private key first — the health check decrypts with your key."
+												: "Try every sealed output with your key — verdicts appear on each row."
+										}
+										className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+									>
+										{healthRunning ? (
+											<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+										) : (
+											<ShieldCheck aria-hidden="true" className="size-3.5" />
+										)}
+										Health check
+									</Button>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={handleExportManifest}
+										disabled={sealedHistory.length === 0}
+										title={
+											sealedHistory.length === 0
+												? "Nothing to export yet — the vault is empty."
+												: "Download the whole vault as a ciphertext-only JSON manifest."
+										}
+										className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+									>
+										<Download aria-hidden="true" className="size-3.5" />
+										Export
+									</Button>
+								</span>
 							</div>
 							<ul className="divide-y divide-border border-t border-border">
 								{sealedHistory.map((entry) => (
@@ -1556,6 +1820,7 @@ export function EncryptTab({
 													{entry.files} {entry.files === 1 ? "file" : "files"}
 												</span>
 											)}
+											<HealthVerdictChip verdict={healthMap[entry.id]} />
 											<span className="font-mono text-[10px] text-muted-foreground">
 												~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 											</span>
@@ -1629,7 +1894,9 @@ export function EncryptTab({
 								Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is
 								never stored — Restore puts the armor back in the output box above, Open in Decrypt
 								re-opens it directly, and the violet button copies the quantum-sealed copy when the
-								entry has one.
+								entry has one. Health check tries every entry with your unlocked key (verdict chips
+								appear per row), and Export downloads the whole vault as a ciphertext-only JSON
+								manifest.
 							</p>
 						</CollapsibleContent>
 					</Collapsible>
@@ -1764,4 +2031,68 @@ function SealedCopyButton({ sealedArmor }: { sealedArmor: string }) {
 			)}
 		</Button>
 	);
+}
+
+/**
+ * Per-row health-check verdict chip (round 17): emerald "decrypts" when
+ * the entry opened with the user's key, zinc "not yours" when the PKESK
+ * headers showed it was sealed to other recipients only (expected
+ * non-decryptable, no decryption attempted), red "failed" when decryption
+ * genuinely failed, and an amber spinner while the entry is being tried.
+ * Undefined verdict → nothing renders (not checked yet). Runtime-only
+ * state — the parent wipes verdicts on every vault mutation.
+ */
+function HealthVerdictChip({ verdict }: { verdict: VaultHealthVerdict | undefined }) {
+	if (!verdict) return null;
+	if (verdict === "running") {
+		return (
+			<span
+				role="status"
+				aria-label="Checking this entry"
+				className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-600 dark:text-amber-400"
+			>
+				<Loader2 aria-hidden="true" className="size-3 animate-spin" />
+			</span>
+		);
+	}
+	if (verdict === "ok") {
+		return (
+			<span
+				title="Opened with your key during the last health check."
+				className="inline-flex cursor-help items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
+			>
+				<ShieldCheck aria-hidden="true" className="size-3" />
+				decrypts
+			</span>
+		);
+	}
+	if (verdict === "not-mine") {
+		return (
+			<span
+				title="Sealed to other recipients only — expected not to open with your key."
+				className="inline-flex cursor-help items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400"
+			>
+				<CircleSlash aria-hidden="true" className="size-3" />
+				not yours
+			</span>
+		);
+	}
+	return (
+		<span
+			title="Failed to decrypt with your key — the ciphertext may be damaged or the key has changed."
+			className="inline-flex cursor-help items-center gap-1 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-500"
+		>
+			<ShieldX aria-hidden="true" className="size-3" />
+			failed
+		</span>
+	);
+}
+
+/**
+ * Filename for the vault manifest export (round 17): LOCAL time, zero-
+ * padded — encryptor-vault-manifest-YYYYMMDD-HHmm.json. Pure formatting.
+ */
+function vaultManifestFilename(now = new Date()): string {
+	const pad2 = (n: number) => String(n).padStart(2, "0");
+	return `encryptor-vault-manifest-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}.json`;
 }

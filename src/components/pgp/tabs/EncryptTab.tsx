@@ -613,6 +613,12 @@ export function EncryptTab({
 	const [error, setError] = useState<string | null>(null);
 	// Drag & drop depth counter (avoids flicker when crossing child elements).
 	const [dragDepth, setDragDepth] = useState(0);
+	// Vault-manifest drag counter (round 19): the same depth-counter pattern as
+	// the tab-level attachment dropzone, scoped to the vault section. While it
+	// is > 0 the violet "Drop a vault manifest to import" overlay is hot and the
+	// tab-level blue overlay stands down - a manifest drag must never read as
+	// an attachment drag.
+	const [vaultDragDepth, setVaultDragDepth] = useState(0);
 	// Smart-input hint dismissal, keyed to the exact message content: clearing
 	// the textarea (or typing different content) re-arms the hint without
 	// needing a state-reset effect.
@@ -1498,7 +1504,7 @@ export function EncryptTab({
 				}
 			}}
 		>
-			{dragDepth > 0 && (
+			{dragDepth > 0 && vaultDragDepth === 0 && (
 				<div
 					aria-hidden
 					className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-[#0055dc] bg-[#0055dc]/5 dark:border-[#5e94ff] dark:bg-[#5e94ff]/10 animate-fade-up"
@@ -1732,8 +1738,37 @@ export function EncryptTab({
 			    after a Clear (or on a fresh browser) Import used to be unreachable
 			    when the whole section unmounted at 0 entries. */}
 			<section
-				className="animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+				className="relative animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
 				aria-label="Recent sealed outputs"
+				onDragEnter={(e) => {
+					// Vault-manifest dropzone (round 19): guarded on Files so
+					// text/element drags never trigger it, and stopPropagation'd
+					// in EVERY handler so the tab-level attachment dropzone can
+					// never claim a manifest - a hostile drop toasts "Not a
+					// vault manifest" instead of becoming attachments.
+					if (!e.dataTransfer.types.includes("Files")) return;
+					e.preventDefault();
+					e.stopPropagation();
+					setVaultDragDepth((d) => d + 1);
+				}}
+				onDragOver={(e) => {
+					if (!e.dataTransfer.types.includes("Files")) return;
+					e.preventDefault();
+					e.stopPropagation();
+				}}
+				onDragLeave={(e) => {
+					if (!e.dataTransfer.types.includes("Files")) return;
+					e.stopPropagation();
+					setVaultDragDepth((d) => Math.max(0, d - 1));
+				}}
+				onDrop={(e) => {
+					if (!e.dataTransfer.types.includes("Files")) return;
+					e.preventDefault();
+					e.stopPropagation();
+					setVaultDragDepth(0);
+					// Same reviewed merge/replace flow as the Import button.
+					void handleVaultImportFile(e.dataTransfer.files?.[0]);
+				}}
 			>
 				<Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
 					<div className="flex items-center gap-1 pr-3">
@@ -1779,7 +1814,8 @@ export function EncryptTab({
 									<p className="text-sm font-medium">Nothing sealed yet</p>
 									<p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
 										Every sealed message lands here as a ciphertext-only copy — restore it, open it
-										in Decrypt, or export the vault to move it to another device.
+										in Decrypt, or export the vault to move it to another device. You can also drag
+										an exported manifest onto this card to import it.
 									</p>
 									<Button
 										type="button"
@@ -1999,9 +2035,22 @@ export function EncryptTab({
 															seq: Date.now(),
 														})
 													}
+													title={
+														healthMap[entry.id] === "ok"
+															? "Verified decryptable by the last health check, so this is one click to plaintext."
+															: "Opens this sealed output in the Decrypt tab — auto-decrypts with your key."
+													}
 													className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
 												>
 													<ArrowRight aria-hidden="true" className="size-3.5" />
+													{healthMap[entry.id] === "ok" && (
+														// Emerald glow-dot (round 19): this entry passed the last
+														// health check, so the deep-link is one click to plaintext.
+														<span
+															aria-hidden="true"
+															className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_4px] shadow-emerald-500/60"
+														/>
+													)}
 													<span className="whitespace-nowrap">Open in Decrypt</span>
 												</Button>
 												<CopyButton
@@ -2031,12 +2080,29 @@ export function EncryptTab({
 									when the entry has one. Health check tries every entry with your unlocked key
 									(verdict chips appear per row), Export downloads the whole vault as a
 									ciphertext-only JSON manifest, and Import merges (or replaces) it back — reviewed
-									in a dialog first.
+									in a dialog first. Dragging a manifest file onto the vault card opens the same
+									reviewed import.
 								</p>
 							</>
 						)}
 					</CollapsibleContent>
 				</Collapsible>
+				{/* Round 19: violet manifest-dropzone overlay - while a Files drag
+				    hovers the vault card (vaultDragDepth > 0) the whole section
+				    lights up with the dashed violet target, carrying the same
+				    FileUp motif as the Import buttons. pointer-events-none keeps
+				    the drag itself untouched. */}
+				{vaultDragDepth > 0 && (
+					<div
+						aria-hidden
+						className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-violet-500/60 bg-violet-500/5 animate-fade-up"
+					>
+						<span className="inline-flex items-center gap-1.5 rounded-lg bg-background/95 px-3 py-1.5 text-xs font-medium text-violet-600 shadow-sm dark:text-violet-400">
+							<FileUp aria-hidden="true" className="size-3.5" />
+							Drop a vault manifest to import
+						</span>
+					</div>
+				)}
 			</section>
 			{/* Hidden manifest picker (round 18): mounted at SECTION level —
 			    outside the CollapsibleContent — so collapsing the vault can't

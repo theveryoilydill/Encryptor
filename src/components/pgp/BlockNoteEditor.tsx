@@ -28,6 +28,7 @@ import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
 import { useEffect, useRef } from "react";
 import { useTheme } from "next-themes";
+import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
 
@@ -56,12 +57,17 @@ export default function BlockNoteEditor({
 	onChange,
 	files,
 	onNewImageDataUrl,
+	onFilesDropped,
 	expanded = false,
 }: {
 	value: string;
 	onChange: (text: string) => void;
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
+	/** Round 18: non-image files the editor can't carry — PASTED or
+	 *  DROPPED — forwarded to the composer's attachment flow. Absent →
+	 *  the editor keeps its old guidance-toast fallback instead. */
+	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
 	 *  # Mr. AI Acting on s183173's Behalf
@@ -71,12 +77,15 @@ export default function BlockNoteEditor({
 	expanded?: boolean;
 }) {
 	const { resolvedTheme } = useTheme();
+	// Fallback guidance for non-image pastes/drops when the parent didn't
+	// thread the onFilesDropped bridge (round 18).
+	const { toast } = useToast();
 
 	// Latest props, read inside callbacks without re-creating the editor.
 	// (Assigned in an effect — refs must not be updated during render.)
-	const latest = useRef({ onChange, files, onNewImageDataUrl });
+	const latest = useRef({ onChange, files, onNewImageDataUrl, onFilesDropped });
 	useEffect(() => {
-		latest.current = { onChange, files, onNewImageDataUrl };
+		latest.current = { onChange, files, onNewImageDataUrl, onFilesDropped };
 	});
 
 	// Accessible name + textbox semantics for the inner ProseMirror
@@ -100,14 +109,35 @@ export default function BlockNoteEditor({
 			const items = event.clipboardData?.items;
 			if (!items) return defaultPasteHandler();
 			const imageFiles: File[] = [];
+			const otherFiles: File[] = [];
 			for (let i = 0; i < items.length; i++) {
 				const it = items[i];
-				if (it.kind === "file" && it.type.startsWith("image/")) {
-					const f = it.getAsFile();
-					if (f) imageFiles.push(f);
+				if (it.kind !== "file") continue;
+				const f = it.getAsFile();
+				if (!f) continue;
+				if (f.type.startsWith("image/")) imageFiles.push(f);
+				else otherFiles.push(f);
+			}
+			if (imageFiles.length === 0 && otherFiles.length === 0) return defaultPasteHandler();
+
+			// Round 18: non-image pastes FORWARD to the composer's attachment
+			// flow (onFilesDropped) instead of dying in BlockNote's default
+			// handler — which logs "uploadFile is not set" and does nothing.
+			// The toast is only the fallback when the parent didn't thread
+			// the bridge.
+			if (otherFiles.length > 0) {
+				const forward = latest.current.onFilesDropped;
+				if (forward) {
+					forward(otherFiles);
+				} else {
+					toast({
+						title: "Files can't be pasted into the message",
+						description: "Attach them with the Add files control below the composer instead.",
+					});
+					return defaultPasteHandler();
 				}
 			}
-			if (imageFiles.length === 0) return defaultPasteHandler();
+			if (imageFiles.length === 0) return true; // consumed: forwarded only
 
 			// Own the image paste: register each image as an attachment, then
 			// insert it as a block rendering the stored data URL. The onChange
@@ -177,11 +207,58 @@ export default function BlockNoteEditor({
 		return unsub;
 	}, [editor]);
 
+	// Round 18: file drops are consumed BY THE EDITOR — images insert
+	// inline blocks (paste parity) keeping their REAL filename via
+	// onNewImageDataUrl's suggestedName; non-images forward through
+	// onFilesDropped. Capture phase + stopPropagation so a consumed drop
+	// never ALSO reaches the tab-level attachment dropzone (double
+	// attachments) — which is exactly why EncryptTab resets its drag
+	// overlay from handleComposerFilesDropped instead of onDrop.
+	const handleEditorDropCapture = (e: React.DragEvent<HTMLDivElement>) => {
+		const files = Array.from(e.dataTransfer?.files ?? []);
+		if (files.length === 0) return; // text / internal drags: normal drop
+		const images = files.filter((f) => f.type.startsWith("image/"));
+		const others = files.filter((f) => !f.type.startsWith("image/"));
+		// Without the parent bridge we can only handle pure-image drops
+		// here; anything carrying non-image files keeps the old behavior
+		// (bubbles to the tab-level dropzone → addFiles).
+		if (others.length > 0 && !latest.current.onFilesDropped) return;
+		e.preventDefault();
+		e.stopPropagation();
+		void (async () => {
+			for (const f of images) {
+				const dataUrl = await new Promise<string>((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+					reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
+					reader.readAsDataURL(f);
+				});
+				let stored: EnvelopeFile;
+				try {
+					stored = latest.current.onNewImageDataUrl(dataUrl, f.name);
+				} catch {
+					continue;
+				}
+				const cursor = editor.getTextCursorPosition().block;
+				editor.insertBlocks(
+					[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
+					cursor,
+					"after",
+				);
+			}
+			// ALWAYS notify when the bridge exists — even with an EMPTY list
+			// (image-only drop): the parent resets its drag overlay on the
+			// call itself, forwarded or not.
+			latest.current.onFilesDropped?.(others);
+		})();
+	};
+
 	const editorShell =
 		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
 		<div
 			ref={viewRef}
+			onDropCapture={handleEditorDropCapture}
 			// Full-screen overlay: fill the viewport through an h-full + flex
 			// chain and drop the fixed composer min-heights (.bn-container owns
 			// the scrolling); the inline composer keeps them.

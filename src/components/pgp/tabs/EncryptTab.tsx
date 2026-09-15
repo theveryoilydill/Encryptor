@@ -41,6 +41,7 @@ import {
 	OutputBlock,
 } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
+import { VaultImportDialog } from "@/components/pgp/VaultImportDialog";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
 import { PROXIES } from "@/components/pgp/contracts";
 import {
@@ -74,9 +75,12 @@ import {
 import {
 	appendSealedOutput,
 	clearSealedHistory,
+	importSealedEntries,
 	loadSealedHistory,
 	removeSealedEntry,
 	MAX_SEALED_ENTRIES,
+	parseVaultManifest,
+	type ParsedVaultManifest,
 	type SealedHistoryEntry,
 } from "@/lib/pgp/sealed-history";
 import {
@@ -703,6 +707,66 @@ export function EncryptTab({
 		return { checked: ok + notMine + failed, ok, notMine, failed };
 	}, [sealedHistory, healthMap]);
 
+	// Vault manifest import (round 18): the parsed manifest awaiting review
+	// in the confirm dialog (null = dialog closed), plus the hidden file
+	// input's ref. Parsing happens in handleVaultImportFile; the vault only
+	// changes in runVaultImport, through importSealedEntries.
+	const [pendingImport, setPendingImport] = useState<ParsedVaultManifest | null>(null);
+	const vaultImportInputRef = useRef<HTMLInputElement>(null);
+
+	// Read + validate a picked/dropped manifest, then open the review
+	// dialog. Hostile or garbage files toast "Not a vault manifest" and
+	// the vault stays untouched — nothing is half-applied.
+	const handleVaultImportFile = useCallback(
+		async (file: File | undefined | null) => {
+			if (!file) return;
+			try {
+				const parsed = parseVaultManifest(JSON.parse(await file.text()));
+				setPendingImport(parsed);
+			} catch {
+				toast({
+					title: "Not a vault manifest",
+					description: "Pick a JSON file produced by this vault's Export button.",
+					variant: "destructive",
+				});
+			}
+		},
+		[toast],
+	);
+
+	// Apply the reviewed import. The toast wording comes straight from
+	// importSealedEntries' counts — what ACTUALLY landed, duplicated or was
+	// cap-dropped (merge), and kept (replace).
+	const runVaultImport = useCallback(
+		(mode: "merge" | "replace") => {
+			const pending = pendingImport;
+			if (!pending) return;
+			setPendingImport(null);
+			const result = importSealedEntries(pending.entries, sealedHistory, mode);
+			setSealedHistory(result.entries);
+			if (mode === "merge") {
+				toast({
+					title: `Imported — ${result.added} added · ${result.duplicates} ${
+						result.duplicates === 1 ? "duplicate" : "duplicates"
+					} skipped${result.dropped > 0 ? ` · ${result.dropped} dropped (cap)` : ""}`,
+					description:
+						result.dropped > 0
+							? `The vault keeps the newest ${MAX_SEALED_ENTRIES} entries — older incoming rows lose their slot.`
+							: undefined,
+				});
+			} else {
+				toast({
+					title: `Vault replaced — ${result.added} ${result.added === 1 ? "entry" : "entries"}`,
+					description:
+						result.dropped > 0
+							? `${result.dropped} over the ${MAX_SEALED_ENTRIES}-entry cap ${result.dropped === 1 ? "was" : "were"} not kept.`
+							: undefined,
+				});
+			}
+		},
+		[pendingImport, sealedHistory, toast],
+	);
+
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
 	// (getKeyExpiryStatus), so the banner and the badge can never disagree.
@@ -811,6 +875,20 @@ export function EncryptTab({
 		[addFilesReturning],
 	);
 
+	/** Editor drop bridge (round 18): BlockNoteEditor consumes file drops
+	 *  itself — images insert inline, non-images are forwarded here — so
+	 *  the tab-level onDrop never fires for an editor-internal drop. The
+	 *  drag-overlay reset MOVED here for exactly that reason: an EMPTY
+	 *  files list still means "the editor consumed the drop" (image-only
+	 *  drop) and the "Drop files to attach" overlay must not stick. */
+	const handleComposerFilesDropped = useCallback(
+		(files: File[]) => {
+			setDragDepth(0);
+			if (files.length > 0) void addFiles(files);
+		},
+		[addFiles],
+	);
+
 	/** Editor paste bridge: store a pasted image (as a data URL) as an
 	 *  attachment and return the stored entry so the editor can reference it
 	 *  with an envelope:// marker. Sync by contract — throws on read errors.
@@ -820,38 +898,49 @@ export function EncryptTab({
 	 *  the second pasted image's marker pointed at the FIRST image's file —
 	 *  recipients silently saw the wrong image (browser-verified). The
 	 *  unique name is now computed against attachmentsRef BEFORE the state
-	 *  update and the FINAL entry is returned. */
-	const handleNewImageDataUrl = useCallback((dataUrl: string): EnvelopeFile => {
-		// Parse "data:<mime>;base64,<data>".
-		const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(dataUrl);
-		if (!match) throw new Error("Unsupported image data URL.");
-		const type = match[1];
-		const data = match[2];
-		const size = Math.floor(data.length * 0.75);
-		if (size > LIMITS.maxFileBytes) {
-			throw new Error(`Image is ${formatFileSize(size)} — max ${LIMITS.maxFileLabel}.`);
-		}
-		const ext = type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-		const baseName = `pasted-image.${ext}`;
-		// Dedupe against the mirrored list (sync, no stale closure).
-		const usedNames = new Set(attachmentsRef.current.map((a) => a.name));
-		const dot = baseName.lastIndexOf(".");
-		let unique = baseName;
-		let counter = 1;
-		while (usedNames.has(unique)) {
-			unique =
-				dot > 0
-					? `${baseName.slice(0, dot)}-${counter}${baseName.slice(dot)}`
-					: `${baseName}-${counter}`;
-			counter++;
-		}
-		const stored: EnvelopeFile = { name: unique, type, data, size };
-		// Eager mirror update so a same-tick follow-up paste sees this name.
-		attachmentsRef.current = [...attachmentsRef.current, stored];
-		// Guarded commit (idempotent under StrictMode double-invoke).
-		setAttachments((prev) => (prev.some((a) => a.name === stored.name) ? prev : [...prev, stored]));
-		return stored;
-	}, []);
+	 *  update and the FINAL entry is returned.
+	 *
+	 *  Round 18: an optional suggestedName (a dropped file's REAL name) is
+	 *  sanitized via sanitizeDroppedImageName and used when provided. */
+	const handleNewImageDataUrl = useCallback(
+		(dataUrl: string, suggestedName?: string): EnvelopeFile => {
+			// Parse "data:<mime>;base64,<data>".
+			const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(dataUrl);
+			if (!match) throw new Error("Unsupported image data URL.");
+			const type = match[1];
+			const data = match[2];
+			const size = Math.floor(data.length * 0.75);
+			if (size > LIMITS.maxFileBytes) {
+				throw new Error(`Image is ${formatFileSize(size)} — max ${LIMITS.maxFileLabel}.`);
+			}
+			const ext = type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+			// Round 18: dropped images keep their REAL filename (sanitized by
+			// sanitizeDroppedImageName); plain pastes have no name and fall back
+			// to the classic pasted-image.<ext> the orphan GC relies on.
+			const baseName = sanitizeDroppedImageName(suggestedName, ext);
+			// Dedupe against the mirrored list (sync, no stale closure).
+			const usedNames = new Set(attachmentsRef.current.map((a) => a.name));
+			const dot = baseName.lastIndexOf(".");
+			let unique = baseName;
+			let counter = 1;
+			while (usedNames.has(unique)) {
+				unique =
+					dot > 0
+						? `${baseName.slice(0, dot)}-${counter}${baseName.slice(dot)}`
+						: `${baseName}-${counter}`;
+				counter++;
+			}
+			const stored: EnvelopeFile = { name: unique, type, data, size };
+			// Eager mirror update so a same-tick follow-up paste sees this name.
+			attachmentsRef.current = [...attachmentsRef.current, stored];
+			// Guarded commit (idempotent under StrictMode double-invoke).
+			setAttachments((prev) =>
+				prev.some((a) => a.name === stored.name) ? prev : [...prev, stored],
+			);
+			return stored;
+		},
+		[],
+	);
 
 	// Orphan garbage collection (was "VS Code is super broken", part 2):
 	// deleting an image out of the message used to leave its file attached —
@@ -1332,6 +1421,7 @@ export function EncryptTab({
 					onChange={setPlaintext}
 					files={attachments}
 					onNewImageDataUrl={handleNewImageDataUrl}
+					onFilesDropped={handleComposerFilesDropped}
 					editorKind={settings.markdownEditor}
 					placeholder="Type the message you want to encrypt + sign…"
 					expanded={composerExpanded}
@@ -1638,26 +1728,31 @@ export function EncryptTab({
 				/>
 			)}
 
-			{sealedHistory.length > 0 && (
-				<section
-					className="animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
-					aria-label="Recent sealed outputs"
-				>
-					<Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
-						<div className="flex items-center gap-1 pr-3">
-							<CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0055dc]">
-								<span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#0055dc]/8 text-[#0055dc] dark:bg-[#5e94ff]/10 dark:text-[#5e94ff]">
-									<History aria-hidden="true" className="size-4" />
-								</span>
-								<span className="min-w-0 text-sm font-medium">Recent sealed outputs</span>
-								<span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-									{sealedHistory.length}
-								</span>
-								<ChevronDown
-									aria-hidden="true"
-									className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
-								/>
-							</CollapsibleTrigger>
+			{/* Round 18 UX: the vault shell ALWAYS renders (collapsed default) —
+			    after a Clear (or on a fresh browser) Import used to be unreachable
+			    when the whole section unmounted at 0 entries. */}
+			<section
+				className="animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+				aria-label="Recent sealed outputs"
+			>
+				<Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+					<div className="flex items-center gap-1 pr-3">
+						<CollapsibleTrigger className="group flex min-w-0 flex-1 items-center gap-2.5 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0055dc]">
+							<span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#0055dc]/8 text-[#0055dc] dark:bg-[#5e94ff]/10 dark:text-[#5e94ff]">
+								<History aria-hidden="true" className="size-4" />
+							</span>
+							<span className="min-w-0 text-sm font-medium">Recent sealed outputs</span>
+							<span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+								{sealedHistory.length}
+							</span>
+							<ChevronDown
+								aria-hidden="true"
+								className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
+							/>
+						</CollapsibleTrigger>
+						{/* Round 18: Clear only makes sense with entries — hides at 0 so
+							    the empty state stays the single focus. */}
+						{sealedHistory.length > 0 && (
 							<Button
 								variant="ghost"
 								size="sm"
@@ -1670,238 +1765,314 @@ export function EncryptTab({
 								<Trash2 aria-hidden="true" className="size-4" />
 								Clear
 							</Button>
-						</div>
-						<CollapsibleContent>
-							{/* Vault summary strip (round 16): a thin muted at-a-glance bar —
+						)}
+					</div>
+					<CollapsibleContent>
+						{sealedHistory.length === 0 ? (
+							<div className="px-4 py-5">
+								{/* Round 18 UX discovery: the old shell only rendered when
+									    entries existed, so after a Clear (or on a fresh browser)
+									    Import was UNREACHABLE. The empty state gets its own dashed
+									    card + import button instead. */}
+								<div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-4 py-6 text-center">
+									<History aria-hidden="true" className="size-5 text-muted-foreground" />
+									<p className="text-sm font-medium">Nothing sealed yet</p>
+									<p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+										Every sealed message lands here as a ciphertext-only copy — restore it, open it
+										in Decrypt, or export the vault to move it to another device.
+									</p>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										onClick={() => vaultImportInputRef.current?.click()}
+										className="mt-1 gap-1.5"
+									>
+										<FileUp aria-hidden="true" className="size-3.5" />
+										Import manifest
+									</Button>
+								</div>
+							</div>
+						) : (
+							<>
+								{/* Vault summary strip (round 16): a thin muted at-a-glance bar —
 							    "N entries · ~X KB sealed · N signed · N quantum-sealed · N
 							    attached". Only the segments that apply render; the size
 							    combines classical + PQ armor bytes. */}
-							<div className="flex flex-wrap items-center gap-x-1 px-4 pb-1 pt-2 text-[11px] text-muted-foreground">
-								<span>
-									{sealedHistory.length} {sealedHistory.length === 1 ? "entry" : "entries"}
-								</span>
-								<span aria-hidden="true">·</span>
-								<span>~{(sealedTotals.bytes / 1024).toFixed(1)} KB sealed</span>
-								{sealedTotals.signed > 0 && (
-									<>
-										<span aria-hidden="true">·</span>
-										<span>{sealedTotals.signed} signed</span>
-									</>
-								)}
-								{sealedTotals.pq > 0 && (
-									<>
-										<span aria-hidden="true">·</span>
-										<span className="text-violet-600 dark:text-violet-400">
-											{sealedTotals.pq} quantum-sealed
-										</span>
-									</>
-								)}
-								{sealedTotals.files > 0 && (
-									<>
-										<span aria-hidden="true">·</span>
-										<span className="inline-flex items-center gap-1">
-											<Paperclip aria-hidden="true" className="size-3" />
-											{sealedTotals.files} attached
-										</span>
-									</>
-								)}
-								{healthTotals.checked > 0 && (
-									<>
-										<span aria-hidden="true">·</span>
-										<span
-											className="text-emerald-600 dark:text-emerald-400"
-											title={`Opened with your key during the last health check — ${healthTotals.ok} of ${sealedHistory.length} decryptable${
-												healthTotals.notMine > 0
-													? `, ${healthTotals.notMine} not addressed to your key`
-													: ""
-											}${healthTotals.failed > 0 ? `, ${healthTotals.failed} failed` : ""}.`}
+								<div className="flex flex-wrap items-center gap-x-1 px-4 pb-1 pt-2 text-[11px] text-muted-foreground">
+									<span>
+										{sealedHistory.length} {sealedHistory.length === 1 ? "entry" : "entries"}
+									</span>
+									<span aria-hidden="true">·</span>
+									<span>~{(sealedTotals.bytes / 1024).toFixed(1)} KB sealed</span>
+									{sealedTotals.signed > 0 && (
+										<>
+											<span aria-hidden="true">·</span>
+											<span>{sealedTotals.signed} signed</span>
+										</>
+									)}
+									{sealedTotals.pq > 0 && (
+										<>
+											<span aria-hidden="true">·</span>
+											<span className="text-violet-600 dark:text-violet-400">
+												{sealedTotals.pq} quantum-sealed
+											</span>
+										</>
+									)}
+									{sealedTotals.files > 0 && (
+										<>
+											<span aria-hidden="true">·</span>
+											<span className="inline-flex items-center gap-1">
+												<Paperclip aria-hidden="true" className="size-3" />
+												{sealedTotals.files} attached
+											</span>
+										</>
+									)}
+									{healthTotals.checked > 0 && (
+										<>
+											<span aria-hidden="true">·</span>
+											<span
+												className="text-emerald-600 dark:text-emerald-400"
+												title={`Opened with your key during the last health check — ${healthTotals.ok} of ${sealedHistory.length} decryptable${
+													healthTotals.notMine > 0
+														? `, ${healthTotals.notMine} not addressed to your key`
+														: ""
+												}${healthTotals.failed > 0 ? `, ${healthTotals.failed} failed` : ""}.`}
+											>
+												{healthTotals.ok}/{sealedHistory.length} decryptable
+											</span>
+										</>
+									)}
+									<span className="ml-auto flex items-center gap-1">
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={runVaultHealthCheck}
+											disabled={!privateKey || healthRunning}
+											title={
+												!privateKey
+													? "Configure your private key first — the health check decrypts with your key."
+													: "Try every sealed output with your key — verdicts appear on each row."
+											}
+											className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
 										>
-											{healthTotals.ok}/{sealedHistory.length} decryptable
-										</span>
-									</>
-								)}
-								<span className="ml-auto flex items-center gap-1">
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										onClick={runVaultHealthCheck}
-										disabled={!privateKey || healthRunning}
-										title={
-											!privateKey
-												? "Configure your private key first — the health check decrypts with your key."
-												: "Try every sealed output with your key — verdicts appear on each row."
-										}
-										className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-									>
-										{healthRunning ? (
-											<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-										) : (
-											<ShieldCheck aria-hidden="true" className="size-3.5" />
-										)}
-										Health check
-									</Button>
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										onClick={handleExportManifest}
-										disabled={sealedHistory.length === 0}
-										title={
-											sealedHistory.length === 0
-												? "Nothing to export yet — the vault is empty."
-												: "Download the whole vault as a ciphertext-only JSON manifest."
-										}
-										className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-									>
-										<Download aria-hidden="true" className="size-3.5" />
-										Export
-									</Button>
-								</span>
-							</div>
-							<ul className="divide-y divide-border border-t border-border">
-								{sealedHistory.map((entry) => (
-									<li
-										key={entry.id}
-										className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
-									>
-										{/* PQ edge accent (round 14): a violet gradient strip on the left
+											{healthRunning ? (
+												<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+											) : (
+												<ShieldCheck aria-hidden="true" className="size-3.5" />
+											)}
+											Health check
+										</Button>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={handleExportManifest}
+											disabled={sealedHistory.length === 0}
+											title={
+												sealedHistory.length === 0
+													? "Nothing to export yet — the vault is empty."
+													: "Download the whole vault as a ciphertext-only JSON manifest."
+											}
+											className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+										>
+											<Download aria-hidden="true" className="size-3.5" />
+											Export
+										</Button>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() => vaultImportInputRef.current?.click()}
+											title="Merge or replace your vault from an exported manifest JSON."
+											className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+										>
+											<FileUp aria-hidden="true" className="size-3.5" />
+											Import
+										</Button>
+									</span>
+								</div>
+								<ul className="divide-y divide-border border-t border-border">
+									{sealedHistory.map((entry) => (
+										<li
+											key={entry.id}
+											className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
+										>
+											{/* PQ edge accent (round 14): a violet gradient strip on the left
 										    edge mirrors the PQ chip/badge color language — rows carrying a
 										    quantum-sealed copy are spottable at a glance. */}
-										{entry.sealedArmor && (
-											<span
-												aria-hidden="true"
-												className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
-											/>
-										)}
-										<time
-											dateTime={new Date(entry.at).toISOString()}
-											title={formatHistoryTime(entry.at)}
-											className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
-										>
-											{formatRelativeHistoryTime(entry.at)}
-										</time>
-										<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-											<span
-												title={
-													entry.labels && entry.labels.length > 0
-														? `Sealed to: ${entry.labels.join(", ")}`
-														: undefined
-												}
-												className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
+											{entry.sealedArmor && (
+												<span
+													aria-hidden="true"
+													className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
+												/>
+											)}
+											<time
+												dateTime={new Date(entry.at).toISOString()}
+												title={formatHistoryTime(entry.at)}
+												className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
 											>
-												{entry.keys} {entry.keys === 1 ? "key" : "keys"}
-											</span>
-											{entry.signed &&
-												(entry.signer ? (
-													<span
-														title={
-															entry.signerFp
-																? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
-																: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
-														}
-														className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
-													>
-														signed by {entry.signer}
-													</span>
-												) : (
-													<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-														signed
-													</span>
-												))}
-											{entry.pqSealed && (
-												<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-													PQ
+												{formatRelativeHistoryTime(entry.at)}
+											</time>
+											<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+												<span
+													title={
+														entry.labels && entry.labels.length > 0
+															? `Sealed to: ${entry.labels.join(", ")}`
+															: undefined
+													}
+													className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
+												>
+													{entry.keys} {entry.keys === 1 ? "key" : "keys"}
 												</span>
-											)}
-											{entry.files !== undefined && entry.files > 0 && (
-												<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
-													<Paperclip aria-hidden="true" className="size-3" />
-													{entry.files} {entry.files === 1 ? "file" : "files"}
+												{entry.signed &&
+													(entry.signer ? (
+														<span
+															title={
+																entry.signerFp
+																	? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
+																	: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
+															}
+															className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
+														>
+															signed by {entry.signer}
+														</span>
+													) : (
+														<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+															signed
+														</span>
+													))}
+												{entry.pqSealed && (
+													<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+														PQ
+													</span>
+												)}
+												{entry.files !== undefined && entry.files > 0 && (
+													<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+														<Paperclip aria-hidden="true" className="size-3" />
+														{entry.files} {entry.files === 1 ? "file" : "files"}
+													</span>
+												)}
+												<HealthVerdictChip verdict={healthMap[entry.id]} />
+												<span className="font-mono text-[10px] text-muted-foreground">
+													~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 												</span>
-											)}
-											<HealthVerdictChip verdict={healthMap[entry.id]} />
-											<span className="font-mono text-[10px] text-muted-foreground">
-												~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 											</span>
-										</span>
-										{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
+											{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
 										    actions the group must wrap at narrow widths — nowrap plus the
 										    section's overflow-hidden silently clipped the trailing
 										    txt/remove buttons at 390 px. */}
-										<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() => {
-													setOutput(entry.armor);
-													setSealedCopy(entry.sealedArmor ?? "");
-													setOutputMeta({
-														keys: entry.keys,
-														signed: entry.signed,
-														labels: entry.labels ?? [],
-														signer: entry.signer,
-														signerFp: entry.signerFp,
-														files: entry.files,
-													});
-													setError(null);
-													toast({
-														title: "Sealed output restored",
-														description:
-															"The ciphertext is back in the output box — copy or download it from there.",
-													});
-												}}
-												className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
-											>
-												<History aria-hidden="true" className="size-3.5" />
-												Restore
-											</Button>
-											<Button
-												variant="ghost"
-												size="sm"
-												onClick={() =>
-													onOpenInDecrypt?.({
-														armor: entry.sealedArmor ?? entry.armor,
-														seq: Date.now(),
-													})
-												}
-												className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
-											>
-												<ArrowRight aria-hidden="true" className="size-3.5" />
-												<span className="whitespace-nowrap">Open in Decrypt</span>
-											</Button>
-											<CopyButton
-												text={entry.armor}
-												label="Copy"
-												ariaLabel="Copy sealed output to clipboard"
-											/>
-											{entry.sealedArmor && <SealedCopyButton sealedArmor={entry.sealedArmor} />}
-											<DownloadButton text={entry.armor} title="sealed output" />
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
-												aria-label="Remove this entry from the sealed-output history"
-												className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
-											>
-												<X aria-hidden="true" className="size-3.5" />
-											</Button>
-										</span>
-									</li>
-								))}
-							</ul>
-							<p className="border-t border-border bg-muted/25 px-4 py-2 text-[11px] text-muted-foreground">
-								Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is
-								never stored — Restore puts the armor back in the output box above, Open in Decrypt
-								re-opens it directly, and the violet button copies the quantum-sealed copy when the
-								entry has one. Health check tries every entry with your unlocked key (verdict chips
-								appear per row), and Export downloads the whole vault as a ciphertext-only JSON
-								manifest.
-							</p>
-						</CollapsibleContent>
-					</Collapsible>
-				</section>
-			)}
+											<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() => {
+														setOutput(entry.armor);
+														setSealedCopy(entry.sealedArmor ?? "");
+														setOutputMeta({
+															keys: entry.keys,
+															signed: entry.signed,
+															labels: entry.labels ?? [],
+															signer: entry.signer,
+															signerFp: entry.signerFp,
+															files: entry.files,
+														});
+														setError(null);
+														toast({
+															title: "Sealed output restored",
+															description:
+																"The ciphertext is back in the output box — copy or download it from there.",
+														});
+													}}
+													className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
+												>
+													<History aria-hidden="true" className="size-3.5" />
+													Restore
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={() =>
+														onOpenInDecrypt?.({
+															armor: entry.sealedArmor ?? entry.armor,
+															seq: Date.now(),
+														})
+													}
+													className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
+												>
+													<ArrowRight aria-hidden="true" className="size-3.5" />
+													<span className="whitespace-nowrap">Open in Decrypt</span>
+												</Button>
+												<CopyButton
+													text={entry.armor}
+													label="Copy"
+													ariaLabel="Copy sealed output to clipboard"
+												/>
+												{entry.sealedArmor && <SealedCopyButton sealedArmor={entry.sealedArmor} />}
+												<DownloadButton text={entry.armor} title="sealed output" />
+												<Button
+													variant="ghost"
+													size="icon"
+													onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
+													aria-label="Remove this entry from the sealed-output history"
+													className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
+												>
+													<X aria-hidden="true" className="size-3.5" />
+												</Button>
+											</span>
+										</li>
+									))}
+								</ul>
+								<p className="border-t border-border bg-muted/25 px-4 py-2 text-[11px] text-muted-foreground">
+									Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is
+									never stored — Restore puts the armor back in the output box above, Open in
+									Decrypt re-opens it directly, and the violet button copies the quantum-sealed copy
+									when the entry has one. Health check tries every entry with your unlocked key
+									(verdict chips appear per row), Export downloads the whole vault as a
+									ciphertext-only JSON manifest, and Import merges (or replaces) it back — reviewed
+									in a dialog first.
+								</p>
+							</>
+						)}
+					</CollapsibleContent>
+				</Collapsible>
+			</section>
+			{/* Hidden manifest picker (round 18): mounted at SECTION level —
+			    outside the CollapsibleContent — so collapsing the vault can't
+			    unmount it mid-pick. Re-armed after every read so picking the
+			    same file twice re-fires onChange. */}
+			<input
+				ref={vaultImportInputRef}
+				type="file"
+				accept="application/json,.json"
+				className="hidden"
+				tabIndex={-1}
+				aria-hidden="true"
+				onChange={(e) => {
+					const file = e.target.files?.[0];
+					e.target.value = "";
+					void handleVaultImportFile(file);
+				}}
+			/>
+
+			{/* Vault manifest import review (round 18) — a pure confirm dialog;
+			    Escape / outside click route through onOpenChange(false) = cancel. */}
+			<VaultImportDialog
+				open={pendingImport !== null}
+				onOpenChange={(next) => {
+					if (!next) setPendingImport(null);
+				}}
+				entryCount={pendingImport?.entries.length ?? 0}
+				vaultCount={sealedHistory.length}
+				skippedRows={pendingImport?.skipped ?? 0}
+				signedCount={pendingImport?.entries.filter((en) => en.signer).length ?? 0}
+				quantumCount={pendingImport?.entries.filter((en) => en.pqSealed).length ?? 0}
+				filesCount={pendingImport?.entries.reduce((sum, en) => sum + (en.files ?? 0), 0) ?? 0}
+				exportedAt={pendingImport?.exportedAt}
+				onMerge={() => runVaultImport("merge")}
+				onReplace={() => runVaultImport("replace")}
+			/>
 		</section>
 	);
 }
@@ -2095,4 +2266,31 @@ function HealthVerdictChip({ verdict }: { verdict: VaultHealthVerdict | undefine
 function vaultManifestFilename(now = new Date()): string {
 	const pad2 = (n: number) => String(n).padStart(2, "0");
 	return `encryptor-vault-manifest-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}.json`;
+}
+
+/**
+ * Sanitized composer filename for a dropped image (round 18): the editor
+ * hands over the file's REAL name. Take only the last path segment,
+ * strip control characters by CODEPOINT FILTER (Array.from — a
+ * control-CLASS regex is rejected by oxlint's no-control-regex), strip
+ * the filesystem-hostile <>:"|?* set, cap at 64 chars, and infer the
+ * extension from the data URL's mime when the name carries none. Falls
+ * back to the classic pasted-image.<ext> when nothing usable survives.
+ * Pure — no state.
+ */
+function sanitizeDroppedImageName(raw: string | undefined, ext: string): string {
+	const fallback = `pasted-image.${ext}`;
+	if (!raw) return fallback;
+	const base = raw.split(/[\\/]/).pop() ?? "";
+	const cleaned = Array.from(base)
+		.filter((ch) => {
+			const code = ch.codePointAt(0) ?? 0;
+			return code >= 0x20 && code !== 0x7f;
+		})
+		.join("")
+		.replace(/[<>:"|?*]/g, "")
+		.trim()
+		.slice(0, 64);
+	if (cleaned === "") return fallback;
+	return /\.[a-z0-9]{1,8}$/i.test(cleaned) ? cleaned : `${cleaned}.${ext}`;
 }

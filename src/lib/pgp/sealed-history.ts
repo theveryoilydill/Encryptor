@@ -111,6 +111,43 @@ export function sanitizeFingerprint(input: unknown): string | undefined {
 	return hex.length >= 8 ? hex : undefined;
 }
 
+/**
+ * Round 18: the ONE shared per-row validator for sealed-history rows —
+ * the localStorage load path and the vault-manifest importer both map
+ * rows through it, so a hostile manifest faces the exact same armor caps
+ * and label/signer/signerFp/files sanitizers as a local-storage row.
+ * Returns null for structurally invalid rows (no/oversized armor,
+ * malformed sealedArmor); soft metadata fields sanitize to their safe
+ * forms instead of rejecting the row. Pure — never mutates the input.
+ */
+export function sanitizeHistoryRow(raw: unknown): SealedHistoryEntry | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const e = raw as Record<string, unknown>;
+	if (typeof e.armor !== "string" || e.armor.length === 0) return null;
+	if (e.armor.length > MAX_SEALED_ARMOR_CHARS) return null;
+	if (e.sealedArmor !== null && typeof e.sealedArmor !== "string") return null;
+	// Oversized PQ copy: keep the classical armor, drop just the copy —
+	// the same verdict the load path has always made, now without
+	// mutating the caller's object.
+	const sealedArmor =
+		typeof e.sealedArmor === "string" && e.sealedArmor.length <= MAX_SEALED_ARMOR_CHARS
+			? e.sealedArmor
+			: null;
+	return {
+		id: typeof e.id === "string" ? e.id : makeId(),
+		at: typeof e.at === "number" ? e.at : 0,
+		keys: typeof e.keys === "number" ? e.keys : 0,
+		signed: e.signed === true,
+		pqSealed: e.pqSealed === true,
+		armor: e.armor,
+		sealedArmor,
+		labels: sanitizeLabels(e.labels),
+		signer: sanitizeSigner(e.signer),
+		files: sanitizeFiles(e.files),
+		signerFp: sanitizeFingerprint(e.signerFp),
+	};
+}
+
 function makeId(): string {
 	try {
 		if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -132,28 +169,12 @@ export function loadSealedHistory(): SealedHistoryEntry[] {
 		if (!Array.isArray(parsed)) return [];
 		const entries: SealedHistoryEntry[] = [];
 		for (const row of parsed.slice(0, MAX_SEALED_ENTRIES * 2)) {
-			if (typeof row !== "object" || row === null) continue;
-			const e = row as Record<string, unknown>;
-			if (typeof e.armor !== "string" || e.armor.length === 0) continue;
-			if (e.armor.length > MAX_SEALED_ARMOR_CHARS) continue;
-			if (e.sealedArmor !== null && typeof e.sealedArmor !== "string") continue;
-			if (typeof e.sealedArmor === "string" && e.sealedArmor.length > MAX_SEALED_ARMOR_CHARS) {
-				// Keep the classical armor; drop just the oversized PQ copy.
-				e.sealedArmor = null;
-			}
-			entries.push({
-				id: typeof e.id === "string" ? e.id : makeId(),
-				at: typeof e.at === "number" ? e.at : 0,
-				keys: typeof e.keys === "number" ? e.keys : 0,
-				signed: e.signed === true,
-				pqSealed: e.pqSealed === true,
-				armor: e.armor,
-				sealedArmor: typeof e.sealedArmor === "string" ? e.sealedArmor : null,
-				labels: sanitizeLabels(e.labels),
-				signer: sanitizeSigner(e.signer),
-				files: sanitizeFiles(e.files),
-				signerFp: sanitizeFingerprint(e.signerFp),
-			});
+			// Round 18: per-row validation lives in ONE shared exported
+			// validator — the vault-manifest importer maps rows through the
+			// exact same sanitizeHistoryRow, so a hostile manifest cannot
+			// smuggle anything past the caps this path already enforces.
+			const entry = sanitizeHistoryRow(row);
+			if (entry) entries.push(entry);
 		}
 		return entries.sort((a, b) => b.at - a.at).slice(0, MAX_SEALED_ENTRIES);
 	} catch {
@@ -224,4 +245,122 @@ export function clearSealedHistory(): SealedHistoryEntry[] {
 		// nothing to recover — the UI state still clears
 	}
 	return [];
+}
+
+export interface ParsedVaultManifest {
+	/** Manifest's exportedAt passthrough (display-only, already validated
+	 *  as a string — parse/format at the UI layer). */
+	exportedAt?: string;
+	/** Every row that survived the shared sanitizeHistoryRow validator. */
+	entries: SealedHistoryEntry[];
+	/** Rows rejected by the validator (counted, not fatal). */
+	skipped: number;
+}
+
+/**
+ * Round 18: parse + validate a vault manifest — the counterpart to the
+ * round-17 export format. GATES FIRST on the kind/version markers:
+ * anything else throws a friendly Error (the UI toasts it and the vault
+ * stays untouched — nothing is half-applied). Every surviving row then
+ * runs the SAME sanitizeHistoryRow as the localStorage load path, so a
+ * hostile manifest cannot smuggle oversized signer labels / files
+ * metadata / armor past the caps; unusable rows are counted and skipped
+ * individually instead of rejecting the whole file.
+ */
+export function parseVaultManifest(json: unknown): ParsedVaultManifest {
+	if (typeof json !== "object" || json === null) {
+		throw new Error('Not a vault manifest — expected kind "encryptor-vault-manifest", version 1.');
+	}
+	const m = json as Record<string, unknown>;
+	if (m.kind !== "encryptor-vault-manifest" || m.version !== 1) {
+		throw new Error('Not a vault manifest — expected kind "encryptor-vault-manifest", version 1.');
+	}
+	const rows = Array.isArray(m.entries) ? m.entries : [];
+	const entries: SealedHistoryEntry[] = [];
+	let skipped = 0;
+	for (const row of rows) {
+		const entry = sanitizeHistoryRow(row);
+		if (entry) entries.push(entry);
+		else skipped += 1;
+	}
+	return {
+		exportedAt: typeof m.exportedAt === "string" ? m.exportedAt : undefined,
+		entries,
+		skipped,
+	};
+}
+
+export interface SealedImportResult {
+	/** Incoming rows that ACTUALLY landed in the returned vault. */
+	added: number;
+	/** Incoming rows skipped as armor-duplicates (against the current
+	 *  vault or within the incoming batch itself). */
+	duplicates: number;
+	/** Incoming-only rows that were accepted but then cap-truncated —
+	 *  current entries dropped by the cap are NOT counted here. */
+	dropped: number;
+}
+
+/**
+ * Round 18: bring manifest entries into the vault.
+ *
+ * MERGE — armor-dedupe by exact string match, first against the current
+ * vault and then within the incoming batch itself (re-importing your own
+ * export is therefore a no-op: every row duplicates). Ids colliding with
+ * surviving entries are re-keyed. Accepted rows merge with the current
+ * entries, sort newest-first and cut to the same MAX_SEALED_ENTRIES cap
+ * the vault always enforces — which CAN keep a newer current entry over
+ * an older incoming one, so "added" is counted via a reference-identity
+ * set over the kept array (never by id or armor equality), and "dropped"
+ * only ever counts incoming rows that were accepted and then truncated.
+ *
+ * REPLACE — the vault becomes exactly the manifest: incoming sorted
+ * newest-first, sliced to the cap, persisted.
+ *
+ * Both modes persist the resulting list and return it alongside the
+ * counts, so the UI words its toast from the same source of truth.
+ */
+export function importSealedEntries(
+	incoming: SealedHistoryEntry[],
+	current: SealedHistoryEntry[],
+	mode: "merge" | "replace",
+): { entries: SealedHistoryEntry[] } & SealedImportResult {
+	if (mode === "replace") {
+		const kept = [...incoming].sort((a, b) => b.at - a.at).slice(0, MAX_SEALED_ENTRIES);
+		persist(kept);
+		return {
+			entries: kept,
+			added: kept.length,
+			duplicates: 0,
+			dropped: incoming.length - kept.length,
+		};
+	}
+
+	const currentArmors = new Set(current.map((e) => e.armor));
+	const usedIds = new Set(current.map((e) => e.id));
+	const batchArmors = new Set<string>();
+	const accepted: SealedHistoryEntry[] = [];
+	let duplicates = 0;
+	for (const entry of incoming) {
+		if (currentArmors.has(entry.armor) || batchArmors.has(entry.armor)) {
+			duplicates += 1;
+			continue;
+		}
+		batchArmors.add(entry.armor);
+		// Re-key id collisions so list keys and per-row actions stay unique.
+		let id = entry.id;
+		while (usedIds.has(id)) id = makeId();
+		usedIds.add(id);
+		accepted.push(id === entry.id ? entry : { ...entry, id });
+	}
+
+	const merged = [...accepted, ...current].sort((a, b) => b.at - a.at).slice(0, MAX_SEALED_ENTRIES);
+	// Count what ACTUALLY landed via reference identity of the kept
+	// objects — value equality could never distinguish a kept incoming row
+	// from a coincidentally identical current one.
+	const landed = new Set(merged);
+	const added = accepted.filter((e) => landed.has(e)).length;
+	const dropped = accepted.length - added;
+	persist(merged);
+	return { entries: merged, added, duplicates, dropped };
 }

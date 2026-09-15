@@ -20,10 +20,12 @@ import {
 	ChevronDown,
 	Dice5,
 	Download,
+	History,
 	Loader2,
 	QrCode,
 	ShieldHalf,
 	TriangleAlert,
+	X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -44,7 +46,12 @@ import {
 	downloadKeyName,
 	getKeyExpiryStatus,
 } from "@/lib/pgp/key-details";
-import { generateSealKeyPair, wrapSealSecret, type QuantumSealConfig } from "@/lib/pgp/pq";
+import {
+	generateSealKeyPair,
+	wrapSealSecret,
+	wrapSealSecretAuto,
+	type QuantumSealConfig,
+} from "@/lib/pgp/pq";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
@@ -66,6 +73,9 @@ export function ConfigureModal({
 	open,
 	onOpenChange,
 	privateKey,
+	keyHistory,
+	onRestoreKey,
+	onForgetKey,
 	onSave,
 	onClear,
 	requestDecryptedKey,
@@ -73,6 +83,11 @@ export function ConfigureModal({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	privateKey: PrivateKeyConfig | null;
+	/** Previously configured keys (newest first) — one click switches back
+	 *  without a fresh Keybase login / armor re-paste. */
+	keyHistory: PrivateKeyConfig[];
+	onRestoreKey: (cfg: PrivateKeyConfig) => void;
+	onForgetKey: (fingerprint: string) => void;
 	onSave: (cfg: PrivateKeyConfig) => void;
 	onClear: () => void;
 	/** On-demand key unlock — used ONLY by the "enable quantum seal" flow,
@@ -233,8 +248,17 @@ export function ConfigureModal({
 									: privateKey.label}
 							</div>
 							{privateKey.info && (
-								<div className="mt-1 break-all font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
-									{formatFingerprint(privateKey.info.fingerprint)}
+								<div className="mt-1 flex items-start justify-between gap-2">
+									<div className="min-w-0 break-all font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
+										{formatFingerprint(privateKey.info.fingerprint)}
+									</div>
+									{/* Fingerprints are shared out-of-band for verification — a one-tap
+	copy beats hand-selecting monospace text. */}
+									<CopyButton
+										text={privateKey.info.fingerprint}
+										label="Copy fingerprint"
+										ariaLabel="Copy key fingerprint to clipboard"
+									/>
 								</div>
 							)}
 							{/* Additive: collapsible metadata grid fed by describeKeyDetails
@@ -507,6 +531,73 @@ export function ConfigureModal({
 						</div>
 					)}
 
+					{keyHistory.length > 0 && (
+						<div className="mb-4">
+							<p className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+								<History aria-hidden className="size-4 text-muted-foreground" />
+								Previously configured keys
+							</p>
+							<p className="mb-2 text-[11px] leading-snug text-muted-foreground">
+								Switch back with one click — no re-login, no re-pasting. Passphrases are still asked
+								when needed and are never stored.
+							</p>
+							<ul className="space-y-1.5">
+								{keyHistory.map((cfg) => {
+									const fp = cfg.info?.fingerprint;
+									return (
+										<li
+											key={fp ?? cfg.label}
+											className="flex items-center justify-between gap-2 rounded-lg border border-border px-2.5 py-2"
+										>
+											<div className="min-w-0">
+												<div className="flex items-center gap-1.5">
+													<span
+														className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+															cfg.source === "keybase"
+																? "bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+																: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+														}`}
+													>
+														{cfg.source === "keybase" ? "Keybase" : cfg.source}
+													</span>
+													<span className="truncate text-xs font-medium">{cfg.label}</span>
+												</div>
+												{fp && (
+													<div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+														{formatFingerprint(fp)}
+													</div>
+												)}
+											</div>
+											<div className="flex shrink-0 items-center gap-1">
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													onClick={() => onRestoreKey(cfg)}
+													className="h-11 gap-1 px-3 text-xs transition-colors sm:h-8"
+													title="Make this the active key"
+												>
+													Use this key
+												</Button>
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													onClick={() => fp && onForgetKey(fp)}
+													aria-label={`Forget ${cfg.label}`}
+													title="Forget this key"
+													className="size-11 text-muted-foreground transition-colors hover:text-foreground sm:size-8"
+												>
+													<X aria-hidden className="size-4" />
+												</Button>
+											</div>
+										</li>
+									);
+								})}
+							</ul>
+						</div>
+					)}
+
 					<KeybaseLoginForm onLoaded={(cfg) => onSave(cfg)} />
 
 					<hr className="my-4 border-border" />
@@ -542,6 +633,9 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 			// kbpgp + keybase-proofs) only when the user actually clicks login.
 			// The startup prewarm (PgpApp) usually has this chunk ready by now.
 			const { loginWithPassword } = await import("@/lib/pgp/keybase-auth");
+			// Same lazily-loaded chunk already exposes the armor helper
+			// (keeps kbpgp/triplesec out of the initial bundle).
+			const { privateKeyToArmored } = await import("@/lib/pgp/keybase-auth");
 
 			// Yield to the browser so the spinner paints before the
 			// synchronous scrypt + PDPKA signing work blocks the main thread.
@@ -558,19 +652,25 @@ function KeybaseLoginForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => v
 				);
 			}
 
-			const armored = decrypted.armor();
-			const info = await validateArmoredKey(armored);
+			// Store the key ENCRYPTED under the Keybase password (the password
+			// itself is never persisted). Previously only the username +
+			// metadata were kept, which forced a full network re-login for
+			// EVERY operation and made switching back from a local key to
+			// Keybase painful. With the encrypted armor on board, the config
+			// unlocks locally at operation time — same at-rest security as
+			// manual/generated keys, offline-friendly, and the passphrase
+			// prompt's session cache works too.
+			const armoredEncrypted = await privateKeyToArmored(decrypted, password);
+			const info = await validateArmoredKey(armoredEncrypted);
 			if (!info.ok || !info.info) {
 				throw new Error(info.error ?? "Decrypted key could not be parsed.");
 			}
 
-			// Store ONLY the username + metadata. The decrypted key is NOT stored.
-			// At operation time, the password will be re-requested and the key
-			// re-fetched from Keybase's me.json API.
 			onLoaded({
 				source: "keybase",
 				label: `@${me.username}`,
 				username: me.username,
+				encryptedArmored: armoredEncrypted,
 				info: info.info,
 			});
 		} catch (e) {
@@ -768,6 +868,10 @@ function ManualKeyForm({ onLoaded }: { onLoaded: (cfg: PrivateKeyConfig) => void
 					aria-label="Passphrase (if encrypted) — collected but never stored"
 					className="min-h-11 sm:min-h-9"
 				/>
+				{/* Consistency with the generate form: live strength feedback while
+	typing the passphrase that protects the pasted key. Hidden while empty
+	so the form stays compact until it matters. */}
+				{passphrase && <PassphraseStrength password={passphrase} />}
 				<FormError message={error} />
 				<Button
 					type="button"
@@ -873,13 +977,18 @@ function GenerateKeyForm({
 			const label = name || email || (type === "ecc" ? "ECC key" : "RSA key");
 			// Quantum-seal pair (ML-KEM-768): generated alongside every
 			// in-app key. The public half is stored in the clear; the secret
-			// half is wrapped under the chosen passphrase (an empty passphrase
-			// is no worse than the unprotected private key itself). Failure is
-			// non-fatal — the classical key works without the PQ layer.
+			// half is wrapped under the chosen passphrase — or, for
+			// passphrase-less keys, under a random device key stored in the
+			// config (wrapSealSecretAuto; WebCrypto PBKDF2 rejects empty key
+			// material, so the passphrase path cannot exist there). Without
+			// this, an empty passphrase used to THROW and the key silently
+			// lost its PQ layer at creation. Failure is non-fatal — the
+			// classical key works without the PQ layer.
 			let pq: QuantumSealConfig | undefined;
 			try {
 				const sealPair = generateSealKeyPair();
-				pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, pass);
+				// # Mr. AI Acting on s183173's Behalf
+				pq = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, pass);
 			} catch {
 				pq = undefined;
 			}
@@ -952,6 +1061,25 @@ function GenerateKeyForm({
 					</Button>
 				</div>
 				{pass.trim() !== "" && <PassphraseStrength password={pass} />}
+				{/* Live unencrypted-key hint (round-12 product pass): while the
+				    passphrase is empty, the form says so — a key generated here
+				    would be stored UNENCRYPTED on this device. The moment a
+				    passphrase exists (typed or dice-generated) this swaps to the
+				    strength meter. */}
+				{pass.trim() === "" && (
+					<p
+						role="note"
+						className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400"
+					>
+						<TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<span>
+							<span className="font-medium">
+								No passphrase — this key will be stored unencrypted on this device.
+							</span>{" "}
+							Anyone with access to this browser profile can read everything it decrypts.
+						</span>
+					</p>
+				)}
 				<div className="grid grid-cols-2 gap-2 text-[11px]">
 					<select
 						value={type}

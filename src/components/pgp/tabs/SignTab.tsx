@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
+import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { signMessage } from "@/lib/pgp/pgp";
 
@@ -20,6 +21,13 @@ export function SignTab({
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [detached, setDetached] = useState(false);
+	// Drop a .txt/.asc file to load it into the signing input — completes the
+	// R10 drop affordance on every tab (Decrypt + Verify already had it).
+	const { dragDepth, dropProps } = useAsciiTextDrop({
+		onText: (text) => setPlaintext(text),
+		onError: (message) => setError(message),
+		requirePgpArmor: false,
+	});
 	const [output, setOutput] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -68,7 +76,12 @@ export function SignTab({
 				}
 			}}
 		>
-			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
+			<div
+				className="relative rounded-xl border border-border bg-card p-4 shadow-sm transition-colors data-[drag=true]:border-[#0055dc]/60 data-[drag=true]:bg-[#0055dc]/5 sm:p-6 dark:data-[drag=true]:border-[#5e94ff]/60 dark:data-[drag=true]:bg-[#5e94ff]/5"
+				data-drag={dragDepth > 0}
+				{...dropProps}
+			>
+				<AsciiDropOverlay active={dragDepth > 0} label="Drop to load text" />
 				<div className="mb-1.5 flex items-center gap-2">
 					<span
 						aria-hidden="true"
@@ -149,11 +162,6 @@ export function SignTab({
 					title={detached ? "Detached signature" : "Cleartext signed message"}
 					output={output}
 					operation={detached ? "sign-detached" : "sign-cleartext"}
-					onReset={() => {
-						setOutput("");
-						setPlaintext("");
-						setError(null);
-					}}
 				/>
 			)}
 		</section>

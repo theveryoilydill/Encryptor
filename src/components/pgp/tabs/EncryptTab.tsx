@@ -1066,6 +1066,29 @@ export function EncryptTab({
 					e.preventDefault();
 					if (!busy) void handleEncrypt();
 				}
+				// Ctrl/Cmd+Shift+E toggles the full-screen composer from anywhere in
+				// the tab. Dialog-safe: keys aimed at an open Radix dialog/popover/
+				// menu belong to that surface, never to us — and an already-handled
+				// (defaultPrevented) event is left alone. The composer overlay
+				// itself opts back in via the :not, just like its Escape guard.
+				if (
+					(e.ctrlKey || e.metaKey) &&
+					e.shiftKey &&
+					!e.altKey &&
+					(e.key === "E" || e.key === "e") &&
+					!e.defaultPrevented
+				) {
+					const target = e.target as HTMLElement | null;
+					if (
+						target?.closest(
+							'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+						)
+					) {
+						return;
+					}
+					e.preventDefault();
+					setComposerExpanded((v) => !v);
+				}
 			}}
 			onDragEnter={(e) => {
 				if (!e.dataTransfer.types.includes("Files")) return;
@@ -1142,6 +1165,29 @@ export function EncryptTab({
 							if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
 								e.preventDefault();
 								if (!busy) void handleEncrypt();
+							}
+							// Ctrl/Cmd+Shift+E collapses the overlay — mirrored here for
+							// the same reason as Ctrl/Cmd+Enter (the portal never bubbles
+							// through the section handler). Same dialog-safe guard as the
+							// section: nested dialogs/popovers opened FROM the composer
+							// keep the keys for themselves.
+							if (
+								(e.ctrlKey || e.metaKey) &&
+								e.shiftKey &&
+								!e.altKey &&
+								(e.key === "E" || e.key === "e") &&
+								!e.defaultPrevented
+							) {
+								const target = e.target as HTMLElement | null;
+								if (
+									target?.closest(
+										'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+									)
+								) {
+									return;
+								}
+								e.preventDefault();
+								setComposerExpanded(false);
 							}
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
@@ -1243,6 +1289,14 @@ export function EncryptTab({
 					{outputMeta.signed && (
 						<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
 							signed
+						</span>
+					)}
+					{sealedCopy && (
+						// Violet PQ-sealed chip — mirrors the output box's violet PQ
+						// badge (OutputBlock in shared.tsx): the strip reports the
+						// ML-KEM-768 outer layer just like the box header does.
+						<span className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-500">
+							PQ-sealed
 						</span>
 					)}
 				</div>

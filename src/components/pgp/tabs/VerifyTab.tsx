@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { FileSearch, ShieldCheck, ShieldQuestion, ShieldX, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,10 @@ import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
+
+/** Debounce before auto-verifying a settled input (ms) — same "results as
+ *  you type" contract as the Decrypt tab's auto-decrypt. */
+const AUTO_VERIFY_DEBOUNCE_MS = 800;
 
 /** Plain-text verification report for the clipboard (additive): a compact,
  *  shareable summary of the current result — handy for pasting into an
@@ -83,6 +87,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// fixed-summary + input-keyed dismissal.
 	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
 	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
+	// Staleness counter for auto-verify runs: only the run launched for the
+	// CURRENT input may apply its result (same run-id pattern as the Decrypt
+	// tab's auto-decrypt — every re-schedule / manual run invalidates the
+	// runs before it).
+	const runIdRef = useRef(0);
 
 	// Drag & drop (R10): load armor onto the signature card (PGP-armored text
 	// files only) and any text file onto the detached-signature plaintext
@@ -116,19 +125,21 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 		return detectArmoredFormat(armored);
 	}, [armored]);
 
-	const handleVerify = useCallback(async () => {
-		setError(null);
-		setResult(null);
-		if (!armored.trim()) {
-			setError("Paste a signature or cleartext-signed message to verify.");
-			return;
-		}
-		setBusy(true);
-		try {
-			const res = await verifyAutoDetectWithKeyFetch(
-				armored,
-				plaintext || undefined,
-				async (keyIDs) =>
+	// Shared verify runner for the auto-verify debounce AND the manual Verify
+	// button. `myRun` is the run id this invocation belongs to; the freshness
+	// guard at the top is load-bearing: a superseded run (input kept changing,
+	// or a manual run started since) must return BEFORE touching any state —
+	// a stale run that flipped busy on before the guard used to dead-lock the
+	// Verify button on "Verifying…" forever, because the guarded finally then
+	// never cleared it.
+	const runVerify = useCallback(
+		async (input: string, plain: string, myRun: number) => {
+			if (myRun !== runIdRef.current) return; // superseded — touch nothing
+			setError(null);
+			setResult(null);
+			setBusy(true);
+			try {
+				const res = await verifyAutoDetectWithKeyFetch(input, plain || undefined, async (keyIDs) =>
 					// Verification keys: remote keyserver lookup + local self-signer
 					// recognition (a locally-configured key resolves its own
 					// signatures — shared one-liner with the Decrypt tab; replaces the
@@ -145,14 +156,54 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 								}
 							: null,
 					),
-			);
-			setResult(res);
-		} catch (e) {
-			setError((e as Error).message);
-		} finally {
-			setBusy(false);
+				);
+				if (myRun !== runIdRef.current) return; // superseded mid-verify
+				setResult(res);
+			} catch (e) {
+				if (myRun !== runIdRef.current) return; // superseded — drop the error too
+				setError((e as Error).message);
+			} finally {
+				if (myRun === runIdRef.current) setBusy(false);
+			}
+		},
+		[privateKey],
+	);
+
+	// Manual Verify button: forces a run NOW under a fresh run id — which
+	// implicitly supersedes any in-flight or still-debouncing auto run.
+	const handleVerify = useCallback(() => {
+		if (!armored.trim()) {
+			setError("Paste a signature or cleartext-signed message to verify.");
+			setResult(null);
+			return;
 		}
-	}, [armored, plaintext, privateKey]);
+		const myRun = ++runIdRef.current;
+		void runVerify(armored, plaintext, myRun);
+	}, [armored, plaintext, runVerify]);
+
+	// Auto-verify (mirrors the Decrypt tab's auto-decrypt): when the input
+	// settles for AUTO_VERIFY_DEBOUNCE_MS and the content looks verifiable —
+	// a cleartext-signed message, or a detached signature accompanied by its
+	// plaintext — run verification under a fresh run id. Empty or not-yet-
+	// verifiable input invalidates any in-flight run instead of scheduling
+	// one; the cleanup clears a pending timer on unmount / re-schedule.
+	useEffect(() => {
+		const verifiable =
+			armored.includes("-----BEGIN PGP SIGNED MESSAGE-----") ||
+			(armored.includes("-----BEGIN PGP SIGNATURE-----") && plaintext.trim() !== "");
+		if (!armored.trim() || !verifiable) {
+			runIdRef.current += 1; // invalidate any in-flight run
+			setBusy(false);
+			return;
+		}
+		const myRun = ++runIdRef.current;
+		const timer = setTimeout(() => {
+			void runVerify(armored, plaintext, myRun);
+		}, AUTO_VERIFY_DEBOUNCE_MS);
+		return () => {
+			clearTimeout(timer);
+		};
+	}, [armored, plaintext, runVerify]);
 
 	const showPlaintextField = detected === "detached-signature";
 
@@ -323,18 +374,20 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 
 			{showPlaintextField && (
 				// Plaintext card accepts ANY text file (no PGP armor sniff — the
-				// field holds the signed plaintext, not armor).
+				// field holds the signed plaintext, not armor). Auxiliary-input
+				// look: dashed border + muted surface — this card supports the
+				// signature card above, it is not the primary input.
 				<div
-					className="relative rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6"
+					className="relative rounded-xl border border-dashed border-border bg-muted/40 p-4 sm:p-6"
 					{...plainDropProps}
 				>
 					<AsciiDropOverlay active={plainDragDepth > 0} label="Drop to load plaintext" />
 					<div className="mb-1.5 flex items-center gap-2">
 						<span
 							aria-hidden="true"
-							className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
+							className="h-3.5 w-[3px] shrink-0 rounded-full bg-amber-500 dark:bg-amber-400"
 						/>
-						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+						<Label className="text-xs font-medium uppercase tracking-wide text-amber-600 dark:text-amber-500">
 							Original plaintext (required for detached signatures)
 						</Label>
 					</div>

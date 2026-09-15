@@ -35,6 +35,14 @@ export interface SealedHistoryEntry {
 	 *  "Sealed to: …" tooltip on the vault's key-count chip. Optional so
 	 *  entries written before this field shipped still load. */
 	labels?: string[];
+	/** Display label of the signing key, captured at seal time (MAX 48
+	 *  chars, control characters stripped) — powers the "signed by …"
+	 *  chip. Optional so entries written before this field shipped still
+	 *  load. */
+	signer?: string;
+	/** Attachment count wrapped into the envelope at seal time (0-99).
+	 *  Optional so legacy entries still load. */
+	files?: number;
 }
 
 const HISTORY_KEY = "encryptor.sealed.history.v1";
@@ -47,12 +55,39 @@ export const MAX_SEALED_ARMOR_CHARS = 64 * 1024;
 export const MAX_SEALED_LABELS = 8;
 export const MAX_SEALED_LABEL_CHARS = 48;
 
+/** Display-only cap for the signer label (same budget as one recipient
+ *  label — it renders inside the same chip row). */
+export const MAX_SEALED_SIGNER_CHARS = 48;
+/** Upper bound for the per-entry attachment count; oversized values clamp
+ *  here, garbage drops out entirely. */
+export const MAX_SEALED_FILES = 99;
+
 function sanitizeLabels(input: unknown): string[] {
 	if (!Array.isArray(input)) return [];
 	return input
 		.filter((l): l is string => typeof l === "string" && l.trim() !== "")
 		.slice(0, MAX_SEALED_LABELS)
 		.map((l) => l.trim().slice(0, MAX_SEALED_LABEL_CHARS));
+}
+
+/** Signer display label (round 15): control characters stripped, trimmed,
+ *  capped at 48 — an empty or garbage value becomes undefined so the UI
+ *  falls back to the bare "signed" chip. */
+function sanitizeSigner(input: unknown): string | undefined {
+	if (typeof input !== "string") return undefined;
+	const cleaned = input
+		// eslint-disable-next-line no-control-regex -- stripping control characters IS the goal
+		.replace(/[\u0000-\u001f\u007f]/g, "")
+		.trim()
+		.slice(0, MAX_SEALED_SIGNER_CHARS);
+	return cleaned === "" ? undefined : cleaned;
+}
+
+/** Attachment count: finite non-negative numbers only, floored and clamped
+ *  to 99 — garbage becomes undefined (the chip simply doesn't render). */
+function sanitizeFiles(input: unknown): number | undefined {
+	if (typeof input !== "number" || !Number.isFinite(input) || input < 0) return undefined;
+	return Math.min(MAX_SEALED_FILES, Math.floor(input));
 }
 
 function makeId(): string {
@@ -94,6 +129,8 @@ export function loadSealedHistory(): SealedHistoryEntry[] {
 				armor: e.armor,
 				sealedArmor: typeof e.sealedArmor === "string" ? e.sealedArmor : null,
 				labels: sanitizeLabels(e.labels),
+				signer: sanitizeSigner(e.signer),
+				files: sanitizeFiles(e.files),
 			});
 		}
 		return entries.sort((a, b) => b.at - a.at).slice(0, MAX_SEALED_ENTRIES);
@@ -120,6 +157,8 @@ export function appendSealedOutput(input: {
 	signed: boolean;
 	pqSealed: boolean;
 	labels?: string[];
+	signer?: string;
+	files?: number;
 }): { entries: SealedHistoryEntry[]; stored: boolean } {
 	if (input.armor.length > MAX_SEALED_ARMOR_CHARS) {
 		// Deliberate skip: a truncated ciphertext would decrypt to garbage —
@@ -135,6 +174,8 @@ export function appendSealedOutput(input: {
 		armor: input.armor,
 		sealedArmor: input.sealedArmor ?? null,
 		labels: sanitizeLabels(input.labels),
+		signer: sanitizeSigner(input.signer),
+		files: sanitizeFiles(input.files),
 	};
 	const entries = [entry, ...loadSealedHistory().filter((e) => e.armor !== input.armor)].slice(
 		0,

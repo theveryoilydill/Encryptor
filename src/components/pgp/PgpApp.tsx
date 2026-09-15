@@ -24,7 +24,6 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 import {
 	type KeyRequestState,
@@ -1031,8 +1030,8 @@ export default function PgpApp() {
 	// is configured — and the user has not skipped the tour — the welcome
 	// flow IS the app. Everything else (header, tabs, composers) stays
 	// unmounted until the tour is finished, skipped step-by-step, or skipped
-	// entirely. The key dialog and toaster stay mounted so "Set up a key"
-	// works straight from the tour.
+	// entirely. The key dialog stays mounted so "Set up a key" works
+	// straight from the tour; toasts render from the root-layout toaster.
 	if (showOnboarding) {
 		return (
 			<div className="flex min-h-dvh flex-col bg-background text-foreground">
@@ -1057,7 +1056,6 @@ export default function PgpApp() {
 						setConfigOpen(false);
 					}}
 				/>
-				<Toaster />
 			</div>
 		);
 	}
@@ -1211,8 +1209,6 @@ export default function PgpApp() {
 					}}
 				/>
 			)}
-
-			<Toaster />
 		</div>
 	);
 }

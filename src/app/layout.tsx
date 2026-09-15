@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "next-themes";
+import { Toaster } from "@/components/ui/toaster";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -51,6 +52,11 @@ export default function RootLayout({
 					disableTransitionOnChange
 				>
 					{children}
+					{/* Root-mounted toaster (round 15): lives OUTSIDE every animated subtree
+					    — a persisted transform on an ancestor (e.g. .animate-fade-up) makes
+					    it the containing block for fixed descendants and pushed toasts
+					    off-screen. The viewport itself is fixed z-[100]. */}
+					<Toaster />
 				</ThemeProvider>
 			</body>
 		</html>

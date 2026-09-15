@@ -26,6 +26,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ToastAction } from "@/components/ui/toast";
 import { RecipientPicker } from "@/components/pgp/RecipientPicker";
 import {
 	AttachmentList,
@@ -613,6 +614,12 @@ export function EncryptTab({
 		keys: number;
 		signed: boolean;
 		labels: string[];
+		// Seal-time provenance (round 15): who signed (display label from the
+		// configured key) and how many files were wrapped in — feeds the
+		// strip chips; Restore passes both back through so a restored output
+		// keeps its chips.
+		signer?: string;
+		files?: number;
 	} | null>(null);
 	// Recent sealed outputs — a ciphertext-only local history (lib/pgp/
 	// sealed-history): the armored result of each encrypt is kept so an
@@ -925,7 +932,17 @@ export function EncryptTab({
 			]
 				.slice(0, 8)
 				.map((l) => l.trim().slice(0, 48));
-			setOutputMeta({ keys: recipientKeys.length, signed: signing, labels: recipientLabels });
+			// Seal-time provenance (round 15): the signing key's display label
+			// (only meaningful when the output is actually signed) + the
+			// attachment count — recorded on the strip AND in the vault entry.
+			const signerLabel = signing ? privateKey?.label : undefined;
+			setOutputMeta({
+				keys: recipientKeys.length,
+				signed: signing,
+				labels: recipientLabels,
+				signer: signerLabel,
+				files: attachments.length,
+			});
 			// Ciphertext-only local history: record the sealed output (and its
 			// PQ copy, when produced) BEFORE the plaintext is wiped — the entry
 			// holds nothing but the armor the user is about to see anyway.
@@ -936,6 +953,8 @@ export function EncryptTab({
 				signed: signing,
 				pqSealed: pqCopy !== null,
 				labels: recipientLabels,
+				signer: signerLabel,
+				files: attachments.length,
 			});
 			setSealedHistory(recorded.entries);
 			setHistoryOpen(true);
@@ -946,6 +965,30 @@ export function EncryptTab({
 			setPlaintext("");
 			setAttachments([]);
 			setHintDismissedFor(null);
+
+			// Post-encrypt success toast (round 15). When "Include me" is on the
+			// user can actually complete the flow, so it carries an "Open in
+			// Decrypt" action that deep-links to the Decrypt tab — the PQ copy
+			// when one exists (device-key unwrap, no passphrase prompt), else
+			// the classical armor. Without include-me there is no copy of theirs
+			// to open, so the action is omitted.
+			toast({
+				title: "Message sealed — plaintext cleared",
+				description: "The ciphertext is in the output box below.",
+				action: includeSelf ? (
+					<ToastAction
+						altText="Open your sealed copy in the Decrypt tab"
+						onClick={() =>
+							onOpenInDecrypt?.({
+								armor: pqCopy ?? armored,
+								seq: Date.now(),
+							})
+						}
+					>
+						Open in Decrypt
+					</ToastAction>
+				) : undefined,
+			});
 		} catch (e) {
 			const msg = (e as Error).message ?? String(e);
 			// Expired-key failures surface as openpgp internals — translate to
@@ -971,6 +1014,7 @@ export function EncryptTab({
 		privateKey,
 		includeSelf,
 		requestDecryptedKey,
+		onOpenInDecrypt,
 		settings.autoSign,
 		settings.compression,
 		settings.pqSealedCopy,
@@ -1295,9 +1339,25 @@ export function EncryptTab({
 					>
 						{outputMeta.keys} {outputMeta.keys === 1 ? "key" : "keys"}
 					</span>
-					{outputMeta.signed && (
-						<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-							signed
+					{outputMeta.signed &&
+						(outputMeta.signer ? (
+							// Emerald "signed by <label>" chip (round 15): replaces the bare
+							// chip when the seal captured a signer label. The label is
+							// recorded at seal time — displayed, not verified here.
+							<span
+								title={`Signed by ${outputMeta.signer} — display label captured at seal time (not verified here).`}
+								className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-500"
+							>
+								signed by {outputMeta.signer}
+							</span>
+						) : (
+							<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+								signed
+							</span>
+						))}
+					{outputMeta.files !== undefined && outputMeta.files > 0 && (
+						<span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
+							{outputMeta.files} {outputMeta.files === 1 ? "file" : "files"}
 						</span>
 					)}
 					{sealedCopy && (
@@ -1395,14 +1455,27 @@ export function EncryptTab({
 											>
 												{entry.keys} {entry.keys === 1 ? "key" : "keys"}
 											</span>
-											{entry.signed && (
-												<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-													signed
-												</span>
-											)}
+											{entry.signed &&
+												(entry.signer ? (
+													<span
+														title={`Signed by ${entry.signer} — display label captured at seal time (not verified here).`}
+														className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
+													>
+														signed by {entry.signer}
+													</span>
+												) : (
+													<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+														signed
+													</span>
+												))}
 											{entry.pqSealed && (
 												<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
 													PQ
+												</span>
+											)}
+											{entry.files !== undefined && entry.files > 0 && (
+												<span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+													{entry.files} {entry.files === 1 ? "file" : "files"}
 												</span>
 											)}
 											<span className="font-mono text-[10px] text-muted-foreground">
@@ -1424,6 +1497,8 @@ export function EncryptTab({
 														keys: entry.keys,
 														signed: entry.signed,
 														labels: entry.labels ?? [],
+														signer: entry.signer,
+														files: entry.files,
 													});
 													setError(null);
 													toast({

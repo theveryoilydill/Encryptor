@@ -28,11 +28,25 @@ export function clientIP(req: NextRequest): string {
 }
 
 /** Uniform JSON error response; RegistryError carries its own status. */
-export function registryErrorResponse(e: unknown): NextResponse {
+export function registryErrorResponse(e: unknown, cors = false): NextResponse {
 	if (e instanceof RegistryError) {
-		return NextResponse.json({ error: e.message }, { status: e.status });
+		return NextResponse.json(
+			{ error: e.message },
+			{
+				status: e.status,
+				headers: cors ? { "Access-Control-Allow-Origin": "*" } : undefined,
+			},
+		);
 	}
-	return NextResponse.json({ error: "Internal registry error" }, { status: 500 });
+	// Unexpected errors must be observable — log before the generic 500.
+	console.error("[registry] unhandled error:", e);
+	return NextResponse.json(
+		{ error: "Internal registry error" },
+		{
+			status: 500,
+			headers: cors ? { "Access-Control-Allow-Origin": "*" } : undefined,
+		},
+	);
 }
 
 /**

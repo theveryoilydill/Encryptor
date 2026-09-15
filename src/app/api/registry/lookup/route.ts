@@ -106,7 +106,9 @@ export async function GET(req: NextRequest) {
 			},
 		);
 	} catch (e) {
-		return registryErrorResponse(e);
+		// The lookup endpoint is a public CORS read API — error responses
+		// must be readable by cross-site callers too.
+		return registryErrorResponse(e, true);
 	}
 }
 

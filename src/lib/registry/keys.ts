@@ -49,6 +49,27 @@ export interface ParsedPublicKey {
 }
 
 /**
+ * Extract self-reported User ID emails from a parsed key. openpgp v6
+ * getUserIDs() returns RAW userid strings ("Name <email>"), so emails are
+ * pulled from the parsed User ID packets with a raw-string regex fallback.
+ */
+export function extractEmails(key: openpgp.Key, cap: number): string[] {
+	const emails: string[] = [];
+	const users = key.users ?? [];
+	for (const user of users) {
+		const userID = user?.userID;
+		if (!userID) continue;
+		// userID.email is parsed from the packet; fall back to the raw
+		// userid string ("Name <email>") when the packet has no email field.
+		const candidate = userID.email || userID.userID?.match(/<([^<>]+@[^<>]+)>/)?.[1] || "";
+		const email = normalizeEmail(candidate);
+		if (email && !emails.includes(email)) emails.push(email);
+		if (emails.length >= cap) break;
+	}
+	return emails;
+}
+
+/**
  * Parse and validate an armored PUBLIC key. Throws RegistryError with a
  * 4xx status on any malformed input, private material, or oversized keys.
  * The returned armored value is re-serialized from the parsed packet set
@@ -86,12 +107,7 @@ export async function parsePublicArmored(
 	}
 
 	// Extract and normalize self-reported User ID emails (deduped, capped).
-	const emails: string[] = [];
-	for (const userID of key.getUserIDs()) {
-		const email = normalizeEmail(userID);
-		if (email && !emails.includes(email)) emails.push(email);
-		if (emails.length >= 10) break;
-	}
+	const emails = extractEmails(key, 10);
 
 	// Best-effort creation time (epoch seconds); 0 when unavailable.
 	const creation = key.getCreationTime();

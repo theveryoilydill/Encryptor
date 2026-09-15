@@ -72,6 +72,18 @@ export async function POST(req: NextRequest) {
 					409,
 				);
 			}
+			// Consume the nonce FIRST (atomic delete scoped to THIS fingerprint)
+			// so challenges are single-use and a nonce issued for one key can
+			// never authorize a mutation of another key.
+			const consumed = await db
+				.prepare(
+					"DELETE FROM registry_challenges WHERE nonce = ?1 AND fingerprint = ?2 AND expires_at > ?3",
+				)
+				.bind(nonce, parsed.fingerprint, nowSeconds())
+				.run();
+			if (!consumed.meta || Number(consumed.meta.changes ?? 0) === 0) {
+				throw new RegistryError("Challenge is invalid, expired, or already used", 403);
+			}
 			const ok = await verifyChallengeSignature(
 				existing.armored,
 				parsed.fingerprint,

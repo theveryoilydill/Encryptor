@@ -57,12 +57,7 @@ import {
 	getCachedPassphrase,
 	getCachedPassphraseIfFresh,
 } from "@/lib/pgp/session-passphrase";
-import {
-	loadSettings,
-	saveSettings,
-	type AppSettings,
-	type MarkdownEditorKind,
-} from "@/lib/pgp/settings";
+import { loadSettings, saveSettings, type AppSettings } from "@/lib/pgp/settings";
 
 /** Last-active tab id, persisted so the app reopens on the mode the user
  *  was on. Only accepts the exact tab ids used below, else "encrypt". */
@@ -172,6 +167,55 @@ function OwnKeyExpiryBanner({
 					<X aria-hidden="true" className="size-4" />
 				</Button>
 			</div>
+		</div>
+	);
+}
+
+/** Unencrypted-own-key warning (round-12 product pass): the configured key
+ *  is private with NO passphrase protection — its material sits unencrypted
+ *  on this device, readable by anything with access to this browser
+ *  profile. Amber family matching the expiry banner. Dismissal is persisted
+ *  PER FINGERPRINT (STORAGE_KEYS.unprotectedKeyBannerDismissed), so a
+ *  different or regenerated key re-arms the warning. */
+function OwnKeyUnprotectedBanner({
+	label,
+	onDismiss,
+}: {
+	/** Configured key display label (quoted in the headline). */
+	label: string;
+	onDismiss: () => void;
+}) {
+	return (
+		<div
+			role="status"
+			className="animate-fade-up flex flex-col gap-2.5 rounded-xl border border-amber-500/50 bg-amber-50 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:gap-3 dark:border-amber-500/40 dark:bg-amber-950/30"
+		>
+			<span
+				aria-hidden="true"
+				className="grid size-8 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+			>
+				<TriangleAlert className="size-4" />
+			</span>
+			<div className="min-w-0 flex-1">
+				<p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+					Your key “{label}” is stored unencrypted on this device.
+				</p>
+				<p className="mt-0.5 text-[11px] text-amber-800/90 dark:text-amber-200/80">
+					It has no passphrase protection — anyone using this browser profile can read everything it
+					decrypts. Protect it by generating a replacement key with a passphrase (key settings).
+				</p>
+			</div>
+			<Button
+				type="button"
+				variant="ghost"
+				size="icon"
+				onClick={onDismiss}
+				aria-label="Dismiss unencrypted key warning"
+				title="Dismiss this warning"
+				className="size-11 shrink-0 text-amber-700 transition-colors hover:text-foreground sm:size-8 dark:text-amber-300"
+			>
+				<X aria-hidden="true" className="size-4" />
+			</Button>
 		</div>
 	);
 }
@@ -555,6 +599,38 @@ export default function PgpApp() {
 		!!privateKey?.encryptedArmored &&
 		!privateKey?.pq &&
 		pqBannerDismissedFp !== privateKey?.info?.fingerprint;
+	// Unencrypted-own-key banner (round-12 product pass): fires when the
+	// configured key is PRIVATE and its material is DECRYPTED — i.e. stored
+	// without passphrase protection (describePrivateKey reports
+	// isDecrypted:false only for passphrase-protected keys; a generated or
+	// pasted passphrase-less key comes back isDecrypted:true).
+	const [unprotectedKeyDismissedFp, setUnprotectedKeyDismissedFp] = useState<string | null>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.unprotectedKeyBannerDismissed);
+		} catch {
+			return null;
+		}
+	});
+	const handleDismissUnprotectedKeyBanner = useCallback(() => {
+		const fp = privateKey?.info?.fingerprint ?? null;
+		if (fp) {
+			try {
+				localStorage.setItem(STORAGE_KEYS.unprotectedKeyBannerDismissed, fp);
+			} catch {
+				// guarded storage posture — the in-memory dismissal still applies
+			}
+		}
+		setUnprotectedKeyDismissedFp(fp);
+	}, [privateKey]);
+	// "isPrivate" in info narrows AnyKeyInfo to PrivateKeyInfo so both
+	// protection fields are honestly read from the key's own metadata.
+	const ownInfo = privateKey?.info;
+	const showUnprotectedKeyBanner =
+		!!ownInfo &&
+		"isPrivate" in ownInfo &&
+		ownInfo.isPrivate &&
+		ownInfo.isDecrypted &&
+		unprotectedKeyDismissedFp !== ownInfo.fingerprint;
 	// First-run onboarding (round-12 human feedback): a FULL-SCREEN takeover
 	// while NOTHING is configured. "Skip setup" persists its dismissal so a
 	// returning user is never re-taken over; Settings can replay it on demand
@@ -770,15 +846,6 @@ export default function PgpApp() {
 		},
 		[passphraseCached],
 	);
-	// Composer style quick-toggle (round 12): the Encrypt tab's segmented
-	// control writes through the same settings path as the Settings dialog
-	// (persists, and keeps the auto-lock deadline logic on one owner).
-	const handleEditorKindChange = useCallback(
-		(kind: MarkdownEditorKind) => {
-			handleSetSettings({ ...settings, markdownEditor: kind });
-		},
-		[handleSetSettings, settings],
-	);
 
 	// Alt+1..4 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
 	// key dialog stays on the header key button.
@@ -993,6 +1060,14 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+				{showUnprotectedKeyBanner && privateKey && (
+					<div className="mb-4">
+						<OwnKeyUnprotectedBanner
+							label={privateKey.label}
+							onDismiss={handleDismissUnprotectedKeyBanner}
+						/>
+					</div>
+				)}
 				{showPqBanner && privateKey && (
 					<div className="mb-4">
 						<PostQuantumBanner
@@ -1045,7 +1120,6 @@ export default function PgpApp() {
 									onIncludeSelfChange={handleSetIncludeSelf}
 									requestDecryptedKey={requestDecryptedKey}
 									settings={settings}
-									onEditorKindChange={handleEditorKindChange}
 								/>
 							)}
 							{t.id === "decrypt" && (

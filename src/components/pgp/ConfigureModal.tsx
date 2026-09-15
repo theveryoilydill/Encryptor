@@ -1061,6 +1061,25 @@ function GenerateKeyForm({
 					</Button>
 				</div>
 				{pass.trim() !== "" && <PassphraseStrength password={pass} />}
+				{/* Live unencrypted-key hint (round-12 product pass): while the
+				    passphrase is empty, the form says so — a key generated here
+				    would be stored UNENCRYPTED on this device. The moment a
+				    passphrase exists (typed or dice-generated) this swaps to the
+				    strength meter. */}
+				{pass.trim() === "" && (
+					<p
+						role="note"
+						className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400"
+					>
+						<TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<span>
+							<span className="font-medium">
+								No passphrase — this key will be stored unencrypted on this device.
+							</span>{" "}
+							Anyone with access to this browser profile can read everything it decrypts.
+						</span>
+					</p>
+				)}
 				<div className="grid grid-cols-2 gap-2 text-[11px]">
 					<select
 						value={type}

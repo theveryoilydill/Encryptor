@@ -23,6 +23,8 @@ export const STORAGE_KEYS = {
 	keyHistory: "encryptor.keyHistory.v1",
 	/** Per-fingerprint dismissal of the post-quantum onboarding banner. */
 	pqBannerDismissed: "encryptor.pq-banner-dismissed",
+	/** Per-fingerprint dismissal of the unencrypted-own-key banner. */
+	unprotectedKeyBannerDismissed: "encryptor.unprotected-key-banner-dismissed",
 	includeSelf: "encryptor.include-self.v1",
 	lastTab: "encryptor.lastTab",
 	recentRecipients: "encryptor.recentRecipients",

@@ -2,17 +2,12 @@
  * User-defined composer templates — the "your templates" half of the
  * Insert-template menu (the curated starters live in EncryptTab).
  *
- * WHY localStorage (unlike composer drafts, which use sessionStorage):
- * a template is content the user EXPLICITLY chose to keep — persistence
- * is the entire point. The save dialog copy says where it's kept ("in
- * this browser") so the plaintext-in-RAM posture stays honest: saving a
- * template is an explicit act, not a silent side effect.
- *
- * Guarded reads/writes per the repo-wide storage posture: any storage
- * failure (private mode, quota, disabled) degrades to an empty list or a
- * rejected save — never a thrown error in the composer UI.
+ * WHY localStorage: a template is content the user EXPLICITLY chose to
+ * keep — persistence is the entire point (the composer itself stays
+ * RAM-only). The save dialog says where it's kept ("in this browser")
+ * AND that it is plain text: saving a template is an explicit act, not a
+ * silent side effect, and never a place for secrets.
  */
-
 export interface UserTemplate {
 	id: string;
 	name: string;
@@ -22,7 +17,7 @@ export interface UserTemplate {
 
 const TEMPLATE_KEY = "encryptor.composer.templates.v1";
 /** Cap both dimensions: a runaway paste saved as a template must not blow
- *  the ~5 MB engine quota (same reasoning as composer-draft's 256 KB cap). */
+ *  the ~5 MB engine quota. */
 export const MAX_TEMPLATES = 24;
 export const MAX_TEMPLATE_BODY_CHARS = 32 * 1024;
 export const MAX_TEMPLATE_NAME_CHARS = 60;

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-	Blocks,
 	BookmarkPlus,
 	ChevronDown,
 	FileDown,
@@ -12,7 +11,6 @@ import {
 	Loader2,
 	Lock,
 	ShieldCheck,
-	SquareCode,
 	Sparkles,
 	Trash2,
 	TriangleAlert,
@@ -60,7 +58,6 @@ import {
 	saveUserTemplate,
 	type UserTemplate,
 } from "@/lib/pgp/user-templates";
-import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "@/lib/pgp/composer-draft";
 import {
 	appendSealedOutput,
 	clearSealedHistory,
@@ -78,14 +75,17 @@ import {
 	type EnvelopeFile,
 } from "@/lib/pgp/envelope";
 import { LIMITS } from "@/lib/constants";
-import type { AppSettings, MarkdownEditorKind } from "@/lib/pgp/settings";
+import type { AppSettings } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
 
-/** Curated starter templates for the composer. Insert-only (they seed an
- *  empty message or append after the current text); placeholders are meant
- *  to be filled in. Deliberately generic — the composer is a markdown
- *  editor, so emphasis/headers serialize losslessly into the envelope. */
+/** Curated starter templates for the composer (round-12 product pass:
+ *  eight complete fill-in documents). Applying one REPLACES the composer
+ *  content; [bracketed] placeholders are meant to be filled in, and the
+ *  meeting-minutes starter ships GFM task-list checkboxes. Deliberately
+ *  generic — the composer is a markdown editor, so emphasis/headers/
+ *  checkboxes serialize losslessly into the envelope. Keep secrets OUT of
+ *  templates: anything saved here lives in plain text on this device. */
 const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] = [
 	{
 		name: "Credentials handoff",
@@ -100,17 +100,22 @@ const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] 
 		].join("\n"),
 	},
 	{
-		name: "Meeting details",
-		description: "Time, place, and agenda",
+		name: "Meeting minutes",
+		description: "Decisions made, tasks owned — checkbox list included",
 		body: [
-			"**When:** ",
-			"**Where / link:** ",
+			"**Meeting:** [title]",
+			"**Date:** [date] — **Attendees:** [names]",
 			"",
-			"**Agenda**",
-			"1. ",
-			"2. ",
+			"**Decisions**",
+			"- [decision one]",
+			"- [decision two]",
 			"",
-			"_Please reply encrypted if you include anything confidential._",
+			"**Action items**",
+			"- [ ] [task] — [owner], due [date]",
+			"- [ ] [task] — [owner], due [date]",
+			"- [ ] [task] — [owner], due [date]",
+			"",
+			"_Share these encrypted whenever the minutes mention anything confidential._",
 		].join("\n"),
 	},
 	{
@@ -128,17 +133,106 @@ const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] 
 			"_Handling: decrypt, read, and delete this copy. Do not forward — share a fresh encrypted copy instead._",
 		].join("\n"),
 	},
+	{
+		name: "Password rotation notice",
+		description: "Tell a teammate a password was rotated",
+		body: [
+			"**Service / site:** [service name]",
+			"**Account / username:** [account ID]",
+			"**Rotated on:** [date]",
+			"",
+			"**New password:** [paste the new password]",
+			"",
+			"**What to do:** sign in once with the password above, then update any saved logins. Stop using the old password immediately.",
+			"",
+			"_One-time secret — if you did not expect this rotation, reply encrypted before using the account._",
+		].join("\n"),
+	},
+	{
+		name: "Recovery codes handoff",
+		description: "Deliver backup 2FA codes for safekeeping",
+		body: [
+			"**Service / site:** [service name]",
+			"**Account / username:** [account ID]",
+			"**Generated on:** [date]",
+			"",
+			"**Recovery codes** (each works once):",
+			"- `[code 1]`",
+			"- `[code 2]`",
+			"- `[code 3]`",
+			"- `[code 4]`",
+			"",
+			"_Whoever holds this message holds the way back in — store it offline, confirm receipt, and delete every other copy._",
+		].join("\n"),
+	},
+	{
+		name: "API / server access handoff",
+		description: "Tokens, hosts, and scopes in one place",
+		body: [
+			"**Environment:** [production / staging]",
+			"**Host / endpoint:** [host or URL]",
+			"**Port:** [port]",
+			"",
+			"**API key or token:** [paste the token]",
+			"**Secret (if separate):** [paste the secret]",
+			"",
+			"**Scope:** [what this access allows — e.g. read-only on the metrics API]",
+			"**Valid until:** [expiry date, or “revoke after handoff”]",
+			"",
+			"_Rotate or revoke the credential once the work is done — access should never outlive its purpose._",
+		].join("\n"),
+	},
+	{
+		name: "Wi-Fi / device credentials",
+		description: "Network names, passwords, and device logins",
+		body: [
+			"**Wi-Fi network (SSID):** [network name]",
+			"**Wi-Fi password:** [password]",
+			"**Guest network (if any):** [network name / password]",
+			"",
+			"**Device:** [laptop / phone / router model]",
+			"**Device login:** [username] / [password or PIN]",
+			"",
+			"**Notes:** [anything a guest needs — captive portal, MAC filtering, hours]",
+			"",
+			"_For visitor access only — change the Wi-Fi password once the visit is over._",
+		].join("\n"),
+	},
+	{
+		name: "Incident note",
+		description: "Report what happened, encrypted end to end",
+		body: [
+			"**Incident:** [short title]",
+			"**Detected:** [date + time] — **Reported by:** [name]",
+			"**Severity:** [low / medium / high / critical]",
+			"",
+			"**What happened:**",
+			"[factual description — what was affected, how it was found]",
+			"",
+			"**Containment so far:**",
+			"- [action taken]",
+			"- [action taken]",
+			"",
+			"**Next steps**",
+			"- [ ] [follow-up task] — [owner], due [date]",
+			"",
+			"_Keep distribution tight: share over this encrypted channel only, and log who received it._",
+		].join("\n"),
+	},
 ];
 
 /** Small right-aligned utility above the composer: the template menu works
  *  for BOTH editor styles (Notion blocks + VS Code textarea) because it
- *  rides the same setPlaintext path as typing. Two sections: the user's
- *  own saved templates (localStorage, deletable) and the curated starters. */
+ *  rides the same setPlaintext path as typing. Applying a template
+ *  REPLACES the composer content — templates are complete fill-in
+ *  documents, not snippets to merge. Two sections: the user's own saved
+ *  templates (localStorage, deletable) and the curated starters, plus a
+ *  plain-text disclosure (templates are unencrypted on this device). */
 function TemplateMenu({
-	onInsert,
+	onApply,
 	currentMessage,
 }: {
-	onInsert: (body: string) => void;
+	onApply: (body: string) => void;
 	currentMessage: string;
 }) {
 	const [templates, setTemplates] = useState<UserTemplate[]>([]);
@@ -238,6 +332,18 @@ function TemplateMenu({
 				// clipping below the fold (repo-wide thin scrollbar applies).
 				className="max-h-[min(26rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto"
 			>
+				{/* Plain-text disclosure (round-12 product pass): saved templates live
+				    in this browser's storage UNENCRYPTED. One line up front keeps the
+				    "no secrets in templates" rule visible wherever templates are used. */}
+				<p
+					role="note"
+					className="mx-1.5 mb-1 flex items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] font-medium leading-relaxed text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+				>
+					<TriangleAlert aria-hidden="true" className="mt-0.5 size-3 shrink-0" />
+					<span>
+						Templates are stored in plain text on this device — never include real secrets.
+					</span>
+				</p>
 				<DropdownMenuLabel className="flex items-center gap-1.5 text-[11px] font-normal text-muted-foreground">
 					<BookmarkPlus aria-hidden="true" className="size-3" />
 					Your templates
@@ -259,7 +365,7 @@ function TemplateMenu({
 								e.preventDefault();
 								return;
 							}
-							onInsert(t.body);
+							onApply(t.body);
 						}}
 						className="group flex items-start gap-1 py-2"
 					>
@@ -300,7 +406,7 @@ function TemplateMenu({
 				{COMPOSER_TEMPLATES.map((t) => (
 					<DropdownMenuItem
 						key={t.name}
-						onClick={() => onInsert(t.body)}
+						onClick={() => onApply(t.body)}
 						className="flex-col items-start gap-0.5 py-2"
 					>
 						<span className="text-xs font-medium">{t.name}</span>
@@ -357,6 +463,13 @@ function TemplateMenu({
 							Stored in this browser only. Insert it anytime from this menu.
 						</DialogDescription>
 					</DialogHeader>
+					<p
+						role="note"
+						className="flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+					>
+						<TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<span>Saved in plain text on this device — remove secrets before saving.</span>
+					</p>
 					<Input
 						value={name}
 						onChange={(e) => setName(e.target.value)}
@@ -397,7 +510,6 @@ export function EncryptTab({
 	onIncludeSelfChange,
 	requestDecryptedKey,
 	settings,
-	onEditorKindChange,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	recipients: Recipient[];
@@ -408,10 +520,6 @@ export function EncryptTab({
 	/** App preferences (compression + editor style) — owned by PgpApp so a
 	 *  settings change re-renders the open tab immediately. */
 	settings: AppSettings;
-	/** Live editor-style switch (round 12): the segmented control above the
-	 *  composer writes through to PgpApp's settings owner, so the choice
-	 *  persists and stays in sync with the Settings dialog. */
-	onEditorKindChange: (kind: MarkdownEditorKind) => void;
 }) {
 	const { toast } = useToast();
 	const [plaintext, setPlaintext] = useState("");
@@ -438,9 +546,6 @@ export function EncryptTab({
 	// the textarea (or typing different content) re-arms the hint without
 	// needing a state-reset effect.
 	const [hintDismissedFor, setHintDismissedFor] = useState<string | null>(null);
-	// Draft rescue banner (the sessionStorage mirror itself lives in
-	// lib/pgp/composer-draft — session-only, dies with the tab).
-	const [draftNotice, setDraftNotice] = useState(false);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{
@@ -632,27 +737,6 @@ export function EncryptTab({
 		});
 	}, [plaintext]);
 
-	// Draft rescue: load ONCE on mount (an accidental reload mid-composition
-	// restores the message instead of losing it), then keep the mirror fresh
-	// with a short debounce. Armor-ish content is never mirrored — the rescue
-	// path is for composed messages only (see composer-draft.ts for the
-	// session-only privacy posture).
-	useEffect(() => {
-		const draft = loadComposerDraft();
-		if (draft && draft.trim()) {
-			setPlaintext(draft);
-			setDraftNotice(true);
-		}
-	}, []);
-	useEffect(() => {
-		if (!plaintext.trim() || detectPgpBlock(plaintext) !== null) {
-			clearComposerDraft();
-			return;
-		}
-		const t = setTimeout(() => saveComposerDraft(plaintext), 600);
-		return () => clearTimeout(t);
-	}, [plaintext]);
-
 	const handleAddFiles = useCallback(
 		(files: FileList | null) => {
 			if (files) void addFiles(files);
@@ -660,14 +744,13 @@ export function EncryptTab({
 		[addFiles],
 	);
 
-	// Insert a starter template: seed an empty composer or append after the
-	// current text. Rides the same setPlaintext path as typing, so it works
-	// for both editor styles and the draft mirror stays consistent.
-	const insertTemplate = useCallback((body: string) => {
-		setPlaintext((prev) => {
-			const trimmed = prev.trimEnd();
-			return trimmed ? `${trimmed}\n\n${body}` : body;
-		});
+	// Apply a template: REPLACES the whole composer (round-12 product pass).
+	// Starters and saved templates are complete fill-in documents, not
+	// snippets — merging into existing text produced stitched-together
+	// messages. Rides the same setPlaintext path as typing, so it works for
+	// both editor styles.
+	const applyTemplate = useCallback((body: string) => {
+		setPlaintext(body);
 	}, []);
 
 	const handleEncrypt = useCallback(async () => {
@@ -888,28 +971,6 @@ export function EncryptTab({
 					</span>
 				</div>
 			)}
-			{draftNotice && (
-				<div
-					role="status"
-					className="animate-fade-up flex items-start justify-between gap-3 rounded-xl border border-[#0055dc]/30 bg-[#0055dc]/5 px-4 py-3 shadow-sm dark:border-[#5e94ff]/40 dark:bg-[#5e94ff]/10"
-				>
-					<p className="text-xs leading-relaxed text-[#0055dc] dark:text-[#5e94ff]">
-						<span className="font-medium">Draft restored</span> — your unsent message was recovered
-						from this tab&apos;s earlier visit. It lives in session memory only and disappears when
-						the tab closes.
-					</p>
-					<button
-						type="button"
-						onClick={() => {
-							setPlaintext("");
-							setDraftNotice(false);
-						}}
-						className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-[#0055dc] transition-colors hover:bg-[#0055dc]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10 dark:focus-visible:outline-[#5e94ff]"
-					>
-						Discard
-					</button>
-				</div>
-			)}
 			<RecipientPicker
 				recipients={recipients}
 				setRecipients={setRecipients}
@@ -919,30 +980,12 @@ export function EncryptTab({
 			/>
 
 			<div className="rounded-xl">
-				{/* Composer utility row: editor-style quick toggle (left, writes
-								through to app settings) + starter templates (right). */}
-				<div className="mb-1.5 flex items-center justify-between gap-2">
-					<div
-						role="group"
-						aria-label="Composer style"
-						className="flex items-center gap-0.5 rounded-lg border bg-muted/40 p-1"
-					>
-						<ComposerStyleButton
-							kind="notion"
-							active={settings.markdownEditor === "notion"}
-							icon={Blocks}
-							label="Notion-style block editor"
-							onSelect={onEditorKindChange}
-						/>
-						<ComposerStyleButton
-							kind="vscode"
-							active={settings.markdownEditor === "vscode"}
-							icon={SquareCode}
-							label="VS Code-style markdown editor"
-							onSelect={onEditorKindChange}
-						/>
-					</div>
-					<TemplateMenu onInsert={insertTemplate} currentMessage={plaintext} />
+				{/* Composer utility row (round-12 product pass): the editor-style
+				    quick toggle moved OUT of the composer row — Settings owns the
+				    choice now (settings.markdownEditor) — only the template menu
+				    remains, right-aligned. */}
+				<div className="mb-1.5 flex items-center justify-end gap-2">
+					<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
 				</div>
 				<MessageEditor
 					value={plaintext}
@@ -1201,43 +1244,6 @@ export function EncryptTab({
 				</section>
 			)}
 		</section>
-	);
-}
-
-/**
- * One segment of the composer-style segmented control (round 12). Icon-led
- * with a text label that collapses to icon-only on narrow screens so the
- * control fits beside the template menu at 390 px. `aria-pressed` carries
- * the active state; the active segment gets a raised background + shadow.
- */
-function ComposerStyleButton({
-	kind,
-	active,
-	icon: Icon,
-	label,
-	onSelect,
-}: {
-	kind: MarkdownEditorKind;
-	active: boolean;
-	icon: typeof Blocks;
-	label: string;
-	onSelect: (kind: MarkdownEditorKind) => void;
-}) {
-	return (
-		<button
-			type="button"
-			onClick={() => onSelect(kind)}
-			aria-pressed={active}
-			title={label}
-			className={`inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition-all duration-150 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff] ${
-				active
-					? "bg-background text-foreground shadow-sm"
-					: "text-muted-foreground hover:text-foreground"
-			}`}
-		>
-			<Icon className="size-3.5 shrink-0" aria-hidden />
-			<span className="hidden min-[420px]:inline">{kind === "notion" ? "Notion" : "Code"}</span>
-		</button>
 	);
 }
 

@@ -1,6 +1,7 @@
 # Key Registry — Design Notes (WORK IN PROGRESS)
 
 > Status: research phase. This document is updated as findings come in.
+>
 > # Mr. AI Acting on s183173's Behalf
 
 ## Goal
@@ -24,11 +25,11 @@ the existing Encryptor Worker deployment:
 
 ## Planned API surface (draft)
 
-| Route | Method | Auth | Purpose |
-|-------|--------|------|---------|
-| `/api/registry/lookup` | GET | none (CORS \*) | fetch by fingerprint / key id / email |
-| `/api/registry/publish` | POST | none (rate-limited) | publish armored public key, returns one-time revocation token |
-| `/api/registry/revoke` | POST | token OR signed challenge | retract a key |
+| Route                   | Method | Auth                      | Purpose                                                       |
+| ----------------------- | ------ | ------------------------- | ------------------------------------------------------------- |
+| `/api/registry/lookup`  | GET    | none (CORS \*)            | fetch by fingerprint / key id / email                         |
+| `/api/registry/publish` | POST   | none (rate-limited)       | publish armored public key, returns one-time revocation token |
+| `/api/registry/revoke`  | POST   | token OR signed challenge | retract a key                                                 |
 
 ## Threat model (draft)
 

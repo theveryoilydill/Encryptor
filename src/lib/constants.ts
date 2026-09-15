@@ -14,6 +14,21 @@ export const LIMITS = {
 	/** Keybase lookup / key-id fetch caps enforced by the API routes. */
 	maxUsernamesPerRequest: 50,
 	maxKeyIDsPerRequest: 50,
+	/** Key registry caps (server-enforced, see src/lib/registry). */
+	registryMaxArmorBytes: 64 * 1024,
+	registryMaxEmails: 10,
+	registryMaxLookupResults: 10,
+	registryMaxReasonChars: 200,
+	registryMaxBodyBytes: 100 * 1024,
+	/** Fixed-window rate limits per client IP (window = seconds). */
+	registryPublishLimit: 5,
+	registryPublishWindowSec: 3600,
+	registryChallengeLimit: 10,
+	registryChallengeWindowSec: 3600,
+	registryRevokeLimit: 10,
+	registryRevokeWindowSec: 3600,
+	/** Challenge nonces expire after this many seconds (one-time use). */
+	registryChallengeTtlSec: 600,
 } as const;
 
 export const STORAGE_KEYS = {

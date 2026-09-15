@@ -8,5 +8,13 @@
 		"directory": ".open-next/assets",
 		"binding": "ASSETS"
 	},
+	"d1_databases": [
+		{
+			"binding": "REGISTRY_DB",
+			"database_name": "encryptor-registry",
+			"database_id": "REPLACE_WITH_OUTPUT_OF_d1_create",
+			"migrations_dir": "migrations"
+		}
+	],
 	"observability": { "enabled": true }
 }

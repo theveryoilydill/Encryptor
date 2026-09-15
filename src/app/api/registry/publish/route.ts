@@ -1,0 +1,173 @@
+import { NextRequest, NextResponse } from "next/server";
+
+import { LIMITS } from "@/lib/constants";
+import {
+	RegistryError,
+	auditSafe,
+	getRegistryDB,
+	nowSeconds,
+	randomHex,
+	rateLimit,
+	sha256Hex,
+} from "@/lib/registry/db";
+import { parsePublicArmored, verifyChallengeSignature } from "@/lib/registry/keys";
+import { clientIP, readJsonBody, registryErrorResponse, stringField } from "@/lib/registry/routes";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/**
+ * POST /api/registry/publish — publish an armored PUBLIC key.
+ *
+ * Body: { "armored": "<ASCII armored public key>" }
+ *     or, to REPLACE an existing key's record:
+ *       { "armored": "...", "nonce": "...", "signature": "<cleartext signed>" }
+ *       where the signature is made with the CURRENTLY stored private key
+ *       over the challenge message for that fingerprint.
+ *
+ * First publish returns a one-time REVOCATION TOKEN (201). The token is
+ * shown once; only its SHA-256 hash is stored. Keep it offline — it is the
+ * emergency brake if the private key is ever lost or compromised.
+ *
+ * Revocation is permanent: a revoked fingerprint can never be re-published
+ * (attackers must not be able to resurrect a revoked key by re-upload).
+ */
+
+export async function POST(req: NextRequest) {
+	try {
+		const db = getRegistryDB();
+		if (
+			!(await rateLimit(
+				db,
+				"publish",
+				clientIP(req),
+				LIMITS.registryPublishLimit,
+				LIMITS.registryPublishWindowSec,
+			))
+		) {
+			throw new RegistryError("Too many publish requests — try again later", 429);
+		}
+
+		const body = await readJsonBody(req);
+		const armored = stringField(body, "armored", LIMITS.registryMaxArmorBytes);
+		if (!armored) throw new RegistryError("The 'armored' field is required", 400);
+
+		const parsed = await parsePublicArmored(armored, LIMITS.registryMaxArmorBytes);
+
+		const existing = await db
+			.prepare("SELECT revoked, armored FROM registry_keys WHERE fingerprint = ?1")
+			.bind(parsed.fingerprint)
+			.first<{ revoked: number; armored: string }>();
+
+		if (existing) {
+			// Replacement requires proving possession of the CURRENT key.
+			if (existing.revoked === 1) {
+				throw new RegistryError("This fingerprint was revoked and cannot be re-published", 409);
+			}
+			const nonce = stringField(body, "nonce", 128);
+			const signature = stringField(body, "signature", 16 * 1024);
+			if (!nonce || !signature) {
+				throw new RegistryError(
+					"Key already exists. To replace it, fetch a challenge from /api/registry/challenge and sign it with the stored key (send nonce + signature).",
+					409,
+				);
+			}
+			const ok = await verifyChallengeSignature(
+				existing.armored,
+				parsed.fingerprint,
+				nonce,
+				signature,
+			);
+			if (!ok) {
+				throw new RegistryError("Challenge signature is invalid", 403);
+			}
+			await replaceKeyRecord(db, parsed);
+			await auditSafe(db, "replace", parsed.fingerprint, "authorized by stored key signature");
+			return NextResponse.json({
+				fingerprint: parsed.fingerprint,
+				keyId: parsed.keyId,
+				subkeyIds: parsed.subkeyIds,
+				emails: parsed.emails,
+				replaced: true,
+			});
+		}
+
+		// Fresh publish: generate the one-time revocation token.
+		const revocationToken = randomHex(32);
+		const tokenHash = await sha256Hex(revocationToken);
+		const now = nowSeconds();
+
+		await db.batch([
+			db
+				.prepare(
+					`INSERT INTO registry_keys
+                                 (fingerprint, key_id, armored, revoked, token_hash, created_at, updated_at)
+                                 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)`,
+				)
+				.bind(parsed.fingerprint, parsed.keyId, parsed.armored, tokenHash, now),
+			...parsed.subkeyIds.map((id) =>
+				db
+					.prepare(
+						"INSERT INTO registry_subkeys (key_id, fingerprint) VALUES (?1, ?2) ON CONFLICT (key_id) DO NOTHING",
+					)
+					.bind(id, parsed.fingerprint),
+			),
+			...parsed.emails.map((email) =>
+				db
+					.prepare(
+						"INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2) ON CONFLICT (email, fingerprint) DO NOTHING",
+					)
+					.bind(email, parsed.fingerprint),
+			),
+		]);
+		await auditSafe(
+			db,
+			"publish",
+			parsed.fingerprint,
+			`emails:${parsed.emails.length} subkeys:${parsed.subkeyIds.length}`,
+		);
+
+		return NextResponse.json(
+			{
+				fingerprint: parsed.fingerprint,
+				keyId: parsed.keyId,
+				subkeyIds: parsed.subkeyIds,
+				emails: parsed.emails,
+				replaced: false,
+				revocationToken,
+				warning:
+					"Store this revocation token offline NOW — it is shown only once and is required to retract the key if you lose access to the private key.",
+			},
+			{ status: 201 },
+		);
+	} catch (e) {
+		return registryErrorResponse(e);
+	}
+}
+
+/** Overwrite an existing (non-revoked) record atomically. */
+async function replaceKeyRecord(
+	db: ReturnType<typeof getRegistryDB>,
+	parsed: Awaited<ReturnType<typeof parsePublicArmored>>,
+) {
+	const now = nowSeconds();
+	await db.batch([
+		db
+			.prepare(
+				`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4 WHERE fingerprint = ?1`,
+			)
+			.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now),
+		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(parsed.fingerprint),
+		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(parsed.fingerprint),
+		...parsed.subkeyIds.map((id) =>
+			db
+				.prepare("INSERT INTO registry_subkeys (key_id, fingerprint) VALUES (?1, ?2)")
+				.bind(id, parsed.fingerprint),
+		),
+		...parsed.emails.map((email) =>
+			db
+				.prepare("INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2)")
+				.bind(email, parsed.fingerprint),
+		),
+	]);
+}

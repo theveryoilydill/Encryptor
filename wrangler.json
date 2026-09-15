@@ -1,20 +1,20 @@
 {
-	"$schema": "node_modules/wrangler/config-schema.json",
-	"main": ".open-next/worker.js",
-	"name": "encryptor",
-	"compatibility_date": "2026-08-02",
-	"compatibility_flags": ["nodejs_compat"],
-	"assets": {
-		"directory": ".open-next/assets",
-		"binding": "ASSETS"
-	},
-	"d1_databases": [
-		{
-			"binding": "REGISTRY_DB",
-			"database_name": "encryptor-registry",
-			"database_id": "REPLACE_WITH_OUTPUT_OF_d1_create",
-			"migrations_dir": "migrations"
-		}
-	],
-	"observability": { "enabled": true }
+        "$schema": "node_modules/wrangler/config-schema.json",
+        "main": ".open-next/worker.js",
+        "name": "encryptor",
+        "compatibility_date": "2026-08-02",
+        "compatibility_flags": ["nodejs_compat"],
+        "assets": {
+                "directory": ".open-next/assets",
+                "binding": "ASSETS"
+        },
+        "d1_databases": [
+                {
+                        "binding": "REGISTRY_DB",
+                        "database_name": "encryptor-registry",
+                        "database_id": "f8a671a6-acdb-436d-bcc0-69d6143d30df",
+                        "migrations_dir": "migrations"
+                }
+        ],
+        "observability": { "enabled": true }
 }

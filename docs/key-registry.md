@@ -1,6 +1,7 @@
 # Key Registry — Design & Research
 
 > Status: implemented (see `/api/registry/*` + `src/lib/registry`).
+>
 > # Mr. AI Acting on s183173's Behalf
 
 ## Goal
@@ -56,23 +57,23 @@ the existing Encryptor Worker deployment:
 
 ## Data model (migrations/0001_registry.sql)
 
-| Table | Purpose |
-|-------|---------|
-| `registry_keys` | fingerprint (PK), key_id, canonical armored PUBLIC key, revoked flag + reason, token_hash (SHA-256), timestamps |
-| `registry_subkeys` | subkey key-id → primary fingerprint (lookup by any subkey) |
-| `registry_emails` | self-reported User ID emails → fingerprint (exact-match lookup) |
-| `registry_challenges` | one-time nonces (10 min TTL) for possession proofs |
-| `registry_rate` | fixed-window rate buckets keyed by SHA-256(salt\|action\|ip\|window) |
-| `registry_audit` | append-only action log (fingerprint + action only, no IPs/emails) |
+| Table                 | Purpose                                                                                                         |
+| --------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `registry_keys`       | fingerprint (PK), key_id, canonical armored PUBLIC key, revoked flag + reason, token_hash (SHA-256), timestamps |
+| `registry_subkeys`    | subkey key-id → primary fingerprint (lookup by any subkey)                                                      |
+| `registry_emails`     | self-reported User ID emails → fingerprint (exact-match lookup)                                                 |
+| `registry_challenges` | one-time nonces (10 min TTL) for possession proofs                                                              |
+| `registry_rate`       | fixed-window rate buckets keyed by SHA-256(salt\|action\|ip\|window)                                            |
+| `registry_audit`      | append-only action log (fingerprint + action only, no IPs/emails)                                               |
 
 ## API
 
-| Route | Method | Auth | Notes |
-|-------|--------|------|-------|
-| `/api/registry/lookup?fingerprint=\|key_id=\|email=` | GET | none | CORS `*`, cached (60s browser / 300s edge), returns revoked records with status |
-| `/api/registry/publish` | POST | rate-limited | parses server-side, rejects private material, returns one-time `revocationToken`; replacement requires signed challenge from the currently stored key |
-| `/api/registry/challenge?fingerprint=` | GET | rate-limited | one-time nonce + exact canonical message to sign |
-| `/api/registry/revoke` | POST | token OR signed challenge OR admin | permanent; token path works without the private key |
+| Route                                                | Method | Auth                               | Notes                                                                                                                                                 |
+| ---------------------------------------------------- | ------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/registry/lookup?fingerprint=\|key_id=\|email=` | GET    | none                               | CORS `*`, cached (60s browser / 300s edge), returns revoked records with status                                                                       |
+| `/api/registry/publish`                              | POST   | rate-limited                       | parses server-side, rejects private material, returns one-time `revocationToken`; replacement requires signed challenge from the currently stored key |
+| `/api/registry/challenge?fingerprint=`               | GET    | rate-limited                       | one-time nonce + exact canonical message to sign                                                                                                      |
+| `/api/registry/revoke`                               | POST   | token OR signed challenge OR admin | permanent; token path works without the private key                                                                                                   |
 
 ### Threat model coverage
 

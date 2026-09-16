@@ -32,6 +32,7 @@ import { EncryptTab } from "@/components/pgp/tabs/EncryptTab";
 import { DecryptTab } from "@/components/pgp/tabs/DecryptTab";
 import { SignTab } from "@/components/pgp/tabs/SignTab";
 import { VerifyTab } from "@/components/pgp/tabs/VerifyTab";
+import { KeysTab } from "@/components/pgp/tabs/KeysTab";
 import { STORAGE_KEYS } from "@/lib/constants";
 import { readKey, unlockPrivateKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
@@ -72,6 +73,7 @@ const TABS: { id: Tab; label: string }[] = [
 	{ id: "decrypt", label: "Decrypt" },
 	{ id: "sign", label: "Sign" },
 	{ id: "verify", label: "Verify" },
+	{ id: "keys", label: "Keys" },
 ];
 
 /** Persistent own-key expiry awareness (additive): the Configure dialog has
@@ -326,6 +328,21 @@ export default function PgpApp() {
 		toast({ title: "Session passphrase forgotten" });
 	}, [toast]);
 
+	// Adopt a key coming from the Keys tab (generated, imported, or restored
+	// from registry escrow): configure it app-wide and jump to Encrypt so the
+	// key is immediately usable.
+	const handleUseRegistryKey = useCallback(
+		(config: PrivateKeyConfig) => {
+			handleSetPrivateKey(config);
+			setTab("encrypt");
+			toast({
+				title: "Key configured",
+				description: `“${config.label}” is ready — Encrypt, Decrypt and Sign now use it.`,
+			});
+		},
+		[handleSetPrivateKey, toast],
+	);
+
 	// R9 auto-lock enforcement for the UI state: the freshness gate covers real
 	// unlock attempts; this lightweight interval covers the header indicator +
 	// announcement when the deadline passes while the app is open.
@@ -357,7 +374,7 @@ export default function PgpApp() {
 		[passphraseCached],
 	);
 
-	// Alt+1..4 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
+	// Alt+1..5 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
 	// key dialog stays on the header key button.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -509,6 +526,7 @@ export default function PgpApp() {
 								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
 							)}
 							{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
+							{t.id === "keys" && <KeysTab onUseKey={handleUseRegistryKey} />}
 						</div>
 					);
 				})}

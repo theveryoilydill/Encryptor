@@ -20,7 +20,7 @@ export const PROXIES = {
 	loginProxy: "/api/keybase/login",
 } as const;
 
-export type Tab = "encrypt" | "decrypt" | "sign" | "verify";
+export type Tab = "encrypt" | "decrypt" | "sign" | "verify" | "keys";
 
 export interface Recipient {
 	source: "keybase" | "local";

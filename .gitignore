@@ -61,3 +61,6 @@ tool-results/
 
 # wrangler dev secrets (local only)
 .dev.vars
+
+# example-user seed credentials (local only — contains the passphrase + token)
+.example-user.json

@@ -189,10 +189,12 @@ async function revokeByAdmin(
 }
 
 /**
- * Flip the revoked flag permanently, drop any live challenge nonces, and
- * RELEASE the email + subkey indexes. Revocation stays visible by
- * fingerprint lookup; releasing the indexes frees scarce namespaces
- * (email claims, 64-bit key IDs) so revoked keys cannot squat them.
+ * Flip the revoked flag permanently, drop any live challenge nonces, purge
+ * the escrowed encrypted private key, and RELEASE the email + subkey
+ * indexes. Revocation stays visible by fingerprint lookup; releasing the
+ * indexes frees scarce namespaces (email claims, 64-bit key IDs). A revoked
+ * record keeps only its public revocation information — escrowed private
+ * material must not outlive an active key.
  */
 async function markRevoked(
 	db: ReturnType<typeof getRegistryDB>,
@@ -202,7 +204,7 @@ async function markRevoked(
 	await db.batch([
 		db
 			.prepare(
-				"UPDATE registry_keys SET revoked = 1, revoked_at = ?2, revoke_reason = ?3, updated_at = ?2 WHERE fingerprint = ?1",
+				"UPDATE registry_keys SET revoked = 1, revoked_at = ?2, revoke_reason = ?3, encrypted_private = NULL, private_updated_at = NULL, updated_at = ?2 WHERE fingerprint = ?1",
 			)
 			.bind(fingerprint, nowSeconds(), reason),
 		db.prepare("DELETE FROM registry_challenges WHERE fingerprint = ?1").bind(fingerprint),

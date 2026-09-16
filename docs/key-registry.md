@@ -13,6 +13,12 @@ the existing Encryptor Worker deployment:
   keys (CORS `*`, cacheable, no auth).
 - **Secure retraction** — a key owner can retract (revoke) a published key
   even if their machine or the private key is compromised.
+- **Encrypted private key escrow** (migration 0003) — an owner MAY store
+  the passphrase-encrypted private key alongside their public record so
+  the key can be restored on any device. The server rejects any private
+  key that is not fully passphrase-encrypted, so the database never holds
+  usable private key bytes — security rests on the owner's passphrase and
+  OpenPGP's iterated S2K, exactly like an offline `.asc` backup.
 
 ## Research findings (SearXNG, Sept 2026)
 
@@ -57,23 +63,61 @@ the existing Encryptor Worker deployment:
 
 ## Data model (migrations/0001_registry.sql)
 
-| Table                 | Purpose                                                                                                         |
-| --------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `registry_keys`       | fingerprint (PK), key_id, canonical armored PUBLIC key, revoked flag + reason, token_hash (SHA-256), timestamps |
-| `registry_subkeys`    | subkey key-id → primary fingerprint (lookup by any subkey)                                                      |
-| `registry_emails`     | self-reported User ID emails → fingerprint (exact-match lookup)                                                 |
-| `registry_challenges` | one-time nonces (10 min TTL) for possession proofs                                                              |
-| `registry_rate`       | fixed-window rate buckets keyed by SHA-256(salt\|action\|ip\|window)                                            |
-| `registry_audit`      | append-only action log (fingerprint + action only, no IPs/emails)                                               |
+| Table                 | Purpose                                                                                                                                              |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry_keys`       | fingerprint (PK), key_id, canonical armored PUBLIC key, optional `encrypted_private` escrow, revoked flag + reason, token_hash (SHA-256), timestamps |
+| `registry_subkeys`    | subkey key-id → primary fingerprint (lookup by any subkey)                                                                                           |
+| `registry_emails`     | self-reported User ID emails → fingerprint (exact-match lookup)                                                                                      |
+| `registry_challenges` | one-time nonces (10 min TTL) for possession proofs                                                                                                   |
+| `registry_rate`       | fixed-window rate buckets keyed by SHA-256(salt\|action\|ip\|window)                                                                                 |
+| `registry_audit`      | append-only action log (fingerprint + action only, no IPs/emails)                                                                                    |
+
+## Encrypted private key escrow
+
+The `encrypted_private` column stores an ASCII-armored private key whose
+secret packets are ALL passphrase-encrypted. `parseEncryptedPrivateArmored`
+(`src/lib/registry/keys.ts`) enforces, server-side and before any write:
+
+1. the blob parses as an OpenPGP PRIVATE key;
+2. its fingerprint equals the public record's fingerprint (identity
+   binding — no decoy keys);
+3. NO secret packet reports decrypted (checked per packet, so one
+   unencrypted subkey rejects the whole upload);
+4. the primary self-signature verifies; the blob is re-serialized to
+   canonical armor and capped at 64 KB.
+
+Escrow lifecycle:
+
+- **Publish** — `POST /api/registry/publish` accepts an optional
+  `encryptedPrivate` field (validated before the public half is written).
+- **Restore** — `GET /api/registry/private-key?fingerprint=` returns the
+  blob; the client decrypts it locally with the passphrase (which never
+  leaves the browser).
+- **Manage** — `POST /api/registry/private-key` stores or deletes the
+  escrow, authorized by the same key-signed challenge as replacement
+  (possession proof; nonce consumed atomically).
+- **Replace** — an authorized replacement KEEPS the escrow unless the
+  client sends `dropEncryptedPrivate: true` (a new escrow overwrites).
+- **Revoke** — revocation permanently purges the escrow; a revoked record
+  keeps only its public revocation information.
+
+What escrow does NOT change: the public read API never returns private
+material (lookup responses are unchanged); the escrow GET is same-origin
+only (no CORS header), never cached, and rate limited 30/h/IP; the
+passphrase is the sole decryptor — anyone who obtains the blob still
+faces OpenPGP's S2K, and users should treat passphrase strength like an
+offline backup's.
 
 ## API
 
-| Route                                                | Method | Auth                               | Notes                                                                                                                                                                         |
-| ---------------------------------------------------- | ------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/api/registry/lookup?fingerprint=\|key_id=\|email=` | GET    | none                               | CORS `*`, browser-cached 60s (edge caching NOT enabled by default on Workers — see hardening notes); params take priority fingerprint > key_id > email; rate limited 120/h/IP |
-| `/api/registry/publish`                              | POST   | rate-limited                       | parses server-side, rejects private material, returns one-time `revocationToken`; replacement requires signed challenge from the currently stored key                         |
-| `/api/registry/challenge?fingerprint=`               | GET    | rate-limited                       | one-time nonce + exact canonical message to sign                                                                                                                              |
-| `/api/registry/revoke`                               | POST   | token OR signed challenge OR admin | permanent; token path works without the private key                                                                                                                           |
+| Route                                                | Method | Auth                               | Notes                                                                                                                                                                                                                                 |
+| ---------------------------------------------------- | ------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/registry/lookup?fingerprint=\|key_id=\|email=` | GET    | none                               | CORS `*`, browser-cached 60s (edge caching NOT enabled by default on Workers — see hardening notes); params take priority fingerprint > key_id > email; rate limited 120/h/IP                                                         |
+| `/api/registry/publish`                              | POST   | rate-limited                       | parses server-side, rejects private material in `armored`, optional `encryptedPrivate` escrow (must be passphrase-encrypted), returns one-time `revocationToken`; replacement requires signed challenge from the currently stored key |
+| `/api/registry/challenge?fingerprint=`               | GET    | rate-limited                       | one-time nonce + exact canonical message to sign                                                                                                                                                                                      |
+| `/api/registry/private-key?fingerprint=`             | GET    | rate-limited (30/h/IP)             | returns the escrowed ENCRYPTED private key (null when none); no CORS, no caching — never returns private material for revoked/unknown records beyond null                                                                             |
+| `/api/registry/private-key`                          | POST   | key-signed challenge               | store (`encryptedPrivate`) or delete the escrow; nonce consumed atomically; revoked records refuse escrow writes                                                                                                                      |
+| `/api/registry/revoke`                               | POST   | token OR signed challenge OR admin | permanent; token path works without the private key; purges the escrow                                                                                                                                                                |
 
 ### Threat model coverage
 
@@ -114,15 +158,26 @@ proxies a local D1 into `next dev`; apply the migration with
 
 The repository ships an end-to-end suite covering every route plus the
 negative security cases (SQLi grammar probes, replay, forged signer,
-cross-fingerprint nonce use, rate limiting, payload guards):
+cross-fingerprint nonce use, rate limiting, payload guards, and the full
+encrypted-private escrow matrix: decrypted-key rejection, fingerprint
+mismatch, public-as-private rejection, unauthorized store/delete, replace
+keep/drop semantics, revocation purge):
 
 ```bash
 npx wrangler d1 migrations apply REGISTRY_DB --local   # local D1 + schema
 bun run dev                                            # terminal 1
-bun run test:registry                                  # terminal 2 (49 checks)
+bun run test:registry                                  # terminal 2 (70 checks)
 ```
 
 `REGISTRY_TEST_BASE` overrides the target URL for preview deployments.
+
+An example user can be seeded against any running target (publishes an
+"Example User" key WITH escrow and writes `.example-user.json`, which is
+gitignored, holding the passphrase + revocation token):
+
+```bash
+node scripts/seed-example-user.mjs [--show-secret]
+```
 
 ## Deliberate non-goals
 

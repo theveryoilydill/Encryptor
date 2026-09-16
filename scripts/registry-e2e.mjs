@@ -21,7 +21,8 @@ function check(name, cond, detail = "") {
 		console.log(`  PASS ${name}`);
 	} else {
 		failed++;
-		console.log(`  FAIL ${name} ${detail}`);
+		const redacted = detail ? " [details redacted]" : "";
+		console.log(`  FAIL ${name}${redacted}`);
 	}
 }
 

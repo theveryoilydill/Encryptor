@@ -144,15 +144,52 @@ offline backup's.
 
 ```bash
 npx wrangler d1 create encryptor-registry   # copy database_id into wrangler.json
-npx wrangler d1 migrations apply encryptor-registry --remote
 npx wrangler secret put RE_SALT             # long random string (rate-bucket privacy)
 npx wrangler secret put ADMIN_REVOKE_TOKEN  # optional emergency override
+npx wrangler secret put TURNSTILE_SECRET_KEY  # optional: enforce Turnstile on writes
 bun run deploy
 ```
 
+**Self-migrating schema** — you do NOT need to run `wrangler d1 migrations
+apply` (remotely or in CI). The worker bundles the SQL from `migrations/`
+(via the generated `src/lib/registry/migrations.generated.ts`) and applies
+any missing version on first database access, tracked in the
+`registry_schema_migrations` ledger table. A freshly created remote D1
+database heals itself on the first request — `GET /api/registry/health`
+reports `{ ok, schema.applied, schema.pending, turnstile }` and is the
+fastest way to check a deployment. After adding a new migration file, run
+`node scripts/gen-migrations.mjs` and commit the regenerated module
+(Workers Builds CI never runs `wrangler d1 migrations apply`, which is why
+publishes once failed with opaque 500s on an un-migrated database —
+PR #25 review: "there are no writes to my database").
+
 Local development works out of the box: `initOpenNextCloudflareForDev()`
-proxies a local D1 into `next dev`; apply the migration with
-`npx wrangler d1 migrations apply REGISTRY_DB --local`.
+proxies a local D1 into `next dev`; the self-migration covers it too
+(`wrangler d1 migrations apply REGISTRY_DB --local` remains available and
+idempotent for manual setups).
+
+## Bot protection (Cloudflare Turnstile)
+
+Registry WRITES — publishing a key and storing an escrowed private key —
+are gated by Cloudflare Turnstile whenever the deployment has a
+`TURNSTILE_SECRET_KEY` secret (delete/revoke stay signature- or
+token-gated and are not captcha'd). Provisioning, both halves together:
+
+```bash
+npx wrangler secret put TURNSTILE_SECRET_KEY            # server half (Worker secret)
+# client half: build-time env var in Workers Builds settings:
+#   NEXT_PUBLIC_TURNSTILE_SITE_KEY = <your Turnstile site key>
+```
+
+- Secret configured + valid widget token → write proceeds.
+- Secret configured + missing/invalid/expired token → 403 with a clear
+  message; the UI remounts the widget to mint a fresh single-use token.
+- Siteverify unreachable or secret invalid → writes fail CLOSED (503).
+- Secret NOT configured (local dev, preview builds, seed scripts) →
+  verification disabled; the UI shows a subtle "not configured" note.
+
+`GET /api/registry/health` reports the active mode
+(`turnstile: "enforced" | "disabled"`).
 
 ## Testing
 
@@ -166,7 +203,7 @@ keep/drop semantics, revocation purge):
 ```bash
 npx wrangler d1 migrations apply REGISTRY_DB --local   # local D1 + schema
 bun run dev                                            # terminal 1
-bun run test:registry                                  # terminal 2 (70 checks)
+bun run test:registry                                  # terminal 2 (73 checks)
 ```
 
 `REGISTRY_TEST_BASE` overrides the target URL for preview deployments.

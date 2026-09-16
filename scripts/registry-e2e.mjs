@@ -111,6 +111,35 @@ async function warmup() {
 }
 await warmup();
 
+console.log("== health & self-migration ==");
+{
+	const r = await api("/api/registry/health");
+	check(
+		"health -> 200 ok",
+		r.status === 200 && r.body.ok === true && r.body.db === true,
+		`got ${r.status}`,
+	);
+	const applied = Array.isArray(r.body?.schema?.applied) ? r.body.schema.applied : [];
+	check(
+		"health reports all migrations applied",
+		["0001_registry", "0002_registry_indexes", "0003_encrypted_private"].every((v) =>
+			applied.includes(v),
+		),
+		applied.join(","),
+	);
+	check(
+		"health reports no pending migrations",
+		Array.isArray(r.body?.schema?.pending) && r.body.schema.pending.length === 0,
+	);
+	check(
+		"health reports turnstile mode",
+		r.body?.turnstile === "enforced" || r.body?.turnstile === "disabled",
+		String(r.body?.turnstile),
+	);
+	const r2 = await api("/api/registry/health");
+	check("health is idempotent (repeat call)", r2.status === 200 && r2.body.ok === true);
+}
+
 console.log("== input validation ==");
 {
 	const r = await api("/api/registry/lookup");

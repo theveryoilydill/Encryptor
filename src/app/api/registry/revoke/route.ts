@@ -5,7 +5,7 @@ import {
 	RegistryError,
 	auditSafe,
 	getCloudflareEnv,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
 	rateLimitSafe,
 	sha256Hex,
@@ -48,7 +48,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
+		const db = await getRegistryDBReady();
 		if (
 			!(await rateLimitSafe(
 				db,
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
 type RevokeResult = NextResponse | null;
 
 async function revokeByToken(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	body: Record<string, unknown>,
 	tokenHash: string,
 	fingerprint: string,
@@ -123,7 +123,7 @@ async function revokeByToken(
 }
 
 async function revokeBySignature(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	body: Record<string, unknown>,
 	fingerprint: string,
 	reason: string | null,
@@ -163,7 +163,7 @@ async function revokeBySignature(
 }
 
 async function revokeByAdmin(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	body: Record<string, unknown>,
 	fingerprint: string,
 	reason: string | null,
@@ -197,7 +197,7 @@ async function revokeByAdmin(
  * material must not outlive an active key.
  */
 async function markRevoked(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	fingerprint: string,
 	reason: string | null,
 ): Promise<void> {

@@ -4,7 +4,7 @@ import { LIMITS } from "@/lib/constants";
 import {
 	RegistryError,
 	auditSafe,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
 	rateLimitSafe,
 } from "@/lib/registry/db";
@@ -14,6 +14,7 @@ import {
 	verifyChallengeSignature,
 } from "@/lib/registry/keys";
 import { clientIP, readJsonBody, registryErrorResponse, stringField } from "@/lib/registry/routes";
+import { requireTurnstile } from "@/lib/registry/turnstile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,13 +31,14 @@ export const dynamic = "force-dynamic";
  * private key bytes.
  *
  * Body (store):    { "fingerprint": "...", "nonce": "...", "signature": "...",
- *                    "encryptedPrivate": "<armored encrypted private key>" }
+ *                    "encryptedPrivate": "<armored encrypted private key>",
+ *                    "turnstileToken": "..." (when Turnstile is enforced) }
  * Body (delete):   { "fingerprint": "...", "nonce": "...", "signature": "..." }
  *                    — no encryptedPrivate field means "remove the escrow".
  */
 export async function POST(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
+		const db = await getRegistryDBReady();
 		if (
 			!(await rateLimitSafe(
 				db,
@@ -96,6 +98,13 @@ export async function POST(req: NextRequest) {
 			LIMITS.registryMaxPrivateArmorBytes,
 		);
 		if (encryptedPrivate) {
+			// Storing a NEW escrow blob is a database write, so it is
+			// Turnstile-gated like publishing (deletion stays open to the
+			// key owner — it only removes bytes and cannot create spam).
+			await requireTurnstile(
+				typeof body.turnstileToken === "string" ? body.turnstileToken : undefined,
+				clientIP(req),
+			);
 			const parsed = await parseEncryptedPrivateArmored(
 				encryptedPrivate,
 				LIMITS.registryMaxPrivateArmorBytes,
@@ -147,7 +156,7 @@ export async function GET(req: NextRequest) {
 		const fingerprint = normalizeFingerprint(raw);
 		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
 
-		const db = getRegistryDB();
+		const db = await getRegistryDBReady();
 		if (
 			!(await rateLimitSafe(
 				db,

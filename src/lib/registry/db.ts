@@ -8,6 +8,8 @@
  */
 import { getCloudflareContext } from "@opennextjs/cloudflare/cloudflare-context";
 
+import { ensureRegistrySchema } from "./migrate";
+
 /** Minimal structural typing for the D1 binding (no runtime dependency). */
 export interface D1Result<T = unknown> {
 	results?: T[];
@@ -25,6 +27,8 @@ export interface D1PreparedStatement {
 export interface D1DatabaseLike {
 	prepare(sql: string): D1PreparedStatement;
 	batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
+	/** Native D1 multi-statement execution (used by the self-migrator). */
+	exec?(sql: string): Promise<unknown>;
 }
 
 /** Env bindings + secrets the registry needs (set via wrangler/CF). */
@@ -32,6 +36,10 @@ export interface RegistryEnv {
 	REGISTRY_DB?: D1DatabaseLike;
 	RE_SALT?: string;
 	ADMIN_REVOKE_TOKEN?: string;
+	/** Cloudflare Turnstile server secret. Writes are captcha-gated ONLY
+	 *  when this is set, so local dev + seed scripts keep working and
+	 *  production opts in by provisioning the secret. */
+	TURNSTILE_SECRET_KEY?: string;
 }
 
 /** Fail with a stable HTTP status the routes can pass through. */
@@ -58,6 +66,27 @@ export function getRegistryDB(): D1DatabaseLike {
 	if (!db) {
 		throw new RegistryError(
 			"Registry database is not available (missing REGISTRY_DB binding)",
+			503,
+		);
+	}
+	return db;
+}
+
+/**
+ * Resolve the D1 binding AND guarantee the schema exists. Every registry
+ * route uses this instead of getRegistryDB so a freshly created (never
+ * migrated) remote D1 database self-heals on first request — Workers Builds
+ * CI deploys the worker without ever running `wrangler d1 migrations apply`,
+ * which is why production publishes previously failed with opaque 500s.
+ */
+export async function getRegistryDBReady(): Promise<D1DatabaseLike> {
+	const db = getRegistryDB();
+	try {
+		await ensureRegistrySchema(db);
+	} catch (e) {
+		console.error("[registry] schema initialization failed:", e);
+		throw new RegistryError(
+			"Registry schema is initializing or failed to migrate — retry shortly",
 			503,
 		);
 	}

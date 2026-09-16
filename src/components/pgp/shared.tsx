@@ -32,6 +32,7 @@ import {
 	formatFileSize,
 	isLocalImageUrl,
 	isSafeImageUrl,
+	SAFE_DATA_IMAGE_RE,
 	type EnvelopeFile,
 } from "@/lib/pgp/envelope";
 import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
@@ -104,8 +105,15 @@ export function ImageViewer({
 }) {
 	const open = index !== null && images.length > 0;
 	const file = open ? images[Math.min(index, images.length - 1)] : null;
+	const rawViewerSrc = file && file.type.startsWith("image/") ? envelopeFileToDataUrl(file) : null;
+	// Barrier guard for static analysis: the same tainted string that
+	// reaches <img src> is regex-tested right here.
 	const safeSrc =
-		file && file.type.startsWith("image/") ? isSafeImageUrl(envelopeFileToDataUrl(file)) : null;
+		rawViewerSrc !== null &&
+		SAFE_DATA_IMAGE_RE.test(rawViewerSrc) &&
+		isSafeImageUrl(rawViewerSrc) !== null
+			? rawViewerSrc
+			: null;
 	const many = images.length > 1;
 	const go = useCallback(
 		(delta: number) => {
@@ -673,7 +681,13 @@ export function AttachmentList({
 				<ul className="flex flex-wrap gap-2">
 					{attachments.map((f, idx) => {
 						const isImage = f.type.startsWith("image/");
-						const previewUrl = isImage ? isSafeImageUrl(envelopeFileToDataUrl(f)) : null;
+						const rawPreview = isImage ? envelopeFileToDataUrl(f) : null;
+						const previewUrl =
+							rawPreview !== null &&
+							SAFE_DATA_IMAGE_RE.test(rawPreview) &&
+							isSafeImageUrl(rawPreview) !== null
+								? rawPreview
+								: null;
 						return (
 							<li
 								key={`${f.name}-${idx}`}
@@ -775,7 +789,14 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 							raw !== null && raw.startsWith("envelope://")
 								? (fileMap.get(decodeURIComponent(raw.slice("envelope://".length))) ?? null)
 								: raw;
-						const safeSrc = candidate ? isLocalImageUrl(candidate) : null;
+						// Barrier guard for static analysis: regex-test the exact
+						// tainted string before it reaches <img src>.
+						const safeSrc =
+							candidate !== null &&
+							SAFE_DATA_IMAGE_RE.test(candidate) &&
+							isLocalImageUrl(candidate) !== null
+								? candidate
+								: null;
 						const remoteBlocked = safeSrc === null && raw !== null && /^https?:/i.test(raw);
 						if (!safeSrc) {
 							return (
@@ -987,9 +1008,9 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
 			</div>
 			<ul className="space-y-1.5">
 				{files.map((f, i) => {
-					const isImage = f.type.startsWith("image/");
 					const url = envelopeFileToDataUrl(f);
-					const safeImgSrc = isImage ? isSafeImageUrl(url) : null;
+					const safeImgSrc =
+						SAFE_DATA_IMAGE_RE.test(url) && isSafeImageUrl(url) !== null ? url : null;
 					return (
 						<li key={i} className="flex items-center gap-2.5 text-sm">
 							{safeImgSrc ? (

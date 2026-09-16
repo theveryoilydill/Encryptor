@@ -5,7 +5,7 @@ import {
 	type D1Result,
 	RegistryError,
 	auditSafe,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
 	randomHex,
 	rateLimitSafe,
@@ -17,6 +17,7 @@ import {
 	verifyChallengeSignature,
 } from "@/lib/registry/keys";
 import { clientIP, readJsonBody, registryErrorResponse, stringField } from "@/lib/registry/routes";
+import { requireTurnstile } from "@/lib/registry/turnstile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,9 @@ export const dynamic = "force-dynamic";
  *                database never holds usable private key bytes.
  *     optional: { "dropEncryptedPrivate": true } — remove a previously
  *                escrowed private key during an authorized replacement.
+ *     optional: { "turnstileToken": "..." } — Cloudflare Turnstile token;
+ *                required when the deployment enforces Turnstile (see
+ *                src/lib/registry/turnstile.ts).
  *     or, to REPLACE an existing key's record:
  *       { "armored": "...", "nonce": "...", "signature": "<cleartext signed>" }
  *       where the signature is made with the CURRENTLY stored private key
@@ -47,7 +51,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
+		const db = await getRegistryDBReady();
 		if (
 			!(await rateLimitSafe(
 				db,
@@ -62,6 +66,16 @@ export async function POST(req: NextRequest) {
 		}
 
 		const body = await readJsonBody(req);
+
+		// Owner request: Turnstile-gate "adding things to the database".
+		// Publishing (with or without escrow) is the main INSERT path;
+		// verification is enforced only when the deployment configures
+		// TURNSTILE_SECRET_KEY (disabled locally + for seed scripts).
+		await requireTurnstile(
+			typeof body.turnstileToken === "string" ? body.turnstileToken : undefined,
+			clientIP(req),
+		);
+
 		const armored = stringField(body, "armored", LIMITS.registryMaxArmorBytes);
 		if (!armored) throw new RegistryError("The 'armored' field is required", 400);
 
@@ -267,7 +281,7 @@ export async function POST(req: NextRequest) {
  * e.g. adding a subkey — must not silently destroy the owner's backup).
  */
 async function replaceKeyRecord(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	parsed: Awaited<ReturnType<typeof parsePublicArmored>>,
 	escrow: Awaited<ReturnType<typeof parseEncryptedPrivateArmored>> | null,
 	dropEscrow: boolean,

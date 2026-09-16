@@ -73,6 +73,25 @@ async function expectOk(res: Response, fallback: string): Promise<Record<string,
 	return body;
 }
 
+/** Health probe result from GET /api/registry/health. */
+export interface RegistryHealth {
+	ok: boolean;
+	db: boolean;
+	schema?: { applied: string[]; pending: string[] };
+	turnstile?: "enforced" | "disabled";
+	error?: string;
+}
+
+/**
+ * GET /api/registry/health — schema + capability probe. Hitting it also
+ * triggers the worker's self-migration, so a fresh (never migrated) remote
+ * D1 database heals simply by checking health.
+ */
+export async function registryHealth(): Promise<RegistryHealth> {
+	const res = await fetch("/api/registry/health", { cache: "no-store" });
+	return parseJson(res) as unknown as Promise<RegistryHealth>;
+}
+
 /** GET /api/registry/lookup — accepts fingerprint, key ID, or email. */
 export async function registryLookup(query: {
 	fingerprint?: string;
@@ -92,6 +111,8 @@ export async function registryLookup(query: {
 export async function registryPublish(input: {
 	armored: string;
 	encryptedPrivate?: string;
+	/** Cloudflare Turnstile token; required on deployments that enforce it. */
+	turnstileToken?: string;
 }): Promise<RegistryPublishResult> {
 	const res = await fetch("/api/registry/publish", {
 		method: "POST",
@@ -99,6 +120,7 @@ export async function registryPublish(input: {
 		body: JSON.stringify({
 			armored: input.armored,
 			...(input.encryptedPrivate ? { encryptedPrivate: input.encryptedPrivate } : {}),
+			...(input.turnstileToken ? { turnstileToken: input.turnstileToken } : {}),
 		}),
 	});
 	const body = await expectOk(res, "Publish failed");
@@ -163,6 +185,7 @@ async function registryMutateEscrow(input: {
 	privateKeyArmored: string;
 	passphrase: string;
 	encryptedPrivate?: string;
+	turnstileToken?: string;
 }): Promise<void> {
 	const challenge = await registryChallenge(input.fingerprint);
 	const signature = await signChallenge(
@@ -179,6 +202,7 @@ async function registryMutateEscrow(input: {
 			nonce: challenge.nonce,
 			signature,
 			...(input.encryptedPrivate ? { encryptedPrivate: input.encryptedPrivate } : {}),
+			...(input.turnstileToken ? { turnstileToken: input.turnstileToken } : {}),
 		}),
 	});
 	await expectOk(res, "Escrow update failed");

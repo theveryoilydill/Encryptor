@@ -108,6 +108,16 @@ export function envelopeFileToDataUrl(file: EnvelopeFile): string {
 }
 
 /**
+ * Strict charset-enforced shape for inline data: images. This regex is ALSO
+ * used as an explicit guard AT the <img src> sinks (React components test
+ * the exact tainted string with .test() right before rendering) so static
+ * analysis (CodeQL js/xss-through-dom) can verify the barrier without
+ * needing query exclusions — defense in depth made visible.
+ */
+export const SAFE_DATA_IMAGE_RE =
+	/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/=]+$/;
+
+/**
  * Strict allow-list for any file- or message-derived URL that reaches an
  * <img src> (defense in depth against CodeQL js/xss-through-dom on the URL
  * sink). Permitted, and only rendered:
@@ -129,9 +139,7 @@ export function isSafeImageUrl(url: string): string | null {
 	}
 	if (parsed.protocol === "https:" || parsed.protocol === "blob:") return url;
 	if (parsed.protocol === "data:") {
-		return /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(url)
-			? url
-			: null;
+		return SAFE_DATA_IMAGE_RE.test(url) ? url : null;
 	}
 	return null;
 }
@@ -149,9 +157,7 @@ export function isSafeImageUrl(url: string): string | null {
  * the same charset-enforced shape isSafeImageUrl accepts for data URLs.
  */
 export function isLocalImageUrl(url: string): string | null {
-	return /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(url)
-		? url
-		: null;
+	return SAFE_DATA_IMAGE_RE.test(url) ? url : null;
 }
 
 /** Human-readable file size, e.g. "1.4 MB". */

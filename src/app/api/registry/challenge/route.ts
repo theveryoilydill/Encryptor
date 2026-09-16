@@ -4,7 +4,7 @@ import { LIMITS } from "@/lib/constants";
 import {
 	RegistryError,
 	auditSafe,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
 	randomHex,
 	rateLimitSafe,
@@ -26,7 +26,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
+		const db = await getRegistryDBReady();
 		if (
 			!(await rateLimitSafe(
 				db,

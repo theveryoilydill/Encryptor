@@ -11,7 +11,7 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
 	Download,
 	Eye,
@@ -47,16 +47,22 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
 	type MyRegistryKey,
+	type RegistryHealth,
 	RegistryClientError,
 	forgetMyKey,
 	listMyKeys,
 	registryFetchEscrow,
+	registryHealth,
 	registryLookup,
 	registryPublish,
 	registryRevokeByToken,
 	rememberMyKey,
 	updateMyKey,
 } from "@/lib/registry/client";
+import {
+	TurnstileWidget,
+	turnstileSiteKeyConfigured,
+} from "@/components/pgp/registry/TurnstileWidget";
 import { KEYBASE_USERNAME_RE } from "@/lib/constants";
 import { lookupKeybaseUsersClient } from "@/lib/pgp/keybase";
 import {
@@ -143,6 +149,70 @@ interface PublishOutcome {
 	escrowed: boolean;
 }
 
+/** Status chip — probes /api/registry/health (which also self-migrates a
+ *  fresh remote database) and surfaces schema + captcha state at a glance. */
+function RegistryHealthChip() {
+	const [health, setHealth] = useState<RegistryHealth | null>(null);
+	const [checking, setChecking] = useState(false);
+
+	const refresh = useCallback(async () => {
+		setChecking(true);
+		try {
+			setHealth(await registryHealth());
+		} catch {
+			setHealth({ ok: false, db: false, error: "Health endpoint unreachable" });
+		} finally {
+			setChecking(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	const dot =
+		health === null || checking
+			? "bg-muted-foreground/50"
+			: health.ok
+				? "bg-emerald-500 animate-pulse"
+				: "bg-red-500";
+	const label =
+		health === null || checking
+			? "Checking registry…"
+			: health.ok
+				? `Registry connected (${health.schema?.applied.length ?? 0} migrations)`
+				: `Registry issue: ${health.error ?? "unhealthy"}`;
+
+	return (
+		<div className="flex flex-wrap items-center gap-2">
+			<span
+				data-testid="registry-health-chip"
+				title={
+					health?.ok
+						? `Schema ${health.schema?.applied.join(", ")} · Turnstile ${health.turnstile ?? "unknown"}`
+						: (health?.error ?? "Probing the registry database…")
+				}
+				className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-xs transition-colors"
+				role="status"
+				aria-live="polite"
+			>
+				<span aria-hidden="true" className={`size-2 rounded-full ${dot}`} />
+				{label}
+			</span>
+			<Button
+				type="button"
+				variant="ghost"
+				size="icon"
+				aria-label="Re-check registry health"
+				onClick={() => void refresh()}
+				className="size-7 rounded-full text-muted-foreground hover:text-foreground"
+			>
+				<RefreshCw aria-hidden="true" className={`size-3.5 ${checking ? "animate-spin" : ""}`} />
+			</Button>
+		</div>
+	);
+}
+
 export function KeysTab({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => void }) {
 	const [source, setSource] = useState<KeySource>("encryptor");
 	const [outcome, setOutcome] = useState<PublishOutcome | null>(null);
@@ -170,7 +240,10 @@ export function KeysTab({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => 
 	return (
 		<div className="space-y-6" aria-label="Key registry">
 			<div className="space-y-1.5">
-				<h2 className="text-base font-semibold">Key registry</h2>
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<h2 className="text-base font-semibold">Key registry</h2>
+					<RegistryHealthChip />
+				</div>
 				<p className="text-xs leading-relaxed text-muted-foreground">
 					Publish public keys so anyone can find and verify them, and optionally back up your
 					passphrase-encrypted private key for cross-device restore. Private keys are accepted only
@@ -312,6 +385,8 @@ function EncryptorSource({
 	const [escrow, setEscrow] = useState(false);
 	const [publishing, setPublishing] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [tsToken, setTsToken] = useState<string | null>(null);
+	const [tsAttempt, setTsAttempt] = useState(0);
 
 	const passphaseTooWeak = passphrase.length > 0 && passphrase.length < 8;
 	const canGenerate =
@@ -349,6 +424,7 @@ function EncryptorSource({
 		setPublishing(true);
 		try {
 			const result = await registryPublish({
+				turnstileToken: tsToken ?? undefined,
 				armored: generated.publicKey,
 				encryptedPrivate: escrow ? generated.privateKey : undefined,
 			});
@@ -371,10 +447,13 @@ function EncryptorSource({
 			});
 		} catch (e) {
 			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			// Turnstile tokens are single-use — mint a fresh challenge.
+			setTsToken(null);
+			setTsAttempt((a) => a + 1);
 		} finally {
 			setPublishing(false);
 		}
-	}, [escrow, generated, onPublished, onUseKey]);
+	}, [escrow, generated, onPublished, onUseKey, tsToken]);
 
 	return (
 		<Card>
@@ -494,11 +573,12 @@ function EncryptorSource({
 								</span>
 							</span>
 						</label>
+						<TurnstileWidget key={tsAttempt} id="turnstile-encryptor" onToken={setTsToken} />
 						<div className="flex flex-wrap items-center gap-2">
 							<Button
 								type="button"
 								onClick={handlePublish}
-								disabled={publishing}
+								disabled={publishing || (turnstileSiteKeyConfigured() && !tsToken)}
 								className="h-11 gap-1.5 bg-[#0055dc] text-white hover:bg-[#0047b8] sm:h-9"
 							>
 								{publishing ? (
@@ -562,6 +642,8 @@ function KeybaseSource({
 	} | null>(null);
 	const [publishing, setPublishing] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [tsToken, setTsToken] = useState<string | null>(null);
+	const [tsAttempt, setTsAttempt] = useState(0);
 
 	const handleLookup = useCallback(async () => {
 		const clean = username.trim().toLowerCase();
@@ -597,7 +679,10 @@ function KeybaseSource({
 		setError(null);
 		setPublishing(true);
 		try {
-			const result = await registryPublish({ armored: found.armored });
+			const result = await registryPublish({
+				armored: found.armored,
+				turnstileToken: tsToken ?? undefined,
+			});
 			onPublished(
 				{
 					fingerprint: result.fingerprint,
@@ -611,10 +696,13 @@ function KeybaseSource({
 			);
 		} catch (e) {
 			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			// Turnstile tokens are single-use — mint a fresh challenge.
+			setTsToken(null);
+			setTsAttempt((a) => a + 1);
 		} finally {
 			setPublishing(false);
 		}
-	}, [found, onPublished]);
+	}, [found, onPublished, tsToken]);
 
 	return (
 		<Card>
@@ -670,10 +758,11 @@ function KeybaseSource({
 							Publishing the PUBLIC key only — Keybase keys are fetched through the Keybase service
 							and never include private material.
 						</p>
+						<TurnstileWidget key={tsAttempt} id="turnstile-keybase" onToken={setTsToken} />
 						<Button
 							type="button"
 							onClick={handlePublish}
-							disabled={publishing}
+							disabled={publishing || (turnstileSiteKeyConfigured() && !tsToken)}
 							className="h-11 gap-1.5 bg-[#0055dc] text-white hover:bg-[#0047b8] sm:h-9"
 						>
 							{publishing ? (
@@ -719,6 +808,8 @@ function LocalSource({
 		isDecrypted: boolean;
 	} | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [tsToken, setTsToken] = useState<string | null>(null);
+	const [tsAttempt, setTsAttempt] = useState(0);
 
 	const handleParse = useCallback(async () => {
 		setError(null);
@@ -785,6 +876,7 @@ function LocalSource({
 			}
 			const result = await registryPublish({
 				armored: publicArmored,
+				turnstileToken: tsToken ?? undefined,
 				encryptedPrivate: escrowBlob,
 			});
 			onPublished(
@@ -808,16 +900,20 @@ function LocalSource({
 			}
 		} catch (e) {
 			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			// Turnstile tokens are single-use — mint a fresh challenge.
+			setTsToken(null);
+			setTsAttempt((a) => a + 1);
 		} finally {
 			setPublishing(false);
 		}
-	}, [armored, escrow, onPublished, onUseKey, parsed]);
+	}, [armored, escrow, onPublished, onUseKey, parsed, tsToken]);
 
 	const canPublish =
 		parsed &&
 		(!parsed.isPrivate || parsed.isDecrypted === false) &&
 		(!escrow || parsed.isPrivate) &&
-		!publishing;
+		!publishing &&
+		(!turnstileSiteKeyConfigured() || !!tsToken);
 
 	return (
 		<Card>
@@ -926,6 +1022,7 @@ function LocalSource({
 								</span>
 							</label>
 						)}
+						<TurnstileWidget key={tsAttempt} id="turnstile-local" onToken={setTsToken} />
 						<Button
 							type="button"
 							onClick={handlePublish}

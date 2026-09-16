@@ -58,3 +58,6 @@ tool-results/
 # opennextjs-cloudflare build output
 .open-next/
 .wrangler/
+
+# wrangler dev secrets (local only)
+.dev.vars

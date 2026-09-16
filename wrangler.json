@@ -8,5 +8,25 @@
 		"directory": ".open-next/assets",
 		"binding": "ASSETS"
 	},
-	"observability": { "enabled": true }
+	"d1_databases": [
+		{
+			"binding": "REGISTRY_DB",
+			"database_name": "encryptor-registry",
+			"database_id": "f8a671a6-acdb-436d-bcc0-69d6143d30df",
+			"migrations_dir": "migrations"
+		}
+	],
+	"observability": {
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"invocation_logs": true,
+			"persist": true
+		},
+		"traces": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true
+		}
+	}
 }

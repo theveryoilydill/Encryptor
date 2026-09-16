@@ -7,10 +7,13 @@
  * Usage:
  *   node scripts/seed-example-user.mjs                 # publish
  *   REGISTRY_TEST_BASE=https://… node scripts/seed-example-user.mjs
- *   node scripts/seed-example-user.mjs --show-secret   # also print passphrase
+ *   node scripts/seed-example-user.mjs --show-secret   # print a reveal hint
  *
  * The full credentials (armored keys, passphrase, revocation token) are
  * written to .example-user.json (gitignored) — treat that file as a secret.
+ * The passphrase is never echoed to the terminal, not even with
+ * --show-secret: the flag prints a ready-made command that reveals it from
+ * the JSON file, keeping secrets out of scrollback logs and CI output.
  * # Mr. AI Acting on s183173's Behalf
  */
 import { createHash, randomBytes } from "node:crypto";
@@ -121,9 +124,9 @@ async function main() {
 	console.log("  key id      :", keyId);
 	console.log("  escrowed    :", escrowed ? "yes (passphrase-encrypted)" : "no");
 	console.log("  token hash  :", `${tokenHash}… (stored server-side as SHA-256)`);
-	if (showSecret) console.log("  passphrase  :", passphrase);
-	else
-		console.log("  passphrase  : (hidden — rerun with --show-secret or read .example-user.json)");
+	if (showSecret)
+		console.log("  passphrase  : reveal with →  jq -r .passphrase .example-user.json");
+	else console.log("  passphrase  : (hidden — see .example-user.json, gitignored)");
 }
 
 main().catch((e) => {

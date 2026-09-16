@@ -7,7 +7,7 @@
  * (src/components/pgp/PgpApp.tsx in the audit tree) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import {
 	BadgeCheck,
 	Check,
@@ -23,6 +23,8 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { rehypeSecureHtml } from "@/lib/pgp/safe-html";
+import { githubSlug } from "@/lib/pgp/github-slug";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -790,6 +792,40 @@ export function AttachmentList({
 
 /* --------------------------- DecryptedMessageView --------------------------- */
 
+/** Flatten React children to plain text (for slug derivation). */
+function flattenText(node: ReactNode): string {
+	if (node === null || node === undefined || typeof node === "boolean") return "";
+	if (typeof node === "string" || typeof node === "number") return String(node);
+	if (Array.isArray(node)) return node.map(flattenText).join("");
+	if (typeof node === "object" && "props" in (node as unknown as Record<string, unknown>)) {
+		return flattenText((node as { props: { children?: ReactNode } }).props?.children);
+	}
+	return "";
+}
+
+/** Heading renderer factory: emits the heading tag with a GitHub-style anchor
+ *  id derived from the heading's own text, so composer-generated TOC links
+ *  jump to the right heading in the rendered view. */
+function headingWithAnchor(Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+	return function Heading(props: ComponentProps<"h1"> & { node?: unknown }) {
+		const { node: _node, children, ...rest } = props;
+		const id = githubSlug(flattenText(children));
+		return (
+			<Tag {...rest} id={id || undefined}>
+				{children}
+			</Tag>
+		);
+	};
+}
+const headingAnchors = {
+	h1: headingWithAnchor("h1"),
+	h2: headingWithAnchor("h2"),
+	h3: headingWithAnchor("h3"),
+	h4: headingWithAnchor("h4"),
+	h5: headingWithAnchor("h5"),
+	h6: headingWithAnchor("h6"),
+};
+
 /** Render a decrypted message as markdown (GitHub-flavored), with inline
  *  envelope images.
  *
@@ -823,7 +859,12 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 		<div className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
 			<Markdown
 				remarkPlugins={[remarkGfm, remarkBreaks]}
+				// Secure raw-HTML support: parse the HTML the sender wrote, then
+				// strip everything the strict schema disallows. Never renders
+				// scripts, styles, event handlers, or unsafe URLs.
+				rehypePlugins={rehypeSecureHtml}
 				components={{
+					...headingAnchors,
 					a: ({ node: _node, children, ...props }) => (
 						<a {...props} target="_blank" rel="noreferrer noopener" className={ACCENT_TEXT}>
 							{children}

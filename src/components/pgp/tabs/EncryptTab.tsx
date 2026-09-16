@@ -663,6 +663,38 @@ export function EncryptTab({
 			document.body.style.overflow = prev;
 		};
 	}, [composerExpanded]);
+
+	// Global Ctrl/Cmd+Shift+E — "shortcut to expand should apply everywhere":
+	// the tab components stay mounted across tab switches, so a window-level
+	// capture listener lets the composer open from ANY tab. Same dialog-safe
+	// guards as the section handler; the section + overlay handlers see
+	// defaultPrevented and skip, so the toggle never double-fires.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (
+				(e.ctrlKey || e.metaKey) &&
+				e.shiftKey &&
+				!e.altKey &&
+				(e.key === "E" || e.key === "e") &&
+				!e.defaultPrevented
+			) {
+				const target = e.target as HTMLElement | null;
+				if (
+					target?.closest(
+						'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+					)
+				) {
+					return;
+				}
+				e.preventDefault();
+				setComposerExpanded((v) => !v);
+			}
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, []);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{
@@ -1561,6 +1593,15 @@ export function EncryptTab({
 						role="dialog"
 						aria-modal="true"
 						aria-label="Composer, full screen"
+						onPointerDown={(e) => {
+							// Click-off close: a press on the overlay itself (the backdrop
+							// around the editor card) collapses — presses inside the
+							// composer content target deeper nodes and are ignored.
+							if (e.target === e.currentTarget) {
+								e.preventDefault();
+								setComposerExpanded(false);
+							}
+						}}
 						onKeyDownCapture={(e) => {
 							if (e.key !== "Escape" || e.defaultPrevented) return;
 							const target = e.target as HTMLElement | null;
@@ -1607,7 +1648,7 @@ export function EncryptTab({
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
+						<div className="mx-auto flex h-full min-h-0 w-full flex-col">
 							{composerBody}
 						</div>
 					</div>,

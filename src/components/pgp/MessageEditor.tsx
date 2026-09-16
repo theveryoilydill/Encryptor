@@ -30,10 +30,7 @@ import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 
 /** Register a freshly pasted image (given as a data: URL) as a new
  *  attachment. Returns the stored EnvelopeFile (with its unique name) so
- *  the editor can reference it. Round 18: `suggestedName` carries the
- *  DROPPED file's real filename when one exists (image drops keep their
- *  name, sanitized by the parent); plain pastes omit it and keep the
- *  classic pasted-image.<ext> naming the orphan GC relies on. */
+ *  the editor can reference it. */
 export type OnNewImageDataUrl = (dataUrl: string, suggestedName?: string) => EnvelopeFile;
 
 const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
@@ -42,9 +39,10 @@ const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 });
 
 /** Slim, grouped source-mode toolbar — the @uiw default ships ~20 commands
- *  (comment, table, image, fullscreen, help, live-preview triad …) that are
+ *  (comment, image, fullscreen, help, live-preview triad …) that are
  *  noise for this composer: images belong to the attachment pipeline, and
- *  the split preview is always visible. Ten essentials, three groups. */
+ *  the split preview is always visible. Eleven essentials, three groups —
+ *  table added for parity with the Notion engine's table block. */
 const VSCODE_COMMANDS = [
 	mdCommands.bold,
 	mdCommands.italic,
@@ -57,6 +55,7 @@ const VSCODE_COMMANDS = [
 	mdCommands.unorderedListCommand,
 	mdCommands.orderedListCommand,
 	mdCommands.checkedListCommand,
+	mdCommands.table,
 	mdCommands.divider,
 	mdCommands.link,
 ];
@@ -113,21 +112,19 @@ export function MessageEditor({
 	onChange,
 	files,
 	onNewImageDataUrl,
-	onFilesDropped,
 	editorKind,
 	placeholder,
+	onFilesDropped: _onFilesDropped,
 	expanded = false,
 }: {
 	value: string;
 	onChange: (text: string) => void;
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
-	/** Round 18: non-image files the editor can't carry — PASTED or
-	 *  DROPPED — forwarded to the composer's attachment flow (addFiles).
-	 *  Optional: when absent the editor falls back to its own guidance
-	 *  toast instead of forwarding. */
-	onFilesDropped?: (files: File[]) => void;
 	editorKind: MarkdownEditorKind;
+	/** Non-image files pasted/dropped in the editor — forwarded to the
+	 *  composer's attachment flow (qol layer wires this up). */
+	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
 	 *  # Mr. AI Acting on s183173's Behalf
@@ -209,6 +206,7 @@ export function MessageEditor({
 		[value, onChange, onNewImageDataUrl],
 	);
 
+	void _onFilesDropped;
 	const { resolvedTheme } = useTheme();
 	const editorMd = useMemo(() => markersToDataUrls(value, files), [value, files]);
 	const previewMd = editorMd;
@@ -282,7 +280,6 @@ export function MessageEditor({
 			onChange={onChange}
 			files={files}
 			onNewImageDataUrl={onNewImageDataUrl}
-			onFilesDropped={onFilesDropped}
 			placeholder={placeholder}
 			expanded={expanded}
 		/>

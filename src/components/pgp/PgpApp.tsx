@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type ComponentProps } from "react";
 import { useTheme } from "next-themes";
 import {
 	Loader2,
@@ -8,6 +8,7 @@ import {
 	Moon,
 	Settings,
 	ShieldCheck,
+	ShieldHalf,
 	Sun,
 	Timer,
 	TriangleAlert,
@@ -16,7 +17,6 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/hooks/use-toast";
 import {
 	type KeyRequestState,
@@ -33,6 +33,14 @@ import { DecryptTab } from "@/components/pgp/tabs/DecryptTab";
 import { SignTab } from "@/components/pgp/tabs/SignTab";
 import { VerifyTab } from "@/components/pgp/tabs/VerifyTab";
 import { STORAGE_KEYS } from "@/lib/constants";
+import {
+	loadKeyHistory,
+	pushKeyHistory,
+	removeKeyHistory,
+	scrubKeyHistory,
+	type KeyHistory,
+} from "@/lib/pgp/key-history";
+import { generateSealKeyPair, wrapSealSecret } from "@/lib/pgp/pq";
 import { readKey, unlockPrivateKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { runCryptoSelfTest, type SelfTestResult } from "@/lib/pgp/self-test";
@@ -155,10 +163,138 @@ function OwnKeyExpiryBanner({
 	);
 }
 
+/** Unencrypted-own-key warning (round-12 product pass): the configured key
+ *  is private with NO passphrase protection — its material sits unencrypted
+ *  on this device, readable by anything with access to this browser
+ *  profile. Amber family matching the expiry banner. Dismissal is persisted
+ *  PER FINGERPRINT (STORAGE_KEYS.unprotectedKeyBannerDismissed), so a
+ *  different or regenerated key re-arms the warning. */
+function OwnKeyUnprotectedBanner({
+	label,
+	onDismiss,
+}: {
+	/** Configured key display label (quoted in the headline). */
+	label: string;
+	onDismiss: () => void;
+}) {
+	return (
+		<div
+			role="status"
+			className="animate-fade-up flex flex-col gap-2.5 rounded-xl border border-amber-500/50 bg-amber-50 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:gap-3 dark:border-amber-500/40 dark:bg-amber-950/30"
+		>
+			<span
+				aria-hidden="true"
+				className="grid size-8 shrink-0 place-items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+			>
+				<TriangleAlert className="size-4" />
+			</span>
+			<div className="min-w-0 flex-1">
+				<p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+					Your key “{label}” is stored unencrypted on this device.
+				</p>
+				<p className="mt-0.5 text-[11px] text-amber-800/90 dark:text-amber-200/80">
+					It has no passphrase protection — anyone using this browser profile can read everything it
+					decrypts. Protect it by generating a replacement key with a passphrase (key settings).
+				</p>
+			</div>
+			<Button
+				type="button"
+				variant="ghost"
+				size="icon"
+				onClick={onDismiss}
+				aria-label="Dismiss unencrypted key warning"
+				title="Dismiss this warning"
+				className="size-11 shrink-0 text-amber-700 transition-colors hover:text-foreground sm:size-8 dark:text-amber-300"
+			>
+				<X aria-hidden="true" className="size-4" />
+			</Button>
+		</div>
+	);
+}
+
+/** Post-quantum onboarding banner (one per key until enabled/dismissed):
+ *  one click runs the whole setup — passphrase prompt, ML-KEM-768 pair
+ *  generation, sealed-copies on. Violet = the quantum-seal accent already
+ *  used by the key dialog and Settings. */
+function PostQuantumBanner({
+	label,
+	busy,
+	onEnable,
+	onDismiss,
+}: {
+	/** Configured key display label (quoted in the headline). */
+	label: string;
+	busy: boolean;
+	onEnable: () => void;
+	onDismiss: () => void;
+}) {
+	return (
+		<div
+			role="status"
+			className="animate-fade-up flex flex-col gap-2.5 rounded-xl border border-violet-300/70 bg-violet-50 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:gap-3 dark:border-violet-900/50 dark:bg-violet-950/30"
+		>
+			<span
+				aria-hidden="true"
+				className="grid size-8 shrink-0 place-items-center rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+			>
+				<ShieldHalf className="size-4" />
+			</span>
+			<div className="min-w-0 flex-1">
+				<p className="text-xs font-medium text-violet-900 dark:text-violet-300">
+					Add post-quantum protection to “{label}”
+				</p>
+				<p className="mt-0.5 text-[11px] text-muted-foreground">
+					Classical encryption can be recorded today and broken later by a quantum computer. One
+					click adds an ML-KEM-768 key and seals every archive copy you keep.
+				</p>
+			</div>
+			<div className="flex shrink-0 items-center gap-1.5">
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					onClick={onEnable}
+					disabled={busy}
+					className="h-11 gap-1.5 border-violet-300/70 bg-background/60 px-3 text-xs text-violet-800 transition-colors hover:bg-violet-50 hover:text-violet-900 sm:h-8 dark:border-violet-900/60 dark:bg-background/40 dark:text-violet-300 dark:hover:bg-violet-950/40 dark:hover:text-violet-200"
+				>
+					{busy ? (
+						<>
+							<Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
+							Generating…
+						</>
+					) : (
+						"Enable in one click"
+					)}
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon"
+					onClick={onDismiss}
+					aria-label="Dismiss post-quantum setup reminder"
+					title="Dismiss this reminder"
+					className="size-11 text-muted-foreground transition-colors hover:text-foreground sm:size-8"
+				>
+					<X aria-hidden="true" className="size-4" />
+				</Button>
+			</div>
+		</div>
+	);
+}
+
 export default function PgpApp() {
 	// Lazy initializers are safe here: page.tsx renders this component with
 	// ssr:false, so localStorage is always available on first render.
 	const [tab, setTab] = useState<Tab>(loadLastTab);
+	// "Open in Decrypt" deep-link hand-off (round 14): the Encrypt tab's
+	// vault hands over { armor, seq }; the handler below flips to the
+	// Decrypt tab, DecryptTab loads the armor into its input and consumes
+	// the hand-off via onPendingLoadConsumed. seq = Date.now() makes every
+	// open a fresh payload, so re-opening the SAME entry re-triggers.
+	const [pendingDecryptLoad, setPendingDecryptLoad] = useState<{
+		armor: string;
+		seq: number;
+	} | null>(null);
 	const { toast } = useToast();
 	const [recipients, setRecipients] = useState<Recipient[]>([]);
 	// Lazy initializers are safe here: page.tsx renders this component with
@@ -179,6 +315,14 @@ export default function PgpApp() {
 		}
 		return null;
 	});
+	// Mirror of the active key for switch-ring bookkeeping: handleSetPrivateKey
+	// must stay dependency-free (it is passed deep into the tree), so the
+	// "previous key" for pushKeyHistory comes from this eager ref instead of a
+	// state closure.
+	const privateKeyRef = useRef<PrivateKeyConfig | null>(privateKey);
+	// Previously configured keys (the "switch back" ring, newest first) —
+	// maintained by handleSetPrivateKey below.
+	const [keyHistory, setKeyHistory] = useState<KeyHistory>(loadKeyHistory);
 	const [configOpen, setConfigOpen] = useState(false);
 	// Dedicated settings dialog (round 11 feedback): app preferences no longer
 	// share a dialog with key/auth setup. Ctrl+, opens THIS dialog; the key
@@ -225,6 +369,56 @@ export default function PgpApp() {
 	// App preferences (compression + editor style). Owned here so the
 	// ConfigureModal and the tabs stay in sync without a page reload.
 	const [settings, setSettings] = useState<AppSettings>(loadSettings);
+	const settingsRef = useRef(settings);
+	settingsRef.current = settings;
+	// Post-quantum onboarding banner: shows once per key (dismissal persisted
+	// per fingerprint) until the key carries an ML-KEM-768 pair.
+	const [pqBannerDismissedFp, setPqBannerDismissedFp] = useState<string | null>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.pqBannerDismissed);
+		} catch {
+			return null;
+		}
+	});
+	const [pqBusy, setPqBusy] = useState(false);
+	const showPqBanner =
+		!!privateKey?.encryptedArmored &&
+		!privateKey?.pq &&
+		pqBannerDismissedFp !== privateKey?.info?.fingerprint;
+
+	// Unencrypted-own-key banner (round-12 product pass): fires when the
+	// configured key is PRIVATE and its material is DECRYPTED — i.e. stored
+	// without passphrase protection (describePrivateKey reports
+	// isDecrypted:false only for passphrase-protected keys; a generated or
+	// pasted passphrase-less key comes back isDecrypted:true).
+	const [unprotectedKeyDismissedFp, setUnprotectedKeyDismissedFp] = useState<string | null>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.unprotectedKeyBannerDismissed);
+		} catch {
+			return null;
+		}
+	});
+	const handleDismissUnprotectedKeyBanner = useCallback(() => {
+		const fp = privateKey?.info?.fingerprint ?? null;
+		if (fp) {
+			try {
+				localStorage.setItem(STORAGE_KEYS.unprotectedKeyBannerDismissed, fp);
+			} catch {
+				// guarded storage posture — the in-memory dismissal still applies
+			}
+		}
+		setUnprotectedKeyDismissedFp(fp);
+	}, [privateKey]);
+	// "isPrivate" in info narrows AnyKeyInfo to PrivateKeyInfo so both
+	// protection fields are honestly read from the key's own metadata.
+	const ownInfo = privateKey?.info;
+	const showUnprotectedKeyBanner =
+		!!ownInfo &&
+		"isPrivate" in ownInfo &&
+		ownInfo.isPrivate &&
+		ownInfo.isDecrypted &&
+		unprotectedKeyDismissedFp !== ownInfo.fingerprint;
+
 	// Screen-reader-only tab-change announcement (see live region below).
 	const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
 
@@ -237,14 +431,34 @@ export default function PgpApp() {
 		}
 	}, []);
 
+	// Vault "Open in Decrypt" deep-link: stash the payload, flip to the
+	// Decrypt tab. DecryptTab's pendingLoad effect writes the armor into
+	// its input (the 600 ms auto-decrypt debounce does the rest) and then
+	// consumes the hand-off — the two tabs stay decoupled.
+	const handleOpenInDecrypt = useCallback((payload: { armor: string; seq: number }) => {
+		setPendingDecryptLoad(payload);
+		setTab("decrypt");
+	}, []);
+	const consumePendingDecryptLoad = useCallback(() => setPendingDecryptLoad(null), []);
+
 	const handleSetPrivateKey = useCallback((next: PrivateKeyConfig | null) => {
-		setPrivateKey((prev) => {
+		const prev = privateKeyRef.current;
+		privateKeyRef.current = next;
+		setPrivateKey(next);
+		{
 			// The session passphrase cache is scoped to one key: dropping the key or
 			// switching to a different fingerprint must not keep the old secret.
 			const fingerprintChanged = prev && next && prev.info?.fingerprint !== next.info?.fingerprint;
 			if (!next || fingerprintChanged) forgetPassphrase();
-			return next;
-		});
+		}
+		// Switch-ring bookkeeping: the replaced (or cleared) key moves into the
+		// history ring (deduped by fingerprint, newest first, max 4) so the
+		// Your-key dialog can restore it with ONE click — the literal "switch
+		// back" affordance. The newly active key always leaves the ring.
+		const prevFp = prev?.info?.fingerprint;
+		const nextFp = next?.info?.fingerprint;
+		if (prev && prevFp !== nextFp) pushKeyHistory(prev);
+		setKeyHistory(scrubKeyHistory(nextFp));
 		try {
 			if (next) {
 				localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(next));
@@ -278,7 +492,9 @@ export default function PgpApp() {
 	}> => {
 		// R9: consult the cache through the freshness gate — a stale entry is
 		// forgotten (inside the gate) and the visible prompt appears instead.
-		if (privateKey?.source !== "keybase" && privateKey?.encryptedArmored && getCachedPassphrase()) {
+		// (Keybase configs now carry encrypted armor too, so the session cache
+		// and silent unlock work for them exactly like local keys.)
+		if (privateKey?.encryptedArmored && getCachedPassphrase()) {
 			const cached = getCachedPassphraseIfFresh(settings.autoLockMinutes);
 			if (cached) {
 				// Silent unlock attempt with the session-cached passphrase. On any
@@ -310,6 +526,31 @@ export default function PgpApp() {
 			// the visible prompt below.
 			setPassphraseCached(false);
 			setPassphraseCachedUntil(null);
+		}
+		// Unencrypted keys (generated with the optional passphrase left empty)
+		// need no unlock at all — resolve silently instead of showing a prompt
+		// whose non-empty requirement can never be satisfied. (PassphrasePrompt
+		// also tolerates empty input for already-decrypted keys, but skipping
+		// the modal entirely is the right UX.)
+		if (privateKey?.encryptedArmored) {
+			return (async () => {
+				try {
+					const key = await readKey(privateKey!.encryptedArmored!);
+					if (key.isPrivate() && (key as OpenPGP.PrivateKey).isDecrypted()) {
+						return { key: key as OpenPGP.PrivateKey, passphrase: null };
+					}
+				} catch {
+					// Unreadable armor falls through to the prompt, whose unlock
+					// attempt surfaces the real error message.
+				}
+				return new Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>(
+					(resolve, reject) =>
+						setKeyRequest({
+							resolve: (key, passphrase) => resolve({ key, passphrase: passphrase ?? null }),
+							reject,
+						}),
+				);
+			})();
 		}
 		return new Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>((resolve, reject) =>
 			setKeyRequest({
@@ -377,6 +618,12 @@ export default function PgpApp() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
 
+	// On mount, drop the active key from the history ring (guards duplicates
+	// written by an interrupted session).
+	useEffect(() => {
+		setKeyHistory(scrubKeyHistory(privateKeyRef.current?.info?.fingerprint));
+	}, []);
+
 	// Remember the last-used tab so the next visit reopens on it.
 	useEffect(() => {
 		try {
@@ -424,6 +671,77 @@ export default function PgpApp() {
 		};
 	}, []);
 
+	// One-click post-quantum setup (banner + Settings inline button). Unlocks
+	// the key once (passphrase prompt / session cache), generates the ML-KEM-768
+	// pair, wraps the secret under the passphrase, and turns on sealed copies.
+	// Keybase configs qualify too — they now carry encrypted armor, so the
+	// passphrase that wraps the secret is available at unlock time.
+	const handleEnableQuantumSeal = useCallback(async (): Promise<boolean> => {
+		const current = privateKeyRef.current;
+		if (!current?.encryptedArmored || !current.info || pqBusy) return false;
+		setPqBusy(true);
+		try {
+			const { passphrase } = await requestDecryptedKey();
+			if (!passphrase) {
+				toast({
+					title: "Passphrase required",
+					description:
+						"The quantum-seal secret is protected by your passphrase — enter it in the prompt and try again.",
+					variant: "destructive",
+				});
+				return false;
+			}
+			const sealPair = generateSealKeyPair();
+			const pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
+			handleSetPrivateKey({ ...current, pq });
+			handleSetSettings({ ...settingsRef.current, pqSealedCopy: true });
+			toast({
+				title: "Quantum seal enabled",
+				description:
+					"ML-KEM-768 key pair attached — sealed archive copies are produced on every encrypt.",
+			});
+			try {
+				localStorage.setItem(STORAGE_KEYS.pqBannerDismissed, current.info.fingerprint);
+			} catch {
+				// ignore
+			}
+			setPqBannerDismissedFp(current.info.fingerprint);
+			return true;
+		} catch {
+			// Cancelled prompt or wrap failure — stay unsealed, the banner stays.
+			return false;
+		} finally {
+			setPqBusy(false);
+		}
+	}, [pqBusy, requestDecryptedKey, handleSetPrivateKey, handleSetSettings, toast]);
+
+	const handleDismissPqBanner = useCallback(() => {
+		const fp = privateKeyRef.current?.info?.fingerprint;
+		if (!fp) return;
+		try {
+			localStorage.setItem(STORAGE_KEYS.pqBannerDismissed, fp);
+		} catch {
+			// ignore
+		}
+		setPqBannerDismissedFp(fp);
+	}, []);
+
+	const handleRestoreKeyFromHistory = useCallback(
+		(cfg: PrivateKeyConfig) => {
+			handleSetPrivateKey(cfg);
+			setConfigOpen(false);
+			toast({
+				title: `Switched to ${cfg.label}`,
+				description: "Unlock it with its passphrase when you next encrypt, decrypt or sign.",
+			});
+		},
+		[handleSetPrivateKey, toast],
+	);
+
+	const handleForgetKeyFromHistory = useCallback((fingerprint: string) => {
+		setKeyHistory(removeKeyHistory(fingerprint));
+	}, []);
+
 	const handleSelfTest = useCallback(async () => {
 		const result: SelfTestResult = await runCryptoSelfTest();
 		if (result.ok) {
@@ -458,6 +776,24 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+				{showUnprotectedKeyBanner && privateKey && (
+					<div className="mb-4">
+						<OwnKeyUnprotectedBanner
+							label={privateKey.label}
+							onDismiss={handleDismissUnprotectedKeyBanner}
+						/>
+					</div>
+				)}
+				{showPqBanner && privateKey && (
+					<div className="mb-4">
+						<PostQuantumBanner
+							label={privateKey.label}
+							busy={pqBusy}
+							onEnable={() => void handleEnableQuantumSeal()}
+							onDismiss={handleDismissPqBanner}
+						/>
+					</div>
+				)}
 				{showExpiryBanner && privateKey && keyExpiry && (
 					<div className="mb-4">
 						<OwnKeyExpiryBanner
@@ -499,18 +835,20 @@ export default function PgpApp() {
 									includeSelf={includeSelf}
 									onIncludeSelfChange={handleSetIncludeSelf}
 									requestDecryptedKey={requestDecryptedKey}
+									onOpenInDecrypt={handleOpenInDecrypt}
 									settings={settings}
 								/>
 							)}
 							{t.id === "decrypt" && (
-								<DecryptTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
-							)}
-							{t.id === "sign" && (
-								<SignTab
+								<DecryptTab
 									privateKey={privateKey}
 									requestDecryptedKey={requestDecryptedKey}
-									markdownEditor={settings.markdownEditor}
+									pendingLoad={pendingDecryptLoad}
+									onPendingLoadConsumed={consumePendingDecryptLoad}
 								/>
+							)}
+							{t.id === "sign" && (
+								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
 							)}
 							{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
 						</div>
@@ -524,6 +862,9 @@ export default function PgpApp() {
 				open={configOpen}
 				onOpenChange={setConfigOpen}
 				privateKey={privateKey}
+				keyHistory={keyHistory}
+				onRestoreKey={handleRestoreKeyFromHistory}
+				onForgetKey={handleForgetKeyFromHistory}
 				requestDecryptedKey={requestDecryptedKey}
 				onSave={(next) => {
 					handleSetPrivateKey(next);
@@ -541,6 +882,7 @@ export default function PgpApp() {
 				settings={settings}
 				onSettingsChange={handleSetSettings}
 				privateKey={privateKey}
+				onEnableQuantumSeal={handleEnableQuantumSeal}
 			/>
 
 			{keyRequest && privateKey && (
@@ -565,8 +907,6 @@ export default function PgpApp() {
 					}}
 				/>
 			)}
-
-			<Toaster />
 		</div>
 	);
 }
@@ -594,16 +934,43 @@ function Header({
 	const autoLockMinutesLeft = passphraseCachedUntil
 		? Math.max(1, Math.ceil((passphraseCachedUntil - Date.now()) / 60000))
 		: null;
+	// Live 1-second tick while an auto-lock deadline is armed (round 12):
+	// the badge and tooltip read m:ss and shift tone as the deadline
+	// approaches. Render-only — real enforcement stays in the parent's 5s
+	// interval plus the freshness gate on every unlock attempt. The
+	// SR-facing aria-label keeps the coarse minute phrasing so it does not
+	// re-announce every second; the precise time lives in badge + tooltip.
+	const [, autoLockTick] = useReducer((c: number) => c + 1, 0);
+	useEffect(() => {
+		if (!passphraseCachedUntil) return;
+		const id = setInterval(autoLockTick, 1000);
+		return () => clearInterval(id);
+	}, [passphraseCachedUntil]);
+	const autoLockMsLeft = passphraseCachedUntil
+		? Math.max(0, passphraseCachedUntil - Date.now())
+		: null;
+	const autoLockLabel =
+		autoLockMsLeft !== null
+			? `${Math.floor(autoLockMsLeft / 60000)}:${String(Math.floor((autoLockMsLeft % 60000) / 1000)).padStart(2, "0")}`
+			: null;
+	const autoLockBadgeClass =
+		autoLockMsLeft === null
+			? ""
+			: autoLockMsLeft <= 30000
+				? "animate-pulse border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
+				: autoLockMsLeft <= 120000
+					? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+					: "border-border bg-background text-muted-foreground";
 	return (
 		<header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
 			<div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
-				<div className="flex items-center gap-2.5">
+				<div className="flex min-w-0 items-center gap-2.5">
 					<img src="/logo.svg" alt="Encryptor logo" width={28} height={28} className="rounded" />
 					{/* h1: the page's only level-one heading (axe page-has-heading-one);
               styled identically to the previous span. */}
-					<h1 className="text-base font-semibold tracking-tight">Encryptor</h1>
+					<h1 className="min-w-0 truncate text-base font-semibold tracking-tight">Encryptor</h1>
 				</div>
-				<div className="flex items-center gap-2">
+				<div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
 					{passphraseCached && privateKey && (
 						<Button
 							type="button"
@@ -617,26 +984,29 @@ function Header({
 							}
 							title={
 								autoLockMinutesLeft
-									? `Passphrase remembered for this session (memory only) — auto-locks in ${autoLockMinutesLeft} min — click to forget it now`
+									? `Passphrase remembered for this session (memory only) — auto-locks in ${autoLockLabel} — click to forget it now`
 									: "Passphrase remembered for this session (memory only) — click to forget it now"
 							}
 							className="relative size-8 text-muted-foreground transition-colors hover:text-[#0055dc] dark:hover:text-[#5e94ff]"
 						>
 							<Unlock className="size-4" aria-hidden />
-							{/* R9: tiny countdown badge next to the unlock glyph when an
-                  auto-lock is armed — glanceable without opening the tooltip. */}
-							{autoLockMinutesLeft !== null && (
+							{/* R9 countdown badge, upgraded (round 12): live m:ss readout that
+                  ticks every second and shifts tone — amber under 2 minutes,
+                  pulsing red under 30 s — as the auto-lock approaches. */}
+							{autoLockLabel !== null && (
 								<span
 									aria-hidden="true"
-									className="absolute -right-1.5 -bottom-1 rounded-full border border-border bg-background px-1 text-[8px] font-medium leading-[1.3] text-muted-foreground"
+									className={`absolute -right-1.5 -bottom-1 rounded-full border px-1 text-[8px] font-medium tabular-nums leading-[1.3] transition-colors duration-300 ${autoLockBadgeClass}`}
 								>
-									{autoLockMinutesLeft}m
+									{autoLockLabel}
 								</span>
 							)}
 						</Button>
 					)}
 					<ThemeToggle />
-					<ShortcutsDialog />
+					<div className="hidden sm:inline-flex">
+						<ShortcutsDialog />
+					</div>
 					{/* Dedicated settings entry (round 11 feedback): the gear owns app
               preferences; the key button next to it owns key/auth. */}
 					<Button
@@ -657,7 +1027,7 @@ function Header({
 					>
 						<KeyIcon />
 						{privateKey ? (
-							<span>
+							<span className="max-w-[34vw] truncate sm:max-w-[14rem]">
 								{privateKey.source === "keybase" ? `@${privateKey.username}` : privateKey.label}
 							</span>
 						) : (

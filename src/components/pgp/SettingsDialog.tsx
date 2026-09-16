@@ -22,6 +22,7 @@ import {
 	Download,
 	FileCog,
 	KeyRound,
+	Loader2,
 	RotateCcw,
 	Search,
 	ShieldHalf,
@@ -272,12 +273,21 @@ export function SettingsDialog({
 	settings,
 	onSettingsChange,
 	privateKey,
+	onEnableQuantumSeal,
+	onReplayWelcomeTour,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	settings: AppSettings;
 	onSettingsChange: (next: AppSettings) => void;
 	privateKey: PrivateKeyConfig | null;
+	/** One-click post-quantum setup (PgpApp owns the passphrase prompt +
+	 *  generation). Resolves true when the key gained a quantum-seal pair.
+	 *  Optional for stories/tests that render the dialog standalone. */
+	onEnableQuantumSeal?: () => Promise<boolean>;
+	/** Re-shows the full-screen welcome tour (skipping must never be a
+	 *  dead end — round-12 human feedback). */
+	onReplayWelcomeTour?: () => void;
 }) {
 	const [query, setQuery] = useState("");
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -292,7 +302,9 @@ export function SettingsDialog({
 			composer: !q || hits("composer editor markdown notion vscode auto sign signature"),
 			encryption: !q || hits("encryption compression zlib zip quantum sealed post pq ml-kem"),
 			security: !q || hits("security passphrase auto lock cache session"),
-			data: !q || hits("data backup restore import export reset defaults"),
+			data:
+				!q ||
+				hits("data backup restore import export reset defaults welcome tour onboarding replay"),
 		} as Record<SectionId, boolean>;
 	}, [q]);
 
@@ -444,6 +456,9 @@ export function SettingsDialog({
 									aria-label="Quantum-sealed copy"
 								/>
 							</SettingRow>
+							{settings.pqSealedCopy && !privateKey?.pq && (
+								<QuantumSealInlineEnable onEnable={onEnableQuantumSeal} />
+							)}
 							{settings.pqSealedCopy && (
 								<p className="pb-2 text-xs text-muted-foreground">
 									{privateKey?.pq ? (
@@ -461,8 +476,8 @@ export function SettingsDialog({
 												aria-hidden
 												className="mr-1 inline size-3.5 text-amber-600 dark:text-amber-400"
 											/>
-											Your current key has no quantum-seal pair yet — generate one in the key dialog
-											(keys created in-app already have it).
+											Your current key has no quantum-seal pair yet — sealed copies stay off until
+											you enable it above (keys created in-app already have it).
 										</>
 									)}
 								</p>
@@ -515,6 +530,24 @@ export function SettingsDialog({
 								Data
 							</p>
 							<BackupRestoreSection privateKey={privateKey} />
+							<SettingRow
+								title="Replay welcome tour"
+								description="Skipped the first-run walkthrough? Bring the full-screen welcome back at any time."
+							>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									className="h-11 gap-1.5 px-3 text-xs sm:h-8 sm:text-[13px]"
+									onClick={() => {
+										onReplayWelcomeTour?.();
+										onOpenChange(false);
+									}}
+								>
+									<RotateCcw aria-hidden="true" className="size-3.5" />
+									Show tour
+								</Button>
+							</SettingRow>
 						</section>
 					)}
 
@@ -537,5 +570,44 @@ export function SettingsDialog({
 				</div>
 			</DialogContent>
 		</Dialog>
+	);
+}
+
+/* --------------------- quantum-seal inline enable (new) -------------------- */
+
+/** One-click post-quantum setup inside Settings: shown when sealed copies are
+ *  on but the active key has no ML-KEM-768 pair. Replaces the old dead-end
+ *  hint ("generate one in the key dialog") — the passphrase prompt + pair
+ *  generation + pqSealedCopy handling all live in PgpApp. */
+function QuantumSealInlineEnable({ onEnable }: { onEnable?: () => Promise<boolean> }) {
+	const [busy, setBusy] = useState(false);
+	if (!onEnable) return null;
+	return (
+		<div className="pb-2">
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				disabled={busy}
+				onClick={() => {
+					setBusy(true);
+					void onEnable().finally(() => setBusy(false));
+				}}
+				className="h-11 gap-1.5 border-violet-300/70 px-3 text-xs text-violet-800 transition-colors hover:bg-violet-50 hover:text-violet-900 sm:h-8 dark:border-violet-900/60 dark:text-violet-300 dark:hover:bg-violet-950/40 dark:hover:text-violet-200"
+				title="Generate an ML-KEM-768 key pair for this key (asks for your passphrase once)"
+			>
+				{busy ? (
+					<>
+						<Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
+						Generating…
+					</>
+				) : (
+					<>
+						<ShieldHalf aria-hidden className="size-3.5" />
+						Enable quantum seal for this key
+					</>
+				)}
+			</Button>
+		</div>
 	);
 }

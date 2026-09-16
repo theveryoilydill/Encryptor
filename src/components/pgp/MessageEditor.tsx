@@ -30,8 +30,11 @@ import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 
 /** Register a freshly pasted image (given as a data: URL) as a new
  *  attachment. Returns the stored EnvelopeFile (with its unique name) so
- *  the editor can reference it. */
-export type OnNewImageDataUrl = (dataUrl: string) => EnvelopeFile;
+ *  the editor can reference it. Round 18: `suggestedName` carries the
+ *  DROPPED file's real filename when one exists (image drops keep their
+ *  name, sanitized by the parent); plain pastes omit it and keep the
+ *  classic pasted-image.<ext> naming the orphan GC relies on. */
+export type OnNewImageDataUrl = (dataUrl: string, suggestedName?: string) => EnvelopeFile;
 
 const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 	ssr: false,
@@ -39,10 +42,9 @@ const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 });
 
 /** Slim, grouped source-mode toolbar — the @uiw default ships ~20 commands
- *  (comment, image, fullscreen, help, live-preview triad …) that are
+ *  (comment, table, image, fullscreen, help, live-preview triad …) that are
  *  noise for this composer: images belong to the attachment pipeline, and
- *  the split preview is always visible. Eleven essentials, three groups —
- *  table added for parity with the Notion engine's table block. */
+ *  the split preview is always visible. Ten essentials, three groups. */
 const VSCODE_COMMANDS = [
 	mdCommands.bold,
 	mdCommands.italic,
@@ -55,7 +57,6 @@ const VSCODE_COMMANDS = [
 	mdCommands.unorderedListCommand,
 	mdCommands.orderedListCommand,
 	mdCommands.checkedListCommand,
-	mdCommands.table,
 	mdCommands.divider,
 	mdCommands.link,
 ];
@@ -112,6 +113,7 @@ export function MessageEditor({
 	onChange,
 	files,
 	onNewImageDataUrl,
+	onFilesDropped,
 	editorKind,
 	placeholder,
 	expanded = false,
@@ -120,6 +122,11 @@ export function MessageEditor({
 	onChange: (text: string) => void;
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
+	/** Round 18: non-image files the editor can't carry — PASTED or
+	 *  DROPPED — forwarded to the composer's attachment flow (addFiles).
+	 *  Optional: when absent the editor falls back to its own guidance
+	 *  toast instead of forwarding. */
+	onFilesDropped?: (files: File[]) => void;
 	editorKind: MarkdownEditorKind;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
@@ -275,6 +282,7 @@ export function MessageEditor({
 			onChange={onChange}
 			files={files}
 			onNewImageDataUrl={onNewImageDataUrl}
+			onFilesDropped={onFilesDropped}
 			placeholder={placeholder}
 			expanded={expanded}
 		/>

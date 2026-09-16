@@ -7,15 +7,7 @@
  * (src/components/pgp/PgpApp.tsx in the audit tree) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	type ComponentProps,
-	type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	BadgeCheck,
 	Check,
@@ -25,13 +17,12 @@ import {
 	FileSignature,
 	FileText,
 	Lock,
+	Sparkles,
 	X,
 } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { rehypeSecureHtml } from "@/lib/pgp/safe-html";
-import { githubSlug } from "@/lib/pgp/github-slug";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -433,16 +424,18 @@ export function DownloadButton({ text, title }: { text: string; title: string })
 
 /* -------------------------------- OutputBlock ------------------------------- */
 
-/** Output section: rendered preview / raw text toggle, ZIP + copy actions,
- *  nuke-input panel, and a "Start over" reset. */
+/** Output section: rendered preview / raw text toggle, ZIP + copy actions.
+ *  When a quantum-sealed copy is provided (sealedCopy) it REPLACES the
+ *  (single) output box's content by default — a small in-box switch flips
+ *  between the sealed and the recipient armor; Copy/Download act on
+ *  whichever view is shown. # Mr. AI Acting on s183173's Behalf */
 export function OutputBlock({
 	title,
 	output,
 	files,
 	preview,
-	onNuke,
-	nukeLabel,
-	onReset,
+	sealedCopy,
+	sealedNote,
 	signers,
 	verificationResult,
 	operation,
@@ -460,9 +453,15 @@ export function OutputBlock({
 	 *  are resolved against the top-level `files`) or an object of the shape
 	 *  `{ text?/plaintext?, files? }`. */
 	preview?: string | { text?: string; plaintext?: string; files?: EnvelopeFile[] };
-	onNuke?: () => void;
-	nukeLabel?: string;
-	onReset: () => void;
+	/** Quantum-sealed armor (ML-KEM-768 outer layer) for the sender's own
+	 *  archive. When present it IS the output box by default — violet PQ
+	 *  treatment + an in-box `Sealed copy | Recipient copy` switch — and
+	 *  Copy/Download act on whichever view is shown. There is NO second
+	 *  output box anywhere. */
+	sealedCopy?: string;
+	/** Optional one-line context shown under the sealed label (why this copy
+	 *  exists / what opens it). Only rendered while the sealed view is up. */
+	sealedNote?: string;
 	signers?: SignatureInfo[];
 	verificationResult?: VerificationResult | string;
 	/** Operation tag used for the ZIP filename + metadata (e.g. "encrypt",
@@ -474,14 +473,16 @@ export function OutputBlock({
 	inputBytes?: number;
 }) {
 	const [showRaw, setShowRaw] = useState(false);
-	const [nuked, setNuked] = useState(false);
-
-	// Re-arm the nuke panel whenever a new output is produced — done via the
-	// render-time state adjustment pattern (no effect needed).
-	const [prevOutput, setPrevOutput] = useState(output);
-	if (prevOutput !== output) {
-		setPrevOutput(output);
-		setNuked(false);
+	// Which armor fills the box when a sealed copy exists — the sealed copy
+	// is the default ("if I said I wanted it in settings, I want it").
+	const [showSealed, setShowSealed] = useState(true);
+	// Re-arm the sealed default whenever a NEW sealed copy arrives (fresh
+	// encrypt or history restore) — render-time state adjustment pattern,
+	// no effect needed.
+	const [prevSealedCopy, setPrevSealedCopy] = useState(sealedCopy);
+	if (prevSealedCopy !== sealedCopy) {
+		setPrevSealedCopy(sealedCopy);
+		setShowSealed(true);
 	}
 
 	const previewText =
@@ -491,6 +492,11 @@ export function OutputBlock({
 
 	// Small status icon in the title row, derived from the title string only.
 	const statusIcon = outputStatusIcon(title);
+
+	// The sealed view drives the box accent, the in-box label, and what
+	// Copy/Download act on. Stats describe whichever armor is on screen.
+	const sealedActive = Boolean(sealedCopy) && showSealed;
+	const shownText = sealedActive ? (sealedCopy ?? "") : output;
 
 	return (
 		<div className={output ? "animate-scale-in glow-accent space-y-3" : "space-y-3"}>
@@ -530,19 +536,19 @@ export function OutputBlock({
 								aria-hidden="true"
 								className="ml-0.5 hidden font-mono text-[10px] font-normal normal-case tracking-normal text-muted-foreground sm:inline"
 							>
-								{output.split("\n").length.toLocaleString()} lines ·{" "}
-								{(output.length / 1024).toFixed(1)} KB
+								{shownText.split("\n").length.toLocaleString()} lines ·{" "}
+								{(shownText.length / 1024).toFixed(1)} KB
 								{/* Savings marker (R10): only when the caller reports the
                     input size and the armored output actually came out
                     smaller (small messages with per-recipient overhead stay
                     silent instead of showing a confusing negative). */}
-								{inputBytes !== undefined && output.length < inputBytes && (
+								{inputBytes !== undefined && shownText.length < inputBytes && (
 									<span
 										className="font-medium text-emerald-600 dark:text-emerald-400"
 										title="Armored output is smaller than the input — compression did the work"
 									>
 										{" "}
-										· {Math.max(1, Math.round((1 - output.length / inputBytes) * 100))}% smaller
+										· {Math.max(1, Math.round((1 - shownText.length / inputBytes) * 100))}% smaller
 									</span>
 								)}
 							</span>
@@ -568,6 +574,87 @@ export function OutputBlock({
 					<div className="min-h-[100px] rounded-xl border bg-card px-3.5 py-3 shadow-sm">
 						<DecryptedMessageView text={previewText} files={previewFiles} />
 					</div>
+				) : sealedCopy ? (
+					// ONE output box, two armors: the quantum-sealed copy REPLACES the
+					// recipient armor as the box content (violet PQ treatment) and a
+					// compact in-box switch flips between the two — no second box, and
+					// the action row below never reflows.
+					<div
+						className={
+							sealedActive
+								? "overflow-hidden rounded-xl border border-violet-500/40 bg-violet-50/40 shadow-sm dark:border-violet-400/30 dark:bg-violet-950/20"
+								: "overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+						}
+					>
+						<div
+							className={
+								sealedActive
+									? "flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-violet-500/25 bg-violet-100/50 px-2.5 py-1.5 dark:border-violet-400/20 dark:bg-violet-900/20"
+									: "flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-border bg-muted/40 px-2.5 py-1.5"
+							}
+						>
+							{sealedActive ? (
+								<span className="flex min-w-0 flex-col">
+									<span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-violet-800 dark:text-violet-200">
+										<Sparkles
+											aria-hidden="true"
+											className="size-3 shrink-0 text-violet-600 dark:text-violet-300"
+										/>
+										Quantum-sealed copy (ML-KEM-768)
+										<span className="rounded-full bg-violet-600 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500">
+											PQ
+										</span>
+									</span>
+									{sealedNote && (
+										<span className="text-[10px] leading-snug text-violet-700/80 dark:text-violet-300/70">
+											{sealedNote}
+										</span>
+									)}
+								</span>
+							) : (
+								<span className="text-[11px] font-medium text-muted-foreground">
+									Recipient copy
+								</span>
+							)}
+							<div
+								role="group"
+								aria-label="Choose which copy fills the output box"
+								className="flex shrink-0 items-center overflow-hidden rounded-md border border-border bg-background/60"
+							>
+								<button
+									type="button"
+									aria-pressed={sealedActive}
+									onClick={() => setShowSealed(true)}
+									className={
+										sealedActive
+											? "h-6 bg-foreground px-2 text-[10px] font-medium text-background transition-colors"
+											: "h-6 px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+									}
+								>
+									Sealed copy
+								</button>
+								<button
+									type="button"
+									aria-pressed={!sealedActive}
+									onClick={() => setShowSealed(false)}
+									className={
+										sealedActive
+											? "h-6 px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+											: "h-6 bg-foreground px-2 text-[10px] font-medium text-background transition-colors"
+									}
+								>
+									Recipient copy
+								</button>
+							</div>
+						</div>
+						<Textarea
+							value={shownText}
+							readOnly
+							rows={12}
+							className="field-sizing-fixed rounded-none border-0 bg-transparent font-mono shadow-none focus-visible:border-0 focus-visible:ring-0"
+							aria-label={sealedActive ? "Quantum-sealed copy (ML-KEM-768)" : title}
+						/>
+					</div>
 				) : (
 					<Textarea
 						value={output}
@@ -587,41 +674,12 @@ export function OutputBlock({
 							verificationResult={verificationResult}
 						/>
 					)}
-					<DownloadButton text={output} title={title} />
-					<CopyButton text={output} />
+					{/* Copy/Download act on whichever armor the box shows. The
+						label-swap (Copy -> Copied!) changes only the button's own
+						width — the nowrap row keeps every button on one line. */}
+					<DownloadButton text={shownText} title={sealedActive ? "quantum-sealed copy" : title} />
+					<CopyButton text={shownText} />
 				</div>
-			</div>
-
-			{onNuke && (
-				<div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/30">
-					{!nuked ? (
-						<div className="flex flex-col justify-between gap-2.5 sm:flex-row sm:items-center">
-							<p className="text-xs text-amber-800 dark:text-amber-300">
-								Your input is still in memory. Nuke it now to make sure only the output remains.
-							</p>
-							<Button
-								type="button"
-								onClick={() => {
-									onNuke();
-									setNuked(true);
-								}}
-								className="h-11 shrink-0 bg-amber-700 px-3 text-xs font-medium text-white transition-colors hover:bg-amber-800 sm:h-8 dark:bg-amber-500 dark:text-amber-950 dark:hover:bg-amber-400"
-							>
-								{nukeLabel ?? "Nuke input"}
-							</Button>
-						</div>
-					) : (
-						<p className="text-xs text-emerald-700 dark:text-emerald-400">
-							✓ Input nuked. Only the output remains in memory.
-						</p>
-					)}
-				</div>
-			)}
-
-			<div className="flex gap-2">
-				<Button type="button" variant="ghost" onClick={onReset} className="h-11 text-sm sm:h-9">
-					Start over
-				</Button>
 			</div>
 		</div>
 	);
@@ -732,44 +790,6 @@ export function AttachmentList({
 
 /* --------------------------- DecryptedMessageView --------------------------- */
 
-/** Flatten React children to plain text (for slug derivation). */
-function flattenText(node: ReactNode): string {
-	if (node === null || node === undefined || typeof node === "boolean") return "";
-	if (typeof node === "string" || typeof node === "number") return String(node);
-	if (Array.isArray(node)) return node.map(flattenText).join("");
-	if (typeof node === "object" && "props" in (node as unknown as Record<string, unknown>)) {
-		return flattenText((node as { props: { children?: ReactNode } }).props?.children);
-	}
-	return "";
-}
-
-/** Heading renderer factory: emits the same heading tag with a GitHub-style
- *  anchor id derived from the heading's own text, so composer-generated TOC
- *  links jump to the right heading in the rendered view. The id comes from
- *  the slug charset only (githubSlug strips everything else). */
-function headingWithAnchor(Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
-	return function Heading({
-		node: _node,
-		children,
-		...props
-	}: ComponentProps<"h1"> & { node?: unknown }) {
-		const id = githubSlug(flattenText(children));
-		return (
-			<Tag {...props} id={id || undefined}>
-				{children}
-			</Tag>
-		);
-	};
-}
-const headingAnchors = {
-	h1: headingWithAnchor("h1"),
-	h2: headingWithAnchor("h2"),
-	h3: headingWithAnchor("h3"),
-	h4: headingWithAnchor("h4"),
-	h5: headingWithAnchor("h5"),
-	h6: headingWithAnchor("h6"),
-};
-
 /** Render a decrypted message as markdown (GitHub-flavored), with inline
  *  envelope images.
  *
@@ -787,9 +807,6 @@ const headingAnchors = {
  *  js/xss-through-dom guard) exactly as before.
  */
 export function DecryptedMessageView({ text, files }: { text: string; files: EnvelopeFile[] }) {
-	// Heading ids use the same GitHub-style slugs the composer's TOC builder
-	// generates, so TOC links written by "Insert table of contents" jump to
-	// the right heading in the rendered view too.
 	// Build a filename → data URL map. First match wins (matching the
 	// Encrypt-side behavior where deduplicated names are unique).
 	const fileMap = useMemo(() => {
@@ -803,15 +820,10 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 	}, [files]);
 
 	return (
-		<div className="break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
+		<div className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
 			<Markdown
 				remarkPlugins={[remarkGfm, remarkBreaks]}
-				// Secure raw-HTML support: parse the HTML the sender wrote,
-				// then strip everything the strict schema disallows. Never
-				// renders scripts, styles, event handlers, or unsafe URLs.
-				rehypePlugins={[...rehypeSecureHtml]}
 				components={{
-					...headingAnchors,
 					a: ({ node: _node, children, ...props }) => (
 						<a {...props} target="_blank" rel="noreferrer noopener" className={ACCENT_TEXT}>
 							{children}

@@ -291,8 +291,8 @@ material that no longer matches the public record. The audit sweep now
 detects this drift for keys the list believes are escrowed (the escrow
 probe only runs for non-revoked keys; probe errors never fail the audit):
 
-| Badge                   | Meaning                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| Badge                     | Meaning                                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
 | `escrow outdated` (amber) | `private_updated_at` < the key's `updated_at` — replace the key WITH escrow to refresh the backup. |
 | `escrow missing` (amber)  | The registry no longer holds an escrowed backup for this key (dropped, or never stored).           |
 

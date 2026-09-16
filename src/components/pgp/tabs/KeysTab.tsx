@@ -13,10 +13,13 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import {
+	AudioLines,
+	Clock,
 	Download,
 	Eye,
 	EyeOff,
 	Fingerprint,
+	Layers,
 	Globe,
 	HardDrive,
 	KeyRound,
@@ -26,6 +29,7 @@ import {
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
+	UserRound,
 } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -48,8 +52,8 @@ import { Textarea } from "@/components/ui/textarea";
 import {
 	type MyRegistryKey,
 	type RegistryHealth,
-	RegistryClientError,
 	forgetMyKey,
+	formatRegistryError,
 	listMyKeys,
 	registryFetchEscrow,
 	registryHealth,
@@ -66,11 +70,14 @@ import {
 import { KEYBASE_USERNAME_RE } from "@/lib/constants";
 import { lookupKeybaseUsersClient } from "@/lib/pgp/keybase";
 import {
+	describePublicKey,
 	formatFingerprint,
+	formatKeyDate,
 	generateKeyPair,
 	validateArmoredKey,
 	type AnyKeyInfo,
 } from "@/lib/pgp/pgp";
+import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { CopyButton } from "@/components/pgp/shared";
 
@@ -446,7 +453,7 @@ function EncryptorSource({
 				info: generated.info,
 			});
 		} catch (e) {
-			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			setError(formatRegistryError(e, (e as Error).message));
 			// Turnstile tokens are single-use — mint a fresh challenge.
 			setTsToken(null);
 			setTsAttempt((a) => a + 1);
@@ -695,7 +702,7 @@ function KeybaseSource({
 				`keybase.io/${found.username}`,
 			);
 		} catch (e) {
-			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			setError(formatRegistryError(e, (e as Error).message));
 			// Turnstile tokens are single-use — mint a fresh challenge.
 			setTsToken(null);
 			setTsAttempt((a) => a + 1);
@@ -899,7 +906,7 @@ function LocalSource({
 				});
 			}
 		} catch (e) {
-			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			setError(formatRegistryError(e, (e as Error).message));
 			// Turnstile tokens are single-use — mint a fresh challenge.
 			setTsToken(null);
 			setTsAttempt((a) => a + 1);
@@ -1061,6 +1068,183 @@ function detectQueryKind(raw: string): "fingerprint" | "keyId" | "email" | null 
 	return null;
 }
 
+/** Human names for openpgp algorithm ids (see openpgp.enums.publicKey). */
+function prettyAlgorithm(algorithm: string, curve: string | null): string {
+	const algoNames: Record<string, string> = {
+		rsaEncryptSign: "RSA",
+		rsaEncrypt: "RSA",
+		rsaSign: "RSA",
+		eddsaLegacy: "EdDSA",
+		ecdsa: "ECDSA",
+		ecdh: "ECDH",
+		elgamal: "ElGamal",
+		dsa: "DSA",
+		ed25519: "Ed25519",
+		x25519: "X25519",
+		x448: "X448",
+	};
+	const curveNames: Record<string, string> = {
+		ed25519Legacy: "Ed25519",
+		ed25519: "Ed25519",
+		curve25519Legacy: "Curve25519",
+		curve25519: "Curve25519",
+		nistP256: "NIST P-256",
+		nistP384: "NIST P-384",
+		nistP521: "NIST P-521",
+		brainpoolP256r1: "Brainpool P-256",
+		brainpoolP384r1: "Brainpool P-384",
+		brainpoolP512r1: "Brainpool P-512",
+		secp256k1: "secp256k1",
+	};
+	const a = algoNames[algorithm] ?? algorithm;
+	const c = curve ? (curveNames[curve] ?? curve) : null;
+	// "EdDSA · Ed25519" is redundant — the curve alone is the conventional name.
+	if (c && a === "EdDSA" && c === "Ed25519") return c;
+	return c ? `${a} \u00b7 ${c}` : a;
+}
+
+interface LookupKeyMeta {
+	algoLabel: string;
+	bits: number | null;
+	created: Date | null;
+	expires: Date | null;
+	identities: number;
+	subkeys: number;
+}
+
+/** Best-effort client-side key parse; one malformed row never blocks results. */
+async function describeKeyMeta(armored: string): Promise<LookupKeyMeta | null> {
+	try {
+		const info = await describePublicKey(armored);
+		const subkeys = (info as { subkeyDetails?: unknown[] }).subkeyDetails?.length ?? 0;
+		return {
+			algoLabel: prettyAlgorithm(info.algorithm, info.curve ?? null),
+			bits: info.bitSize ?? null,
+			created:
+				info.creationTime instanceof Date && !Number.isNaN(info.creationTime.getTime())
+					? info.creationTime
+					: null,
+			expires: info.expirationTime,
+			identities: info.userIDs.length,
+			subkeys,
+		};
+	} catch {
+		return null;
+	}
+}
+
+const EXPIRY_SOON_MS = 30 * 24 * 60 * 60 * 1000;
+
+function KeyMetaBadges({ meta }: { meta: LookupKeyMeta }) {
+	const now = Date.now();
+	const expiresSoon = meta.expires != null && meta.expires.getTime() - now < EXPIRY_SOON_MS;
+	const expired = meta.expires != null && meta.expires.getTime() <= now;
+	return (
+		<div className="flex flex-wrap items-center gap-1.5">
+			<Badge
+				variant="outline"
+				className="border-violet-500/40 bg-violet-500/5 text-[10px] font-medium text-violet-700 dark:border-violet-400/30 dark:text-violet-300"
+				title="Primary key algorithm"
+			>
+				<KeyRound aria-hidden="true" className="mr-1 inline size-3" />
+				{meta.algoLabel}
+				{meta.bits ? ` \u00b7 ${meta.bits}-bit` : ""}
+			</Badge>
+			{expired ? (
+				<Badge
+					variant="destructive"
+					className="text-[10px]"
+					title="This key expired — treat it as untrusted"
+				>
+					<Clock aria-hidden="true" className="mr-1 inline size-3" />
+					expired {meta.expires ? formatKeyDate(meta.expires) : ""}
+				</Badge>
+			) : expiresSoon ? (
+				<Badge
+					variant="outline"
+					className="border-amber-500/50 bg-amber-500/5 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+					title="This key expires within 30 days"
+				>
+					<Clock aria-hidden="true" className="mr-1 inline size-3" />
+					expires {meta.expires ? formatKeyDate(meta.expires) : ""}
+				</Badge>
+			) : meta.expires ? (
+				<Badge variant="outline" className="text-[10px] text-muted-foreground">
+					<Clock aria-hidden="true" className="mr-1 inline size-3" />
+					expires {meta.expires ? formatKeyDate(meta.expires) : ""}
+				</Badge>
+			) : null}
+			<Badge
+				variant="outline"
+				className="text-[10px] text-muted-foreground"
+				title="User identities bound to this key"
+			>
+				<UserRound aria-hidden="true" className="mr-1 inline size-3" />
+				{meta.identities} identit{meta.identities === 1 ? "y" : "ies"}
+			</Badge>
+			<Badge
+				variant="outline"
+				className="text-[10px] text-muted-foreground"
+				title="Encryption subkeys"
+			>
+				<Layers aria-hidden="true" className="mr-1 inline size-3" />
+				{meta.subkeys} subke{meta.subkeys === 1 ? "y" : "ys"}
+			</Badge>
+		</div>
+	);
+}
+
+function PgpWordsPanel({ fingerprint }: { fingerprint: string }) {
+	let words: string[] | null = null;
+	try {
+		words = fingerprintToPgpWords(fingerprint);
+	} catch {
+		return null;
+	}
+	const spoken = words; // canonical case comes straight from the tables
+	return (
+		<details className="group/words mt-2">
+			<summary className="flex cursor-pointer list-none items-center gap-1.5 select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">
+				<AudioLines
+					aria-hidden="true"
+					className="size-3.5 transition-transform group-open/words:rotate-90"
+				/>
+				Verify aloud (PGP words)
+			</summary>
+			<div className="mt-1.5 space-y-1.5 rounded-lg border border-dashed bg-gradient-to-br from-background to-muted/40 p-2.5">
+				<p className="text-[10px] leading-snug text-muted-foreground">
+					Read these 20 words to the key owner over a call — the alternating even/odd lists expose
+					transposed, duplicated, or skipped words, defeating MITM key swaps.
+				</p>
+				<div className="grid grid-cols-2 gap-1 sm:grid-cols-4" data-testid="pgp-words-grid">
+					{spoken.map((w, i) => (
+						<span
+							key={`${w}-${i}`}
+							data-testid="pgp-word"
+							data-word-index={i + 1}
+							className={
+								i % 2 === 0
+									? "rounded border border-violet-500/25 bg-violet-500/5 px-1.5 py-0.5 text-center font-mono text-[10px] text-violet-700 dark:text-violet-300"
+									: "rounded border border-teal-500/25 bg-teal-500/5 px-1.5 py-0.5 text-center font-mono text-[10px] text-teal-700 dark:text-teal-300"
+							}
+						>
+							<span className="mr-1 text-muted-foreground/70">{i + 1}</span>
+							{w}
+						</span>
+					))}
+				</div>
+				<div className="flex justify-end">
+					<CopyButton
+						text={spoken.join(" ")}
+						label="Copy words"
+						ariaLabel={`Copy PGP words for fingerprint ${fingerprint}`}
+					/>
+				</div>
+			</div>
+		</details>
+	);
+}
+
 function RegistryLookup() {
 	const [query, setQuery] = useState("");
 	const [loading, setLoading] = useState(false);
@@ -1069,8 +1253,11 @@ function RegistryLookup() {
 				fingerprint: string;
 				armored: string;
 				revoked: boolean;
+				revokedAt: number | null;
 				revokeReason: string | null;
 				createdAt: number;
+				updatedAt: number;
+				meta: LookupKeyMeta | null;
 		  }[]
 		| null
 	>(null);
@@ -1093,9 +1280,14 @@ function RegistryLookup() {
 						? { fingerprint: clean }
 						: { keyId: clean },
 			);
-			setResults(keys);
+			// Enrich rows with a client-side parse of the armored key (algorithm,
+			// expiry, identities, subkeys). Promise.all keeps result order stable.
+			const rows = await Promise.all(
+				keys.map(async (k) => ({ ...k, meta: await describeKeyMeta(k.armored) })),
+			);
+			setResults(rows);
 		} catch (e) {
-			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			setError(formatRegistryError(e, "Lookup failed"));
 		} finally {
 			setLoading(false);
 		}
@@ -1146,7 +1338,7 @@ function RegistryLookup() {
 						<p className="text-[11px] text-muted-foreground" aria-live="polite">
 							{results.length.toLocaleString()} key{results.length === 1 ? "" : "s"} found
 						</p>
-						<ul className="scrollbar-thin max-h-64 space-y-2 overflow-y-auto pr-1">
+						<ul className="scrollbar-thin max-h-96 space-y-2 overflow-y-auto pr-1">
 							{results.map((k) => (
 								<li
 									key={k.fingerprint}
@@ -1167,7 +1359,7 @@ function RegistryLookup() {
 											</Badge>
 										)}
 										<span className="ml-auto text-muted-foreground">
-											{new Date(k.createdAt * 1000).toLocaleDateString()}
+											published {new Date(k.createdAt * 1000).toLocaleDateString()}
 										</span>
 										<CopyButton
 											text={k.fingerprint}
@@ -1175,6 +1367,12 @@ function RegistryLookup() {
 											ariaLabel={`Copy fingerprint ${k.fingerprint}`}
 										/>
 									</div>
+									{k.meta && (
+										<div className="mt-2">
+											<KeyMetaBadges meta={k.meta} />
+										</div>
+									)}
+									<PgpWordsPanel fingerprint={k.fingerprint} />
 									<details className="mt-2">
 										<summary className="cursor-pointer select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">
 											Show armored public key
@@ -1252,9 +1450,9 @@ function RestoreEscrow({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => v
 			setError(
 				message.includes("checksum") || message.includes("passphrase")
 					? "Wrong passphrase for this escrowed key."
-					: e instanceof RegistryClientError
-						? e.message
-						: message,
+					: message.includes("Wrong passphrase")
+						? message
+						: formatRegistryError(e, message),
 			);
 		} finally {
 			setBusy(false);
@@ -1346,7 +1544,7 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 			setRevokeTarget(null);
 			onChanged();
 		} catch (e) {
-			setError(e instanceof RegistryClientError ? e.message : (e as Error).message);
+			setError(formatRegistryError(e, (e as Error).message));
 		} finally {
 			setBusy(false);
 		}

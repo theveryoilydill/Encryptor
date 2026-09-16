@@ -49,11 +49,37 @@ export interface MyRegistryKey {
 /** Thrown for non-2xx registry responses; carries the server's error text. */
 export class RegistryClientError extends Error {
 	status: number;
-	constructor(message: string, status: number) {
+	/** Seconds until the rate-limit window rolls over (429s only, from
+	 *  the server's Retry-After header); null for every other status. */
+	retryAfterSeconds: number | null;
+	constructor(message: string, status: number, retryAfterSeconds: number | null = null) {
 		super(message);
 		this.name = "RegistryClientError";
 		this.status = status;
+		this.retryAfterSeconds = retryAfterSeconds;
 	}
+}
+
+/**
+ * Human-friendly message for any registry failure. Rate-limited requests
+ * surface the exact retry horizon ("resets in 42s") instead of an opaque
+ * "try again later", and cap the precision to keep the UI calm.
+ */
+export function formatRegistryError(e: unknown, fallback: string): string {
+	if (e instanceof RegistryClientError) {
+		if (e.status === 429 && e.retryAfterSeconds != null) {
+			const s = e.retryAfterSeconds;
+			const when =
+				s < 90
+					? `resets in ${s}s`
+					: s < 3600
+						? `resets in ${Math.ceil(s / 60)} min`
+						: `resets in ${Math.ceil(s / 3600)} h`;
+			return `${e.message} (${when}).`;
+		}
+		return e.message;
+	}
+	return e instanceof Error ? e.message : fallback;
 }
 
 async function parseJson(res: Response): Promise<Record<string, unknown>> {
@@ -68,7 +94,14 @@ async function expectOk(res: Response, fallback: string): Promise<Record<string,
 	const body = await parseJson(res);
 	if (!res.ok) {
 		const message = typeof body.error === "string" ? body.error : fallback;
-		throw new RegistryClientError(message, res.status);
+		// 429s carry Retry-After (seconds) so the UI can show a live
+		// back-off horizon instead of a dead end.
+		const retryHeader = res.headers.get("Retry-After");
+		const retryAfterSeconds =
+			res.status === 429 && retryHeader && /^\d{1,6}$/.test(retryHeader)
+				? Number(retryHeader)
+				: null;
+		throw new RegistryClientError(message, res.status, retryAfterSeconds);
 	}
 	return body;
 }

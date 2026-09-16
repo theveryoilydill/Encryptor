@@ -9,6 +9,7 @@ import {
 	nowSeconds,
 	randomHex,
 	rateLimitSafe,
+	tooManyRequests,
 	sha256Hex,
 } from "@/lib/registry/db";
 import {
@@ -52,17 +53,16 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"publish",
-				clientIP(req),
-				LIMITS.registryPublishLimit,
-				LIMITS.registryPublishWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many publish requests — try again later", 429);
+		const gate = await rateLimitSafe(
+			db,
+			"publish",
+			clientIP(req),
+			LIMITS.registryPublishLimit,
+			LIMITS.registryPublishWindowSec,
+			false,
+		);
+		if (!gate.allowed) {
+			throw tooManyRequests("Too many publish requests — try again later", gate.retryAfterSeconds);
 		}
 
 		const body = await readJsonBody(req);

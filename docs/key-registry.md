@@ -119,6 +119,22 @@ offline backup's.
 | `/api/registry/private-key`                          | POST   | key-signed challenge               | store (`encryptedPrivate`) or delete the escrow; nonce consumed atomically; revoked records refuse escrow writes                                                                                                                      |
 | `/api/registry/revoke`                               | POST   | token OR signed challenge OR admin | permanent; token path works without the private key; purges the escrow                                                                                                                                                                |
 
+Every registry route is rate limited per-IP with fixed windows. A denied
+request returns **429** with an accurate `Retry-After` header (seconds until
+the window rolls over) and a matching numeric `retryAfter` field in the JSON
+body, so clients can back off precisely instead of polling. The browser
+client (`formatRegistryError`) surfaces this as "resets in 42s" in the UI.
+
+### Verifying fingerprints aloud (PGP word list)
+
+Lookup results can render the fingerprint as its **PGP words** (the
+"biometric word list", Zimmermann/Juola 1995): 20 words, alternating between
+the even- and odd-offset tables, with canonical capitalization preserved
+(proper nouns like `Pluto` / `Istanbul` / `Dupont` stay capitalized). Read
+the words to the key owner over a voice channel — the two alternating lists
+detect transposed, duplicated, and skipped words, which defeats MitM key
+substitution during out-of-band verification.
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.

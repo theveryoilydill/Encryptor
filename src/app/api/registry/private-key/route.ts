@@ -7,6 +7,7 @@ import {
 	getRegistryDBReady,
 	nowSeconds,
 	rateLimitSafe,
+	tooManyRequests,
 } from "@/lib/registry/db";
 import {
 	normalizeFingerprint,
@@ -39,17 +40,19 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"private-key",
-				clientIP(req),
-				LIMITS.registryPrivateKeyLimit,
-				LIMITS.registryPrivateKeyWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many private-key requests — try again later", 429);
+		const gate = await rateLimitSafe(
+			db,
+			"private-key",
+			clientIP(req),
+			LIMITS.registryPrivateKeyLimit,
+			LIMITS.registryPrivateKeyWindowSec,
+			false,
+		);
+		if (!gate.allowed) {
+			throw tooManyRequests(
+				"Too many private-key requests — try again later",
+				gate.retryAfterSeconds,
+			);
 		}
 
 		const body = await readJsonBody(req);
@@ -157,17 +160,19 @@ export async function GET(req: NextRequest) {
 		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
 
 		const db = await getRegistryDBReady();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"private-key-read",
-				clientIP(req),
-				LIMITS.registryPrivateKeyLimit,
-				LIMITS.registryPrivateKeyWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many private-key requests — try again later", 429);
+		const gate = await rateLimitSafe(
+			db,
+			"private-key-read",
+			clientIP(req),
+			LIMITS.registryPrivateKeyLimit,
+			LIMITS.registryPrivateKeyWindowSec,
+			false,
+		);
+		if (!gate.allowed) {
+			throw tooManyRequests(
+				"Too many private-key requests — try again later",
+				gate.retryAfterSeconds,
+			);
 		}
 
 		const row = await db

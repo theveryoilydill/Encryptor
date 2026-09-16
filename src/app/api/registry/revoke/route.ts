@@ -8,6 +8,7 @@ import {
 	getRegistryDBReady,
 	nowSeconds,
 	rateLimitSafe,
+	tooManyRequests,
 	sha256Hex,
 	timingSafeHexEqual,
 } from "@/lib/registry/db";
@@ -49,17 +50,16 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"revoke",
-				clientIP(req),
-				LIMITS.registryRevokeLimit,
-				LIMITS.registryRevokeWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many revoke requests — try again later", 429);
+		const gate = await rateLimitSafe(
+			db,
+			"revoke",
+			clientIP(req),
+			LIMITS.registryRevokeLimit,
+			LIMITS.registryRevokeWindowSec,
+			false,
+		);
+		if (!gate.allowed) {
+			throw tooManyRequests("Too many revoke requests — try again later", gate.retryAfterSeconds);
 		}
 
 		const body = await readJsonBody(req);

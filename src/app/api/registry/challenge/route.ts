@@ -8,6 +8,7 @@ import {
 	nowSeconds,
 	randomHex,
 	rateLimitSafe,
+	tooManyRequests,
 } from "@/lib/registry/db";
 import { challengeMessage, normalizeFingerprint } from "@/lib/registry/keys";
 import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
@@ -27,17 +28,19 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"challenge",
-				clientIP(req),
-				LIMITS.registryChallengeLimit,
-				LIMITS.registryChallengeWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many challenge requests — try again later", 429);
+		const gate = await rateLimitSafe(
+			db,
+			"challenge",
+			clientIP(req),
+			LIMITS.registryChallengeLimit,
+			LIMITS.registryChallengeWindowSec,
+			false,
+		);
+		if (!gate.allowed) {
+			throw tooManyRequests(
+				"Too many challenge requests — try again later",
+				gate.retryAfterSeconds,
+			);
 		}
 
 		const url = new URL(req.url);

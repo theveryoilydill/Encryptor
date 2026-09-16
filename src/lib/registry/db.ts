@@ -45,11 +45,32 @@ export interface RegistryEnv {
 /** Fail with a stable HTTP status the routes can pass through. */
 export class RegistryError extends Error {
 	status: number;
+	/** For 429s: seconds until the rate-limit window rolls over. Emitted as
+	 *  the Retry-After response header so clients can back off precisely. */
+	retryAfterSeconds?: number;
 	constructor(message: string, status: number) {
 		super(message);
 		this.name = "RegistryError";
 		this.status = status;
 	}
+}
+
+/**
+ * Build a 429 RegistryError carrying the retry horizon. The server turns
+ * this into a Retry-After header; the browser client surfaces it so users
+ * see "resets in 42s" instead of an opaque "try again later".
+ */
+export function tooManyRequests(message: string, retryAfterSeconds: number): RegistryError {
+	const err = new RegistryError(message, 429);
+	err.retryAfterSeconds = Math.max(1, Math.ceil(retryAfterSeconds));
+	return err;
+}
+
+/** Outcome of a rate-limit check, with the retry horizon when denied. */
+export interface RateLimitOutcome {
+	allowed: boolean;
+	/** Seconds until the current window rolls over (>=1 when denied). */
+	retryAfterSeconds: number;
 }
 
 /** Development-only fallback salt — NEVER used in production builds. */
@@ -141,9 +162,11 @@ export function nowSeconds(): number {
 }
 
 /**
- * Fixed-window rate limiter backed by D1. Returns true when the action is
- * allowed. The bucket key is a salted hash of action+IP+window so raw IPs
- * never reach the database and buckets are unlinkable across windows.
+ * Fixed-window rate limiter backed by D1. Returns the outcome plus the
+ * retry horizon (seconds until the window rolls over) so 429 responses
+ * can carry an accurate Retry-After. The bucket key is a salted hash of
+ * action+IP+window so raw IPs never reach the database and buckets are
+ * unlinkable across windows.
  */
 export async function rateLimit(
 	db: D1DatabaseLike,
@@ -151,10 +174,11 @@ export async function rateLimit(
 	ip: string,
 	limit: number,
 	windowSeconds: number,
-): Promise<boolean> {
+): Promise<RateLimitOutcome> {
 	const window = Math.floor(Date.now() / 1000 / windowSeconds);
 	const bucket = await sha256Hex(`${getSalt()}|${action}|${ip}|${window}`);
 	const resetAt = (window + 1) * windowSeconds;
+	const retryAfter = Math.max(1, resetAt - nowSeconds());
 	// Read-first: over-limit requests cost one indexed read and ZERO
 	// writes, so abuse cannot exhaust the daily D1 write quota via the
 	// limiter itself.
@@ -162,7 +186,7 @@ export async function rateLimit(
 		.prepare("SELECT count FROM registry_rate WHERE bucket = ?1")
 		.bind(bucket)
 		.first<{ count: number }>();
-	if (existing && existing.count >= limit) return false;
+	if (existing && existing.count >= limit) return { allowed: false, retryAfterSeconds: retryAfter };
 	const stmt = db
 		.prepare(
 			`INSERT INTO registry_rate (bucket, count, reset_at) VALUES (?1, 1, ?2)
@@ -171,12 +195,12 @@ export async function rateLimit(
 		)
 		.bind(bucket, resetAt);
 	const row = await stmt.first<{ count: number }>();
-	if ((row?.count ?? 0) > limit) return false;
+	if ((row?.count ?? 0) > limit) return { allowed: false, retryAfterSeconds: retryAfter };
 	// Opportunistic cleanup: ~2% of calls purge expired windows (indexed).
 	if (Math.random() < 0.02) {
 		await db.prepare("DELETE FROM registry_rate WHERE reset_at < ?1").bind(nowSeconds()).run();
 	}
-	return true;
+	return { allowed: true, retryAfterSeconds: 0 };
 }
 
 /**
@@ -192,12 +216,12 @@ export async function rateLimitSafe(
 	limit: number,
 	windowSeconds: number,
 	failOpen: boolean,
-): Promise<boolean> {
+): Promise<RateLimitOutcome> {
 	try {
 		return await rateLimit(db, action, ip, limit, windowSeconds);
 	} catch (e) {
 		console.error(`[registry] rate limiter unavailable (${action}):`, e);
-		return failOpen;
+		return { allowed: failOpen, retryAfterSeconds: 0 };
 	}
 }
 

@@ -34,6 +34,15 @@ export function registryErrorResponse(e: unknown, cors = false): NextResponse {
 	const headers: Record<string, string> = { "Cache-Control": "no-store" };
 	if (cors) headers["Access-Control-Allow-Origin"] = "*";
 	if (e instanceof RegistryError) {
+		// 429s carry an accurate Retry-After so well-behaved clients can
+		// back off until the window actually rolls over (RFC 9110 §10.2.3).
+		if (e.status === 429 && e.retryAfterSeconds && e.retryAfterSeconds > 0) {
+			headers["Retry-After"] = String(Math.ceil(e.retryAfterSeconds));
+			return NextResponse.json(
+				{ error: e.message, retryAfter: Math.ceil(e.retryAfterSeconds) },
+				{ status: e.status, headers },
+			);
+		}
 		return NextResponse.json({ error: e.message }, { status: e.status, headers });
 	}
 	// Unexpected errors must be observable — log before the generic 500.

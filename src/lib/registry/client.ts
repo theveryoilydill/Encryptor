@@ -51,6 +51,10 @@ export interface MyRegistryKey {
 	algo?: string;
 	/** Last local change to this record (publish/replace/escrow update). */
 	updatedAt?: number;
+	/** Primary-key expiration (epoch ms) captured at publish/refresh time
+	 *  so the list can badge expiring/expired keys without re-parsing
+	 *  armor. Absent = unknown or no expiration. */
+	expiresAt?: number;
 }
 
 /** Thrown for non-2xx registry responses; carries the server's error text. */
@@ -153,6 +157,11 @@ export async function registryPublish(input: {
 	encryptedPrivate?: string;
 	/** Cloudflare Turnstile token; required on deployments that enforce it. */
 	turnstileToken?: string;
+	/** Possession proof for REPLACING an already-published fingerprint:
+	 *  nonce from GET /api/registry/challenge + cleartext signature of the
+	 *  canonical challenge message made with the stored key's private half. */
+	nonce?: string;
+	signature?: string;
 }): Promise<RegistryPublishResult> {
 	const res = await fetch("/api/registry/publish", {
 		method: "POST",
@@ -161,6 +170,7 @@ export async function registryPublish(input: {
 			armored: input.armored,
 			...(input.encryptedPrivate ? { encryptedPrivate: input.encryptedPrivate } : {}),
 			...(input.turnstileToken ? { turnstileToken: input.turnstileToken } : {}),
+			...(input.nonce && input.signature ? { nonce: input.nonce, signature: input.signature } : {}),
 		}),
 	});
 	const body = await expectOk(res, "Publish failed");
@@ -343,7 +353,14 @@ export function updateMyKey(
 	patch: Partial<
 		Pick<
 			MyRegistryKey,
-			"escrowed" | "revocationToken" | "label" | "algo" | "updatedAt" | "keyId" | "emails"
+			| "escrowed"
+			| "revocationToken"
+			| "label"
+			| "algo"
+			| "updatedAt"
+			| "keyId"
+			| "emails"
+			| "expiresAt"
 		>
 	>,
 ): void {

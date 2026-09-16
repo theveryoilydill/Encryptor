@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+	ArrowDownUp,
 	AudioLines,
 	Clock,
 	ChevronDown,
@@ -62,6 +63,7 @@ import {
 	type MyKeyAuditOutcome,
 	type MyRegistryKey,
 	type ParsedBackup,
+	RegistryClientError,
 	type RegistryHealth,
 	type RestoreReport,
 	auditMyKeysOnRegistry,
@@ -72,6 +74,7 @@ import {
 	mergeMyKeys,
 	parseKeysBackup,
 	previewRestore,
+	registryChallenge,
 	registryFetchEscrow,
 	registryHealth,
 	registryLookup,
@@ -79,6 +82,7 @@ import {
 	registryRevokeByToken,
 	registryAdminRevoke,
 	rememberMyKey,
+	signChallenge,
 	updateMyKey,
 } from "@/lib/registry/client";
 import {
@@ -184,6 +188,22 @@ interface PublishOutcome {
 	escrowed: boolean;
 	/** Human algorithm label for the local my-keys list badge. */
 	algo?: string;
+	/** Primary-key expiration (epoch ms) for the local expiry badges. */
+	expiresAt?: number;
+	/** Set by KeysTab when this replace left a previously stored escrow
+	 *  behind (it predates the new key version — restoring it would
+	 *  hand back stale key material). */
+	escrowLag?: boolean;
+}
+
+/**
+ * True when a publish bounced because the fingerprint is already on the
+ * registry and the request carried no possession proof (nonce + signature).
+ * The UI offers to sign the challenge automatically when it holds the
+ * private key — the server requires this for ANY replacement.
+ */
+function isAlreadyPublishedError(e: unknown): boolean {
+	return e instanceof RegistryClientError && e.status === 409 && /already exists/i.test(e.message);
 }
 
 /** Status chip — probes /api/registry/health (which also self-migrates a
@@ -266,16 +286,27 @@ export function KeysTab({
 
 	const handlePublished = useCallback(
 		(result: PublishOutcome, label: string) => {
-			setOutcome(result);
+			// Compare against the LOCAL record before overwriting it:
+			// a replace that omits escrow KEEPS the stored backup
+			// server-side (it now lags — flag the drift), and a
+			// replace never returns a new revocation token (the old
+			// one stays authoritative — carry it forward so the
+			// offline safety net survives the update).
+			const prior = listMyKeys().find(
+				(k) => k.fingerprint.toLowerCase() === result.fingerprint.toLowerCase(),
+			);
+			const escrowLag = Boolean(result.replaced && prior?.escrowed && !result.escrowed);
+			setOutcome({ ...result, escrowLag });
 			rememberMyKey({
 				fingerprint: result.fingerprint,
 				keyId: result.keyId,
 				emails: result.emails,
 				label,
-				publishedAt: Date.now(),
-				revocationToken: result.revocationToken,
-				escrowed: result.escrowed,
-				algo: result.algo,
+				publishedAt: result.replaced && prior ? prior.publishedAt : Date.now(),
+				revocationToken: result.revocationToken ?? prior?.revocationToken,
+				escrowed: result.escrowed || Boolean(prior?.escrowed),
+				algo: result.algo ?? prior?.algo,
+				expiresAt: result.expiresAt ?? prior?.expiresAt,
 				updatedAt: Date.now(),
 			});
 			refreshMyKeys();
@@ -384,6 +415,37 @@ function PublishOutcomeCard({ outcome }: { outcome: PublishOutcome }) {
 						<span className="text-muted-foreground">{outcome.emails.join(", ")}</span>
 					)}
 				</div>
+				{outcome.escrowLag && (
+					<Alert className="border-amber-300/70 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/30">
+						<TriangleAlert
+							aria-hidden="true"
+							className="size-4 text-amber-700 dark:text-amber-400"
+						/>
+						<AlertDescription
+							className="text-xs text-amber-900 dark:text-amber-200"
+							data-testid="publish-escrow-lag"
+						>
+							This replace did not include an escrowed backup — the stored private-key backup now
+							predates the key version on the registry. Re-publish with escrow checked to refresh
+							it.
+						</AlertDescription>
+					</Alert>
+				)}
+				{outcome.replaced && outcome.escrowed && (
+					<Alert className="border-emerald-300/70 bg-emerald-50/60 dark:border-emerald-900/50 dark:bg-emerald-950/20">
+						<ShieldCheck
+							aria-hidden="true"
+							className="size-4 text-emerald-600 dark:text-emerald-400"
+						/>
+						<AlertDescription
+							className="text-xs text-emerald-900 dark:text-emerald-200"
+							data-testid="publish-escrow-refreshed"
+						>
+							Escrowed private-key backup refreshed — the registry now holds the current key
+							version.
+						</AlertDescription>
+					</Alert>
+				)}
 				{outcome.revocationToken && (
 					<Alert className="border-amber-300/70 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/30">
 						<TriangleAlert
@@ -435,6 +497,12 @@ function EncryptorSource({
 	const [error, setError] = useState<string | null>(null);
 	const [tsToken, setTsToken] = useState<string | null>(null);
 	const [tsAttempt, setTsAttempt] = useState(0);
+	// Authorized replace: the publish bounced with "already exists" —
+	// offer to prove possession by signing a challenge with the key the
+	// user just generated (passphrase is still in component state).
+	const [replaceNeeded, setReplaceNeeded] = useState(false);
+	const [replacing, setReplacing] = useState(false);
+	const [replaceError, setReplaceError] = useState<string | null>(null);
 
 	const passphaseTooWeak = passphrase.length > 0 && passphrase.length < 8;
 	const canGenerate =
@@ -444,6 +512,8 @@ function EncryptorSource({
 		setError(null);
 		setGenerating(true);
 		setGenerated(null);
+		setReplaceNeeded(false);
+		setReplaceError(null);
 		try {
 			const seconds = Number(expiry) * 365 * 24 * 3600;
 			const pair = await generateKeyPair({
@@ -485,6 +555,9 @@ function EncryptorSource({
 					revocationToken: result.revocationToken,
 					escrowed: escrow,
 					algo: prettyAlgorithm(generated.info.algorithm, generated.info.curve ?? null),
+					expiresAt: generated.info.expirationTime
+						? generated.info.expirationTime.getTime()
+						: undefined,
 				},
 				generated.label,
 			);
@@ -495,7 +568,14 @@ function EncryptorSource({
 				info: generated.info,
 			});
 		} catch (e) {
-			setError(formatRegistryError(e, (e as Error).message));
+			if (isAlreadyPublishedError(e)) {
+				// This fingerprint is published — the fix is a signed
+				// replace, not a blind retry.
+				setReplaceNeeded(true);
+				setReplaceError(null);
+			} else {
+				setError(formatRegistryError(e, (e as Error).message));
+			}
 			// Turnstile tokens are single-use — mint a fresh challenge.
 			setTsToken(null);
 			setTsAttempt((a) => a + 1);
@@ -503,6 +583,69 @@ function EncryptorSource({
 			setPublishing(false);
 		}
 	}, [escrow, generated, onPublished, onUseKey, tsToken]);
+
+	// Fetch a challenge, sign it with the generated private key, and
+	// re-publish WITH the possession proof. Signing needs the passphrase
+	// entered above (it decrypts the secret material); a wrong one fails
+	// locally with an inline message and never reaches the network.
+	const handleReplace = useCallback(async () => {
+		if (!generated) return;
+		setReplacing(true);
+		setReplaceError(null);
+		try {
+			const challenge = await registryChallenge(generated.info.fingerprint);
+			const signature = await signChallenge(
+				generated.privateKey,
+				passphrase,
+				generated.info.fingerprint,
+				challenge.nonce,
+			);
+			const result = await registryPublish({
+				turnstileToken: tsToken ?? undefined,
+				armored: generated.publicKey,
+				encryptedPrivate: escrow ? generated.privateKey : undefined,
+				nonce: challenge.nonce,
+				signature,
+			});
+			setReplaceNeeded(false);
+			onPublished(
+				{
+					fingerprint: result.fingerprint,
+					keyId: result.keyId,
+					emails: result.emails,
+					replaced: result.replaced,
+					revocationToken: result.revocationToken,
+					escrowed: escrow,
+					algo: prettyAlgorithm(generated.info.algorithm, generated.info.curve ?? null),
+					expiresAt: generated.info.expirationTime
+						? generated.info.expirationTime.getTime()
+						: undefined,
+				},
+				generated.label,
+			);
+			onUseKey({
+				source: "generated",
+				label: generated.label,
+				encryptedArmored: generated.privateKey,
+				info: generated.info,
+			});
+		} catch (e) {
+			if (/passphrase|checksum|decrypt/i.test((e as Error).message)) {
+				setReplaceError(
+					"That passphrase doesn't unlock this private key — signing needs it decrypted.",
+				);
+			} else if (e instanceof RegistryClientError && e.status === 403) {
+				setReplaceError("Challenge invalid or expired — press Sign again to fetch a fresh one.");
+			} else {
+				setReplaceError(formatRegistryError(e, (e as Error).message));
+			}
+			// Nonces and Turnstile tokens are both single-use.
+			setTsToken(null);
+			setTsAttempt((a) => a + 1);
+		} finally {
+			setReplacing(false);
+		}
+	}, [escrow, generated, onPublished, onUseKey, passphrase, tsToken]);
 
 	return (
 		<Card>
@@ -660,6 +803,57 @@ function EncryptorSource({
 								private .asc
 							</Button>
 						</div>
+						{replaceNeeded && (
+							<div
+								data-testid="replace-panel"
+								className="animate-scale-in space-y-2 rounded-lg border border-amber-300/70 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-950/25"
+							>
+								<div className="flex items-center gap-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+									<ShieldAlert aria-hidden="true" className="size-3.5" />
+									Already on the registry — possession proof required
+								</div>
+								<p className="text-[11px] leading-snug text-amber-900/80 dark:text-amber-200/80">
+									This fingerprint is published, and replacing it needs a challenge signed with its
+									private key. Encryptor can sign it automatically with the key you just generated,
+									using the passphrase entered above.
+								</p>
+								{replaceError && (
+									<p className="text-[11px] text-red-700 dark:text-red-400" role="alert">
+										{replaceError}
+									</p>
+								)}
+								<div className="flex flex-wrap items-center gap-2">
+									<Button
+										type="button"
+										size="sm"
+										className="h-8 gap-1.5"
+										onClick={() => void handleReplace()}
+										disabled={replacing || (turnstileSiteKeyConfigured() && !tsToken)}
+										data-testid="replace-sign"
+									>
+										{replacing ? (
+											<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+										) : (
+											<KeyRound aria-hidden="true" className="size-3.5" />
+										)}
+										{replacing ? "Signing & replacing…" : "Sign challenge & replace"}
+									</Button>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="h-8"
+										onClick={() => {
+											setReplaceNeeded(false);
+											setReplaceError(null);
+										}}
+										data-testid="replace-dismiss"
+									>
+										Dismiss
+									</Button>
+								</div>
+							</div>
+						)}
 					</div>
 				)}
 
@@ -693,6 +887,9 @@ function KeybaseSource({
 	const [error, setError] = useState<string | null>(null);
 	const [tsToken, setTsToken] = useState<string | null>(null);
 	const [tsAttempt, setTsAttempt] = useState(0);
+	// Keybase keys are public-only: a replace is impossible from here.
+	// The panel just explains WHY instead of a dead retry button.
+	const [replaceNeeded, setReplaceNeeded] = useState(false);
 
 	const handleLookup = useCallback(async () => {
 		const clean = username.trim().toLowerCase();
@@ -745,7 +942,11 @@ function KeybaseSource({
 				`keybase.io/${found.username}`,
 			);
 		} catch (e) {
-			setError(formatRegistryError(e, (e as Error).message));
+			if (isAlreadyPublishedError(e)) {
+				setReplaceNeeded(true);
+			} else {
+				setError(formatRegistryError(e, (e as Error).message));
+			}
 			// Turnstile tokens are single-use — mint a fresh challenge.
 			setTsToken(null);
 			setTsAttempt((a) => a + 1);
@@ -822,6 +1023,22 @@ function KeybaseSource({
 							)}
 							{publishing ? "Publishing…" : "Publish to registry"}
 						</Button>
+						{replaceNeeded && (
+							<div
+								data-testid="replace-panel"
+								className="animate-scale-in space-y-2 rounded-lg border border-amber-300/70 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-950/25"
+							>
+								<div className="flex items-center gap-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+									<ShieldAlert aria-hidden="true" className="size-3.5" />
+									Already on the registry — possession proof required
+								</div>
+								<p className="text-[11px] leading-snug text-amber-900/80 dark:text-amber-200/80">
+									This fingerprint is published, and replacing it needs a challenge signed with its
+									private key. Keybase keys are public-only, so publish the replacement from a
+									device that holds the private key.
+								</p>
+							</div>
+						)}
 					</div>
 				)}
 
@@ -860,11 +1077,21 @@ function LocalSource({
 	const [error, setError] = useState<string | null>(null);
 	const [tsToken, setTsToken] = useState<string | null>(null);
 	const [tsAttempt, setTsAttempt] = useState(0);
+	// Authorized replace (possession proof). A LOCAL private key arrives
+	// already passphrase-encrypted with a passphrase this component does
+	// NOT know — the replace panel asks for it when signing is needed.
+	const [replaceNeeded, setReplaceNeeded] = useState(false);
+	const [replacing, setReplacing] = useState(false);
+	const [replaceError, setReplaceError] = useState<string | null>(null);
+	const [replacePass, setReplacePass] = useState("");
+	const [showReplacePass, setShowReplacePass] = useState(false);
 
 	const handleParse = useCallback(async () => {
 		setError(null);
 		setParsed(null);
 		setPlainPrivate(null);
+		setReplaceNeeded(false);
+		setReplaceError(null);
 		setChecking(true);
 		try {
 			const key = armored.trim();
@@ -940,6 +1167,7 @@ function LocalSource({
 					algo: parsed.info
 						? prettyAlgorithm(parsed.info.algorithm, parsed.info.curve ?? null)
 						: undefined,
+					expiresAt: parsed.info.expirationTime ? parsed.info.expirationTime.getTime() : undefined,
 				},
 				parsed.label,
 			);
@@ -952,7 +1180,12 @@ function LocalSource({
 				});
 			}
 		} catch (e) {
-			setError(formatRegistryError(e, (e as Error).message));
+			if (isAlreadyPublishedError(e)) {
+				setReplaceNeeded(true);
+				setReplaceError(null);
+			} else {
+				setError(formatRegistryError(e, (e as Error).message));
+			}
 			// Turnstile tokens are single-use — mint a fresh challenge.
 			setTsToken(null);
 			setTsAttempt((a) => a + 1);
@@ -960,6 +1193,76 @@ function LocalSource({
 			setPublishing(false);
 		}
 	}, [armored, escrow, onPublished, onUseKey, parsed, tsToken]);
+
+	// Signed replace for an already-published fingerprint. The private
+	// armor in the textarea is used verbatim (a public-only paste cannot
+	// sign — the panel explains that instead of offering the button).
+	const handleReplace = useCallback(async () => {
+		if (!parsed || !parsed.isPrivate) return;
+		if (replacePass.length === 0) {
+			setReplaceError("Enter this key's passphrase to sign the challenge.");
+			return;
+		}
+		setReplacing(true);
+		setReplaceError(null);
+		try {
+			let publicArmored = armored.trim();
+			let escrowBlob: string | undefined;
+			if (parsed.isPrivate) {
+				publicArmored = await publicFromPrivate(armored.trim());
+				escrowBlob = escrow ? armored.trim() : undefined;
+			}
+			const challenge = await registryChallenge(parsed.info.fingerprint);
+			const signature = await signChallenge(
+				armored.trim(),
+				replacePass,
+				parsed.info.fingerprint,
+				challenge.nonce,
+			);
+			const result = await registryPublish({
+				armored: publicArmored,
+				turnstileToken: tsToken ?? undefined,
+				encryptedPrivate: escrowBlob,
+				nonce: challenge.nonce,
+				signature,
+			});
+			setReplaceNeeded(false);
+			setReplacePass("");
+			onPublished(
+				{
+					fingerprint: result.fingerprint,
+					keyId: result.keyId,
+					emails: result.emails,
+					replaced: result.replaced,
+					revocationToken: result.revocationToken,
+					escrowed: Boolean(escrowBlob),
+					algo: prettyAlgorithm(parsed.info.algorithm, parsed.info.curve ?? null),
+					expiresAt: parsed.info.expirationTime ? parsed.info.expirationTime.getTime() : undefined,
+				},
+				parsed.label,
+			);
+			onUseKey({
+				source: "manual",
+				label: parsed.label,
+				encryptedArmored: armored.trim(),
+				info: parsed.info,
+			});
+		} catch (e) {
+			if (/passphrase|checksum|decrypt/i.test((e as Error).message)) {
+				setReplaceError(
+					"That passphrase doesn't unlock this private key — signing needs it decrypted.",
+				);
+			} else if (e instanceof RegistryClientError && e.status === 403) {
+				setReplaceError("Challenge invalid or expired — press Sign again to fetch a fresh one.");
+			} else {
+				setReplaceError(formatRegistryError(e, (e as Error).message));
+			}
+			setTsToken(null);
+			setTsAttempt((a) => a + 1);
+		} finally {
+			setReplacing(false);
+		}
+	}, [armored, escrow, onPublished, onUseKey, parsed, replacePass, tsToken]);
 
 	const canPublish =
 		parsed &&
@@ -1089,6 +1392,92 @@ function LocalSource({
 							)}
 							{publishing ? "Publishing…" : "Publish to registry"}
 						</Button>
+						{replaceNeeded && (
+							<div
+								data-testid="replace-panel"
+								className="animate-scale-in space-y-2 rounded-lg border border-amber-300/70 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-950/25"
+							>
+								<div className="flex items-center gap-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+									<ShieldAlert aria-hidden="true" className="size-3.5" />
+									Already on the registry — possession proof required
+								</div>
+								{parsed.isPrivate ? (
+									<>
+										<p className="text-[11px] leading-snug text-amber-900/80 dark:text-amber-200/80">
+											This fingerprint is published, and replacing it needs a challenge signed with
+											its private key. Enter this key's passphrase so Encryptor can sign the
+											challenge locally.
+										</p>
+										<div className="flex gap-1.5">
+											<Input
+												type={showReplacePass ? "text" : "password"}
+												value={replacePass}
+												onChange={(e) => setReplacePass(e.target.value)}
+												placeholder="This key's passphrase"
+												autoComplete="current-password"
+												className="h-11 min-w-0 flex-1 sm:h-9"
+												data-testid="replace-pass"
+											/>
+											<Button
+												type="button"
+												variant="outline"
+												size="icon"
+												aria-label={showReplacePass ? "Hide passphrase" : "Show passphrase"}
+												onClick={() => setShowReplacePass((v) => !v)}
+												className="size-11 shrink-0 sm:size-9"
+											>
+												{showReplacePass ? (
+													<EyeOff aria-hidden="true" className="size-4" />
+												) : (
+													<Eye aria-hidden="true" className="size-4" />
+												)}
+											</Button>
+										</div>
+										{replaceError && (
+											<p className="text-[11px] text-red-700 dark:text-red-400" role="alert">
+												{replaceError}
+											</p>
+										)}
+										<div className="flex flex-wrap items-center gap-2">
+											<Button
+												type="button"
+												size="sm"
+												className="h-8 gap-1.5"
+												onClick={() => void handleReplace()}
+												disabled={replacing || (turnstileSiteKeyConfigured() && !tsToken)}
+												data-testid="replace-sign"
+											>
+												{replacing ? (
+													<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+												) : (
+													<KeyRound aria-hidden="true" className="size-3.5" />
+												)}
+												{replacing ? "Signing & replacing…" : "Sign challenge & replace"}
+											</Button>
+											<Button
+												type="button"
+												variant="ghost"
+												size="sm"
+												className="h-8"
+												onClick={() => {
+													setReplaceNeeded(false);
+													setReplaceError(null);
+													setReplacePass("");
+												}}
+												data-testid="replace-dismiss"
+											>
+												Dismiss
+											</Button>
+										</div>
+									</>
+								) : (
+									<p className="text-[11px] leading-snug text-amber-900/80 dark:text-amber-200/80">
+										This entry holds only the PUBLIC key — a replace needs a signature from its
+										private key. Import the private key on a device that has it, then publish there.
+									</p>
+								)}
+							</div>
+						)}
 					</div>
 				)}
 
@@ -1180,6 +1569,54 @@ async function describeKeyMeta(armored: string): Promise<LookupKeyMeta | null> {
 }
 
 const EXPIRY_SOON_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Expiry badge for a my-keys row — null when the expiration is unknown.
+ *  Color language matches the lookup badges: red = expired (untrusted),
+ *  amber = expiring within 30 days (renew soon), muted = plenty of time. */
+function myKeyExpiryBadge(k: MyRegistryKey): {
+	label: string;
+	className: string;
+	title: string;
+	urgent: boolean;
+} | null {
+	if (!k.expiresAt) return null;
+	const msLeft = k.expiresAt - Date.now();
+	if (msLeft <= 0) {
+		return {
+			label: `expired ${new Date(k.expiresAt).toLocaleDateString()}`,
+			className:
+				"border-red-500/50 bg-red-500/10 text-[10px] text-red-700 dark:border-red-400/30 dark:text-red-300",
+			title: "This key has expired — generate a renewed key and replace this one",
+			urgent: true,
+		};
+	}
+	if (msLeft < EXPIRY_SOON_MS) {
+		const days = Math.floor(msLeft / 86_400_000);
+		return {
+			label: days < 1 ? "expires today" : days === 1 ? "expires tomorrow" : `expires in ${days}d`,
+			className:
+				"border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300",
+			title: "This key expires within 30 days — prepare a renewed key",
+			urgent: true,
+		};
+	}
+	return {
+		label: `expires ${new Date(k.expiresAt).toLocaleDateString()}`,
+		className: "text-[10px] text-muted-foreground",
+		title: "Primary-key expiration",
+		urgent: false,
+	};
+}
+
+/** Left accent border for rows whose key is expired / expiring soon —
+ *  makes urgent rows scannable in the list without reading any text. */
+function myKeyExpiryAccent(k: MyRegistryKey): string {
+	if (!k.expiresAt) return "";
+	const msLeft = k.expiresAt - Date.now();
+	if (msLeft <= 0) return "border-l-2 border-l-red-500/70 dark:border-l-red-400/50";
+	if (msLeft < EXPIRY_SOON_MS) return "border-l-2 border-l-amber-500/70 dark:border-l-amber-400/50";
+	return "";
+}
 
 function KeyMetaBadges({ meta }: { meta: LookupKeyMeta }) {
 	const now = Date.now();
@@ -1364,6 +1801,15 @@ function RegistryLookup({
 		[myKeys],
 	);
 	const [refreshingFpr, setRefreshingFpr] = useState<string | null>(null);
+	// "Only my keys" — a sticky client-side filter that hides lookup rows
+	// whose fingerprint is not in the local my-keys list. Sticky across
+	// searches so it behaves like a preference, not a one-shot toggle.
+	const [mineOnly, setMineOnly] = useState(false);
+	const visibleResults = useMemo(() => {
+		if (!results) return null;
+		if (!mineOnly) return results;
+		return results.filter((k) => mineMap.has(k.fingerprint.toLowerCase()));
+	}, [results, mineOnly, mineMap]);
 
 	const runSearch = useCallback(async (raw: string) => {
 		const kind = detectQueryKind(raw);
@@ -1472,6 +1918,9 @@ function RegistryLookup({
 					...(emails.length > 0 ? { emails } : {}),
 					...(info.algorithm ? { algo: prettyAlgorithm(info.algorithm, info.curve ?? null) } : {}),
 					updatedAt: k.updatedAt * 1000,
+					// Registry is the source of truth — re-derive the
+					// expiry (an undefined value clears a stale one).
+					expiresAt: info.expirationTime ? info.expirationTime.getTime() : undefined,
 				});
 				onMyKeysChanged();
 				toast({
@@ -1535,11 +1984,43 @@ function RegistryLookup({
 				)}
 				{results && results.length > 0 && (
 					<div className="space-y-1.5">
-						<p className="text-[11px] text-muted-foreground" aria-live="polite">
-							{results.length.toLocaleString()} key{results.length === 1 ? "" : "s"} found
-						</p>
+						<div className="flex flex-wrap items-center justify-between gap-1.5">
+							<p
+								className="text-[11px] text-muted-foreground"
+								aria-live="polite"
+								data-testid="lookup-count"
+							>
+								{mineOnly
+									? `${visibleResults?.length ?? 0} of ${results.length} shown · saved in your keys`
+									: `${results.length.toLocaleString()} key${results.length === 1 ? "" : "s"} found`}
+							</p>
+							<button
+								type="button"
+								aria-pressed={mineOnly}
+								onClick={() => setMineOnly((v) => !v)}
+								data-testid="keys-mine-filter"
+								title="Show only keys that are saved in your my-keys list"
+								className={`inline-flex h-6 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors ${
+									mineOnly
+										? "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:border-emerald-400/40 dark:text-emerald-300"
+										: "border-border text-muted-foreground hover:bg-muted"
+								}`}
+							>
+								<UserCheck aria-hidden="true" className="size-3" />
+								Only my keys
+							</button>
+						</div>
+						{mineOnly && visibleResults?.length === 0 && (
+							<div
+								data-testid="keys-mine-empty"
+								className="flex items-center justify-center gap-2 rounded-lg border border-dashed py-6 text-xs text-muted-foreground"
+							>
+								<UserCheck aria-hidden="true" className="size-3.5" />
+								None of these results are in your saved keys list.
+							</div>
+						)}
 						<ul className="scrollbar-thin max-h-96 space-y-2 overflow-y-auto pr-1">
-							{results.map((k) => {
+							{(visibleResults ?? []).map((k) => {
 								const mine = mineMap.get(k.fingerprint.toLowerCase());
 								const mineStamp = mine ? (mine.updatedAt ?? mine.publishedAt) : 0;
 								const mineStale = Boolean(mine && mineStamp < k.updatedAt * 1000 - 500);
@@ -1862,6 +2343,35 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 	} | null>(null);
 	const [restorePass, setRestorePass] = useState("");
 	const [restorePassError, setRestorePassError] = useState<string | null>(null);
+	// Lifecycle sorting: "recent" keeps publish order (default), "expiring"
+	// lifts soonest-expiring keys (expired first) to the top.
+	const [sort, setSort] = useState<"recent" | "expiring">("recent");
+	const sortedKeys = useMemo(() => {
+		if (sort === "recent") return keys;
+		return [...keys].sort((a, b) => {
+			const ea = a.expiresAt ?? Number.POSITIVE_INFINITY;
+			const eb = b.expiresAt ?? Number.POSITIVE_INFINITY;
+			if (ea !== eb) return ea - eb;
+			return b.publishedAt - a.publishedAt;
+		});
+	}, [keys, sort]);
+	// Header summary chips — counts only render when non-zero so the
+	// header stays calm for healthy lists.
+	const expiryCounts = useMemo(() => {
+		const now = Date.now();
+		let expiring = 0;
+		let expired = 0;
+		let escrowed = 0;
+		for (const k of keys) {
+			if (k.escrowed) escrowed += 1;
+			if (k.expiresAt) {
+				const msLeft = k.expiresAt - now;
+				if (msLeft <= 0) expired += 1;
+				else if (msLeft < EXPIRY_SOON_MS) expiring += 1;
+			}
+		}
+		return { expiring, expired, escrowed };
+	}, [keys]);
 
 	const exportStrength = useMemo(() => estimatePassphraseStrength(exportPass), [exportPass]);
 	const exportReady =
@@ -2077,15 +2587,86 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 		<Card>
 			<CardContent className="space-y-3 p-4">
 				<div className="flex flex-wrap items-center justify-between gap-2">
-					<div className="flex items-center gap-2">
+					<div className="flex flex-wrap items-center gap-2">
 						<h3 className="text-sm font-medium">Keys published from this device</h3>
 						{keys.length > 0 && (
 							<Badge variant="outline" className="font-mono text-[10px]">
 								{keys.length}
 							</Badge>
 						)}
+						{expiryCounts.escrowed > 0 && (
+							<Badge
+								variant="outline"
+								className="border-[#0055dc]/40 bg-[#0055dc]/5 text-[10px] text-[#0055dc] dark:border-[#5e94ff]/40 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff]"
+								title="Keys with an escrowed private-key backup on the registry"
+								data-testid="keys-summary-escrowed"
+							>
+								<Lock aria-hidden="true" className="mr-1 inline size-3" />
+								{expiryCounts.escrowed} escrowed
+							</Badge>
+						)}
+						{expiryCounts.expiring > 0 && (
+							<Badge
+								variant="outline"
+								className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+								title="Keys expiring within 30 days — prepare renewed versions"
+								data-testid="keys-summary-expiring"
+							>
+								<Clock aria-hidden="true" className="mr-1 inline size-3" />
+								{expiryCounts.expiring} expiring &le;30d
+							</Badge>
+						)}
+						{expiryCounts.expired > 0 && (
+							<Badge
+								variant="destructive"
+								className="text-[10px]"
+								title="Expired keys — replace them with renewed versions"
+								data-testid="keys-summary-expired"
+							>
+								<Clock aria-hidden="true" className="mr-1 inline size-3" />
+								{expiryCounts.expired} expired
+							</Badge>
+						)}
 					</div>
 					<div className="flex flex-wrap items-center gap-1.5">
+						{keys.length > 1 && (
+							<div
+								className="flex items-center overflow-hidden rounded-md border"
+								role="group"
+								aria-label="Sort keys"
+								data-testid="keys-sort"
+							>
+								<button
+									type="button"
+									aria-pressed={sort === "recent"}
+									onClick={() => setSort("recent")}
+									className={`inline-flex h-7 items-center gap-1 px-2.5 text-[11px] transition-colors ${
+										sort === "recent"
+											? "bg-[#0055dc]/10 font-medium text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+											: "text-muted-foreground hover:bg-muted"
+									}`}
+									data-testid="keys-sort-recent"
+								>
+									<ArrowDownUp aria-hidden="true" className="size-3" />
+									Recent first
+								</button>
+								<button
+									type="button"
+									aria-pressed={sort === "expiring"}
+									onClick={() => setSort("expiring")}
+									className={`inline-flex h-7 items-center gap-1 border-l px-2.5 text-[11px] transition-colors ${
+										sort === "expiring"
+											? "bg-amber-500/10 font-medium text-amber-700 dark:bg-amber-400/10 dark:text-amber-300"
+											: "border-l-border text-muted-foreground hover:bg-muted"
+									}`}
+									data-testid="keys-sort-expiring"
+									title="Soonest expiration first — expired keys top the list"
+								>
+									<Clock aria-hidden="true" className="size-3" />
+									Expiring first
+								</button>
+							</div>
+						)}
 						{keys.length > 0 && (
 							<Button
 								type="button"
@@ -2195,127 +2776,143 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 					</Alert>
 				)}
 				<ul className="scrollbar-thin max-h-72 space-y-2 overflow-y-auto pr-1">
-					{keys.map((k) => (
-						<li
-							key={k.fingerprint}
-							className="rounded-lg border bg-muted/30 p-3 text-xs transition-all duration-150 hover:border-[#0055dc]/35 hover:bg-muted/50 hover:shadow-sm dark:hover:border-[#5e94ff]/25"
-						>
-							<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-								<span className="max-w-full truncate font-medium">{k.label}</span>
-								{k.algo && (
-									<Badge
-										variant="outline"
-										className="border-violet-500/40 bg-violet-500/5 text-[10px] font-medium text-violet-700 dark:border-violet-400/30 dark:text-violet-300"
-										title="Primary key algorithm"
-									>
-										<KeyRound aria-hidden="true" className="mr-1 inline size-3" />
-										{k.algo}
-									</Badge>
-								)}
-								{k.escrowed && (
-									<Badge
-										variant="outline"
-										className="border-[#0055dc]/40 text-[10px] text-[#0055dc] dark:border-[#5e94ff]/40 dark:text-[#5e94ff]"
-									>
-										escrowed
-									</Badge>
-								)}
-								{audit[k.fingerprint] && (
-									<Badge
-										variant="outline"
-										className={auditBadgeProps(audit[k.fingerprint].outcome).className}
-										title={audit[k.fingerprint].detail}
-										data-testid="keys-audit-badge"
-									>
-										{auditBadgeProps(audit[k.fingerprint].outcome).label}
-									</Badge>
-								)}
-								{audit[k.fingerprint]?.escrowDrift && (
-									<Badge
-										variant="outline"
-										className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
-										title={
-											audit[k.fingerprint].escrowDrift === "outdated"
-												? "The escrowed private-key backup predates the current key version — restoring it would return an old key. Replace the key WITH escrow to refresh the backup."
-												: "The registry no longer holds the escrowed private-key backup for this key."
-										}
-										data-testid="keys-escrow-drift"
-									>
-										{audit[k.fingerprint].escrowDrift === "outdated"
-											? "escrow outdated"
-											: "escrow missing"}
-									</Badge>
-								)}
-								<span className="ml-auto text-muted-foreground">
-									published {new Date(k.publishedAt).toLocaleDateString()}
-									{k.updatedAt && k.updatedAt - k.publishedAt > 60_000
-										? ` · updated ${new Date(k.updatedAt).toLocaleDateString()}`
-										: ""}
-								</span>
-							</div>
-							<p className="mt-1 font-mono text-[11px] text-muted-foreground">
-								{formatFingerprint(k.fingerprint)}
-							</p>
-							<div className="mt-2 flex flex-wrap items-center gap-1.5">
-								<CopyButton
-									text={k.fingerprint}
-									label="Copy fpr"
-									ariaLabel={`Copy fingerprint ${k.fingerprint}`}
-								/>
-								<FingerprintQrButton fingerprint={k.fingerprint} />
-								{k.revocationToken && (
-									<>
-										<Button
-											type="button"
+					{sortedKeys.map((k) => {
+						const expiry = myKeyExpiryBadge(k);
+						return (
+							<li
+								key={k.fingerprint}
+								className={`rounded-lg border bg-muted/30 p-3 text-xs transition-all duration-150 hover:border-[#0055dc]/35 hover:bg-muted/50 hover:shadow-sm dark:hover:border-[#5e94ff]/25 ${myKeyExpiryAccent(k)}`}
+							>
+								<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+									<span className="max-w-full truncate font-medium">{k.label}</span>
+									{k.algo && (
+										<Badge
 											variant="outline"
-											size="sm"
-											className="h-9 gap-1.5 px-2.5 text-[11px] sm:h-7"
-											onClick={() => setRevealed(revealed === k.fingerprint ? null : k.fingerprint)}
+											className="border-violet-500/40 bg-violet-500/5 text-[10px] font-medium text-violet-700 dark:border-violet-400/30 dark:text-violet-300"
+											title="Primary key algorithm"
 										>
-											{revealed === k.fingerprint ? (
-												<EyeOff aria-hidden="true" className="size-3" />
-											) : (
-												<Eye aria-hidden="true" className="size-3" />
-											)}
-											{revealed === k.fingerprint ? "Hide token" : "Show token"}
-										</Button>
-										<CopyButton
-											text={k.revocationToken}
-											label="Copy token"
-											ariaLabel={`Copy revocation token for ${k.fingerprint}`}
-										/>
-										<Button
-											type="button"
+											<KeyRound aria-hidden="true" className="mr-1 inline size-3" />
+											{k.algo}
+										</Badge>
+									)}
+									{expiry && (
+										<Badge
 											variant="outline"
-											size="sm"
-											className="h-9 gap-1.5 border-red-300/70 px-2.5 text-[11px] text-red-700 hover:bg-red-50 sm:h-7 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30"
-											onClick={() => setRevokeTarget(k)}
+											className={expiry.className}
+											title={expiry.title}
+											data-testid="keys-expiry-badge"
 										>
-											<Trash2 aria-hidden="true" className="size-3" />
-											Revoke
-										</Button>
-									</>
+											<Clock aria-hidden="true" className="mr-1 inline size-3" />
+											{expiry.label}
+										</Badge>
+									)}
+									{k.escrowed && (
+										<Badge
+											variant="outline"
+											className="border-[#0055dc]/40 text-[10px] text-[#0055dc] dark:border-[#5e94ff]/40 dark:text-[#5e94ff]"
+										>
+											escrowed
+										</Badge>
+									)}
+									{audit[k.fingerprint] && (
+										<Badge
+											variant="outline"
+											className={auditBadgeProps(audit[k.fingerprint].outcome).className}
+											title={audit[k.fingerprint].detail}
+											data-testid="keys-audit-badge"
+										>
+											{auditBadgeProps(audit[k.fingerprint].outcome).label}
+										</Badge>
+									)}
+									{audit[k.fingerprint]?.escrowDrift && (
+										<Badge
+											variant="outline"
+											className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+											title={
+												audit[k.fingerprint].escrowDrift === "outdated"
+													? "The escrowed private-key backup predates the current key version — restoring it would return an old key. Replace the key WITH escrow to refresh the backup."
+													: "The registry no longer holds the escrowed private-key backup for this key."
+											}
+											data-testid="keys-escrow-drift"
+										>
+											{audit[k.fingerprint].escrowDrift === "outdated"
+												? "escrow outdated"
+												: "escrow missing"}
+										</Badge>
+									)}
+									<span className="ml-auto text-muted-foreground">
+										published {new Date(k.publishedAt).toLocaleDateString()}
+										{k.updatedAt && k.updatedAt - k.publishedAt > 60_000
+											? ` · updated ${new Date(k.updatedAt).toLocaleDateString()}`
+											: ""}
+									</span>
+								</div>
+								<p className="mt-1 font-mono text-[11px] text-muted-foreground">
+									{formatFingerprint(k.fingerprint)}
+								</p>
+								<div className="mt-2 flex flex-wrap items-center gap-1.5">
+									<CopyButton
+										text={k.fingerprint}
+										label="Copy fpr"
+										ariaLabel={`Copy fingerprint ${k.fingerprint}`}
+									/>
+									<FingerprintQrButton fingerprint={k.fingerprint} />
+									{k.revocationToken && (
+										<>
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												className="h-9 gap-1.5 px-2.5 text-[11px] sm:h-7"
+												onClick={() =>
+													setRevealed(revealed === k.fingerprint ? null : k.fingerprint)
+												}
+											>
+												{revealed === k.fingerprint ? (
+													<EyeOff aria-hidden="true" className="size-3" />
+												) : (
+													<Eye aria-hidden="true" className="size-3" />
+												)}
+												{revealed === k.fingerprint ? "Hide token" : "Show token"}
+											</Button>
+											<CopyButton
+												text={k.revocationToken}
+												label="Copy token"
+												ariaLabel={`Copy revocation token for ${k.fingerprint}`}
+											/>
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												className="h-9 gap-1.5 border-red-300/70 px-2.5 text-[11px] text-red-700 hover:bg-red-50 sm:h-7 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30"
+												onClick={() => setRevokeTarget(k)}
+											>
+												<Trash2 aria-hidden="true" className="size-3" />
+												Revoke
+											</Button>
+										</>
+									)}
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="h-9 px-2.5 text-[11px] text-muted-foreground sm:h-7"
+										onClick={() => {
+											forgetMyKey(k.fingerprint);
+											onChanged();
+										}}
+									>
+										Forget
+									</Button>
+								</div>
+								{revealed === k.fingerprint && k.revocationToken && (
+									<code className="mt-2 block break-all rounded bg-background/80 px-2 py-1.5 font-mono text-[10px]">
+										{k.revocationToken}
+									</code>
 								)}
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									className="h-9 px-2.5 text-[11px] text-muted-foreground sm:h-7"
-									onClick={() => {
-										forgetMyKey(k.fingerprint);
-										onChanged();
-									}}
-								>
-									Forget
-								</Button>
-							</div>
-							{revealed === k.fingerprint && k.revocationToken && (
-								<code className="mt-2 block break-all rounded bg-background/80 px-2 py-1.5 font-mono text-[10px]">
-									{k.revocationToken}
-								</code>
-							)}
-						</li>
-					))}
+							</li>
+						);
+					})}
 				</ul>
 
 				<Dialog

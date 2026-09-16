@@ -323,6 +323,63 @@ challenges use):
   deployment answers the same way, so there is no config disclosure), and
   rate-limited (with the server's Retry-After).
 
+### Authorized replace from the UI (possession-proof publishing)
+
+The registry always required a signed challenge to replace a published
+fingerprint, but that proof previously existed only in scripts and the API —
+from the UI a re-publish simply bounced with "Key already exists". The Keys
+tab now closes that loop:
+
+- When a publish bounces with the already-exists error, the source card shows
+  an amber **possession-proof panel** instead of a dead error message:
+  - **Encryptor (generated)**: signs the challenge automatically with the key
+    you just generated (the generation passphrase is already in the form) —
+    one click on "Sign challenge & replace".
+  - **Local (armored key)**: asks for that key's passphrase in the panel
+    (password field, memory only) so the challenge can be signed locally. A
+    public-only paste explains that a replace needs the private key instead
+    of offering a button that cannot work.
+  - **Keybase**: explains that public-only keys cannot sign — publish the
+    replacement from a device holding the private key.
+- The signed replace carries the same escrow choice as the form (checked →
+  the escrowed backup is refreshed in the same request; unchecked → the
+  stored backup is KEPT by the server but now lags — see the next bullet).
+- **Escrow-lag honesty**: after a replace that omitted escrow, the outcome
+  card warns that the stored private-key backup predates the registry version
+  (amber). A replace WITH escrow confirms "backup refreshed" (emerald). This
+  is the UI fix path for the audit's `escrow outdated` badge.
+- Local bookkeeping survives a replace: the original `publishedAt` is kept,
+  the shown-once revocation token is carried forward (a replace never
+  returns a new one — the ORIGINAL token stays authoritative), and the
+  `escrowed` flag stays truthful when the server keeps an existing backup.
+
+### Key expiry lifecycle in my-keys
+
+My-keys rows now track the primary-key expiration (`expiresAt`, captured at
+publish/replace time and re-derived on "Refresh saved copy"):
+
+- Per-row badge with a fixed color language: **red** `expired <date>` (treat
+  as untrusted — replace it), **amber** `expires in Nd` / `expires tomorrow`
+  / `expires today` (≤30 days — prepare a renewed key), muted
+  `expires <date>` when there is plenty of time. Nothing renders when the
+  expiration is unknown.
+- Urgent rows get a matching **left accent border** (red/amber) so they are
+  scannable without reading any text.
+- Header summary chips (rendered only when non-zero): `N escrowed` (blue),
+  `N expiring ≤30d` (amber), `N expired` (red).
+- **Sort control** (with more than one key): "Recent first" (default,
+  publish order) and "Expiring first" (soonest expiration on top — expired
+  keys first, keys without a known expiration last).
+
+### Only-my-keys lookup filter
+
+Lookup results gain a sticky **"Only my keys"** toggle (pill button,
+emerald when active). When enabled, rows whose fingerprint is not in the
+local my-keys list are hidden, the count line reads
+"`X of N shown · saved in your keys`", and a dashed empty state explains
+when none of the results are yours. The filter persists across searches so
+it behaves like a preference; the "yours" badge on each row is unaffected.
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.

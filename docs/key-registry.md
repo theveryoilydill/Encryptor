@@ -158,6 +158,34 @@ instead of through the (possibly tampered) network path, so a MitM who swaps
 keys in API responses cannot survive the comparison. The dialog also copies
 the raw `openpgp4fpr:` URI.
 
+### Scan-to-lookup (camera)
+
+The **Scan** button next to lookup opens the device camera and feeds frames
+to the browser's built-in `BarcodeDetector` API — no decoder is bundled and
+**frames never leave the device**. A detected `openpgp4fpr:` QR (or bare
+40-hex fingerprint) fills the lookup field and searches automatically.
+Browsers without `BarcodeDetector` (Firefox/Safari) get an explicit note in
+the dialog instead of a silently dead button.
+
+### Registry watch (key-change detection)
+
+Every successful lookup records a **sighting** locally (`localStorage`,
+fingerprint → `{updatedAt, revoked, seenAt}`, capped at 200 entries). Later
+lookups of the same fingerprint compare live state against the last
+sighting:
+
+- `updatedAt` increased → amber callout: **"Key material changed since your
+  last lookup — re-verify out of band before trusting it."**
+- flipped to `revoked` → red callout: **"Revoked since your last lookup —
+  stop trusting this key."**
+
+The server can only report the CURRENT state; noticing "different from what
+I saw before" requires memory, which is exactly what the watch provides —
+a key silently replaced by an attacker (via the authorized-challenge flow
+with a stolen key) is flagged the next time a previous viewer looks it up.
+All storage access is best-effort: private-mode/quota failures degrade to
+"no change detection", never to broken lookups.
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.

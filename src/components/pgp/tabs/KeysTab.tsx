@@ -68,6 +68,8 @@ import {
 	turnstileSiteKeyConfigured,
 } from "@/components/pgp/registry/TurnstileWidget";
 import { FingerprintQrButton } from "@/components/pgp/registry/FingerprintQr";
+import { ScanQrButton } from "@/components/pgp/registry/QrScanner";
+import { getKeySighting, noteKeySighted } from "@/lib/registry/watch";
 import { KEYBASE_USERNAME_RE } from "@/lib/constants";
 import { lookupKeybaseUsersClient } from "@/lib/pgp/keybase";
 import {
@@ -1255,6 +1257,39 @@ function PgpWordsPanel({ fingerprint }: { fingerprint: string }) {
 	);
 }
 
+/**
+ * Amber/red callout for registry-watch findings: the key's material changed
+ * or it was revoked since THIS DEVICE last looked at it. Deliberately noisy
+ * — replacement is exactly what a MitM attack looks like in the registry.
+ */
+function WatchCallout({
+	watch,
+}: {
+	watch: { changed: boolean; nowRevoked: boolean; since: number | null };
+}) {
+	if (!watch.changed && !watch.nowRevoked) return null;
+	const sinceLabel = watch.since ? ` (last seen ${new Date(watch.since).toLocaleString()})` : "";
+	const revoked = watch.nowRevoked;
+	return (
+		<div
+			data-testid={revoked ? "watch-revoked" : "watch-changed"}
+			role="status"
+			className={
+				revoked
+					? "mt-2 flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-500/5 px-2.5 py-2 text-[11px] text-red-700 dark:border-red-400/30 dark:text-red-300"
+					: "mt-2 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[11px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+			}
+		>
+			<TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+			<span>
+				{revoked
+					? `Revoked since your last lookup${sinceLabel} — stop trusting this key.`
+					: `Key material changed since your last lookup${sinceLabel} — re-verify out of band (PGP words or QR) before trusting it.`}
+			</span>
+		</div>
+	);
+}
+
 function RegistryLookup() {
 	const [query, setQuery] = useState("");
 	const [loading, setLoading] = useState(false);
@@ -1268,13 +1303,18 @@ function RegistryLookup() {
 				createdAt: number;
 				updatedAt: number;
 				meta: LookupKeyMeta | null;
+				watch: {
+					changed: boolean;
+					nowRevoked: boolean;
+					since: number | null;
+				};
 		  }[]
 		| null
 	>(null);
 	const [error, setError] = useState<string | null>(null);
 
-	const handleSearch = useCallback(async () => {
-		const kind = detectQueryKind(query);
+	const runSearch = useCallback(async (raw: string) => {
+		const kind = detectQueryKind(raw);
 		if (!kind) {
 			setError("Enter a 40-hex fingerprint, a 16-hex key ID, or an email address.");
 			return;
@@ -1282,10 +1322,10 @@ function RegistryLookup() {
 		setError(null);
 		setLoading(true);
 		try {
-			const clean = query.trim().replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
+			const clean = raw.trim().replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
 			const keys = await registryLookup(
 				kind === "email"
-					? { email: query.trim().toLowerCase() }
+					? { email: raw.trim().toLowerCase() }
 					: kind === "fingerprint"
 						? { fingerprint: clean }
 						: { keyId: clean },
@@ -1295,13 +1335,44 @@ function RegistryLookup() {
 			const rows = await Promise.all(
 				keys.map(async (k) => ({ ...k, meta: await describeKeyMeta(k.armored) })),
 			);
-			setResults(rows);
+			// Registry watch: compare each row against its LAST LOCAL SIGHTING so
+			// keys replaced or revoked since this device last saw them are flagged
+			// (the server only knows the current state — noticing "different from
+			// before" needs memory). Comparison runs BEFORE the sighting refresh.
+			const watched = rows.map((k) => {
+				const prior = getKeySighting(k.fingerprint);
+				return {
+					...k,
+					watch: {
+						changed: Boolean(prior && k.updatedAt > prior.updatedAt),
+						nowRevoked: Boolean(prior && !prior.revoked && k.revoked),
+						since: prior?.seenAt ?? null,
+					},
+				};
+			});
+			for (const k of watched) {
+				noteKeySighted(k.fingerprint, { updatedAt: k.updatedAt, revoked: k.revoked });
+			}
+			setResults(watched);
 		} catch (e) {
 			setError(formatRegistryError(e, "Lookup failed"));
 		} finally {
 			setLoading(false);
 		}
-	}, [query]);
+	}, []);
+
+	const handleSearch = useCallback(async () => {
+		await runSearch(query);
+	}, [query, runSearch]);
+
+	// Camera scan: fill the query and search the scanned fingerprint.
+	const handleScanDetected = useCallback(
+		(fpr: string) => {
+			setQuery(fpr);
+			void runSearch(fpr);
+		},
+		[runSearch],
+	);
 
 	return (
 		<Card>
@@ -1320,6 +1391,7 @@ function RegistryLookup() {
 								if (e.key === "Enter") handleSearch();
 							}}
 						/>
+						<ScanQrButton onDetect={handleScanDetected} />
 						<Button
 							type="button"
 							variant="outline"
@@ -1383,6 +1455,7 @@ function RegistryLookup() {
 											<KeyMetaBadges meta={k.meta} />
 										</div>
 									)}
+									<WatchCallout watch={k.watch} />
 									<PgpWordsPanel fingerprint={k.fingerprint} />
 									<details className="mt-2">
 										<summary className="cursor-pointer select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">

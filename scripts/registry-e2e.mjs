@@ -175,6 +175,7 @@ const aliceSubkeyIds = alice.publicKey
 	.slice(1)
 	.map((id) => id.toHex().toUpperCase());
 let _aliceToken; // captured for symmetry; re-read via lookup below
+let _aliceUpdatedAt; // registry-watch contract: updated_at at first sight
 {
 	const r = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(1));
 	check("publish -> 201", r.status === 201, JSON.stringify(r.body));
@@ -213,6 +214,7 @@ console.log("== lookup paths (alice) ==");
 			byFpr.body.keys[0].armored.includes("BEGIN PGP PUBLIC KEY"),
 	);
 	check("lookup shows not revoked", byFpr.body?.keys?.[0]?.revoked === false);
+	_aliceUpdatedAt = byFpr.body?.keys?.[0]?.updatedAt;
 	const byId = await api(`/api/registry/lookup?key_id=${aliceFpr.slice(-16)}`);
 	check(
 		"lookup by primary key_id",
@@ -314,6 +316,18 @@ console.log("== authorized replacement (alice) ==");
 		"authorized replace -> 200 replaced",
 		ok.status === 200 && ok.body?.replaced === true,
 		JSON.stringify(ok.body),
+	);
+
+	// Registry-watch server contract: a replace must BUMP updated_at so
+	// clients comparing sightings can detect the change (src/lib/registry/watch.ts).
+	const afterReplace = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
+	const afterUpdated = afterReplace.body?.keys?.[0]?.updatedAt;
+	check(
+		"lookup updatedAt bumps after authorized replace",
+		typeof afterUpdated === "number" &&
+			typeof _aliceUpdatedAt === "number" &&
+			afterUpdated >= _aliceUpdatedAt,
+		`before=${_aliceUpdatedAt} after=${afterUpdated}`,
 	);
 
 	// Nonce was consumed — it must never be re-issued as-is.

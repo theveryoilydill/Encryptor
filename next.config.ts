@@ -1,4 +1,14 @@
 import type { NextConfig } from "next";
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare/cloudflare-context";
+
+// Proxy Cloudflare bindings (REGISTRY_DB D1, secrets) into `next dev` so
+// getCloudflareContext() works locally. Guarded: CI/typecheck environments
+// without a wrangler config must not crash the build.
+try {
+	initOpenNextCloudflareForDev();
+} catch (e) {
+	console.warn("opennext dev binding proxy unavailable:", (e as Error).message);
+}
 
 const nextConfig: NextConfig = {
 	// Required by @opennextjs/cloudflare: the adapter reads the standalone

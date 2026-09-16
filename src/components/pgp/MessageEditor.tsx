@@ -39,9 +39,10 @@ const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 });
 
 /** Slim, grouped source-mode toolbar — the @uiw default ships ~20 commands
- *  (comment, table, image, fullscreen, help, live-preview triad …) that are
+ *  (comment, image, fullscreen, help, live-preview triad …) that are
  *  noise for this composer: images belong to the attachment pipeline, and
- *  the split preview is always visible. Ten essentials, three groups. */
+ *  the split preview is always visible. Eleven essentials, three groups —
+ *  table added for parity with the Notion engine's table block. */
 const VSCODE_COMMANDS = [
 	mdCommands.bold,
 	mdCommands.italic,
@@ -54,6 +55,7 @@ const VSCODE_COMMANDS = [
 	mdCommands.unorderedListCommand,
 	mdCommands.orderedListCommand,
 	mdCommands.checkedListCommand,
+	mdCommands.table,
 	mdCommands.divider,
 	mdCommands.link,
 ];

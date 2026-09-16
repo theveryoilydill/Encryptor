@@ -5,18 +5,22 @@ import { useCallback, useState } from "react";
 import { FileSignature } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
+import { MessageEditor } from "@/components/pgp/MessageEditor";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { signMessage } from "@/lib/pgp/pgp";
+import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 
 export function SignTab({
 	privateKey,
 	requestDecryptedKey,
+	markdownEditor,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
+	/** Which composer engine to use (same setting as the Encrypt tab). */
+	markdownEditor: MarkdownEditorKind;
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [detached, setDetached] = useState(false);
@@ -89,13 +93,19 @@ export function SignTab({
 						<p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
 					</div>
 				)}
-				<Textarea
+				{/* Markdown editor for signing — same two engines as the Encrypt
+				    composer ("markdown for signing too"). Signing has no attachment
+				    pipeline, so image registration intentionally fails closed: pasted
+				    images stay inline as data URLs inside the signed text. */}
+				<MessageEditor
 					value={plaintext}
-					onChange={(e) => setPlaintext(e.target.value)}
-					placeholder="Paste the text you want to sign."
-					rows={8}
-					spellCheck={false}
-					className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
+					onChange={setPlaintext}
+					files={[]}
+					onNewImageDataUrl={() => {
+						throw new Error("Signing has no attachment pipeline.");
+					}}
+					editorKind={markdownEditor}
+					placeholder="Paste or write the text you want to sign."
 				/>
 				{/* Char/word/size counter — parity with the Encrypt tab counter. */}
 				<InputSizeCounter text={plaintext} />

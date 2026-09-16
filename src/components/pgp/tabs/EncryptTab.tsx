@@ -29,22 +29,8 @@ import { LIMITS } from "@/lib/constants";
 import type { AppSettings } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
+import { githubSlug } from "@/lib/pgp/github-slug";
 import { useToast } from "@/hooks/use-toast";
-
-/** GitHub-style anchor slug for a heading title: lowercase, strip every
- *  character that is not a letter, number, space or hyphen, then spaces
- *  become hyphens. Mirrors the anchors GitHub generates for its own
- *  headings, so TOC links keep working when the message is pasted into a
- *  GitHub issue, README or comment.
- *
- *  # Mr. AI Acting on s183173's Behalf
- */
-function githubSlug(title: string): string {
-	return title
-		.toLowerCase()
-		.replace(/[^\p{L}\p{N}\s-]/gu, "")
-		.replace(/\s+/g, "-");
-}
 
 /** Build a GitHub-style table of contents from the composer's markdown:
  *  every ATX heading (`#` through `######`) becomes an indented
@@ -122,6 +108,40 @@ export function EncryptTab({
 			document.body.style.overflow = prev;
 		};
 	}, [composerExpanded]);
+
+	// Global Ctrl/Cmd+Shift+E — "shortcut to expand should apply everywhere":
+	// the tab components stay mounted across tab switches, so a window-level
+	// capture listener lets the composer open from ANY tab (Encrypt, Decrypt,
+	// Sign, Verify…). Same dialog-safe guards as the section handler: keys
+	// aimed at an open Radix dialog/popover/menu belong to that surface, and
+	// an already-handled event is left alone. The section + overlay handlers
+	// see defaultPrevented and skip, so the toggle never double-fires.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (
+				(e.ctrlKey || e.metaKey) &&
+				e.shiftKey &&
+				!e.altKey &&
+				(e.key === "E" || e.key === "e") &&
+				!e.defaultPrevented
+			) {
+				const target = e.target as HTMLElement | null;
+				if (
+					target?.closest(
+						'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+					)
+				) {
+					return;
+				}
+				e.preventDefault();
+				setComposerExpanded((v) => !v);
+			}
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, []);
 
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
@@ -475,7 +495,7 @@ export function EncryptTab({
 	const composerBody = (
 		<>
 			{/* Composer utility row: table-of-contents insert + full-screen
-			    toggle, right-aligned. */}
+                            toggle, right-aligned. */}
 			<div className="mb-1.5 flex items-center justify-end gap-2">
 				<button
 					type="button"
@@ -501,7 +521,7 @@ export function EncryptTab({
 				</button>
 			</div>
 			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
-			    the viewport; plain block inline. */}
+                            the viewport; plain block inline. */}
 			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
 				<MessageEditor
 					value={plaintext}
@@ -581,12 +601,12 @@ export function EncryptTab({
 
 			{!composerExpanded && <div className="rounded-xl">{composerBody}</div>}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
-			    dialog filling the viewport. Escape collapses it — EXCEPT when a
-			    Radix surface opened FROM the composer is on stage: those consume
-			    Escape themselves and must never come back to a collapsed
-			    composer. Most Radix layers portal OUTSIDE this overlay, so their
-			    Escapes never even bubble through it; the target checks + the
-			    defaultPrevented guard cover the paths that still do. */}
+                            dialog filling the viewport. Escape collapses it — EXCEPT when a
+                            Radix surface opened FROM the composer is on stage: those consume
+                            Escape themselves and must never come back to a collapsed
+                            composer. Most Radix layers portal OUTSIDE this overlay, so their
+                            Escapes never even bubble through it; the target checks + the
+                            defaultPrevented guard cover the paths that still do. */}
 			{composerExpanded &&
 				createPortal(
 					<div
@@ -594,6 +614,15 @@ export function EncryptTab({
 						role="dialog"
 						aria-modal="true"
 						aria-label="Composer, full screen"
+						onPointerDown={(e) => {
+							// Click-off close: a press on the overlay itself (the backdrop
+							// around the editor card) collapses — presses inside the
+							// composer content target deeper nodes and are ignored.
+							if (e.target === e.currentTarget) {
+								e.preventDefault();
+								setComposerExpanded(false);
+							}
+						}}
 						onKeyDownCapture={(e) => {
 							if (e.key !== "Escape" || e.defaultPrevented) return;
 							const target = e.target as HTMLElement | null;
@@ -617,9 +646,7 @@ export function EncryptTab({
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
-							{composerBody}
-						</div>
+						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
 					</div>,
 					document.body,
 				)}

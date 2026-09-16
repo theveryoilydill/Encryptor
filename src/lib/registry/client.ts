@@ -10,6 +10,7 @@
  */
 import { STORAGE_KEYS } from "@/lib/constants";
 import { signMessage } from "@/lib/pgp/pgp";
+import { getKeySighting, noteKeySighted } from "@/lib/registry/watch";
 
 /** One key record as returned by the public lookup endpoint. */
 export interface RegistryLookupKey {
@@ -301,8 +302,15 @@ function saveMyKeys(keys: MyRegistryKey[]): void {
 	}
 }
 
+/** Fingerprints must match case-insensitively: the registry/backup use
+ *  mixed-case hex, and treating "ABC…" and "abc…" as two keys would
+ *  duplicate rows and strand revocation tokens on the wrong record. */
+function sameFpr(a: string, b: string): boolean {
+	return a.toLowerCase() === b.toLowerCase();
+}
+
 export function rememberMyKey(key: MyRegistryKey): void {
-	const keys = listMyKeys().filter((k) => k.fingerprint !== key.fingerprint);
+	const keys = listMyKeys().filter((k) => !sameFpr(k.fingerprint, key.fingerprint));
 	saveMyKeys([key, ...keys].slice(0, 50));
 }
 
@@ -312,11 +320,13 @@ export function updateMyKey(
 		Pick<MyRegistryKey, "escrowed" | "revocationToken" | "label" | "algo" | "updatedAt">
 	>,
 ): void {
-	saveMyKeys(listMyKeys().map((k) => (k.fingerprint === fingerprint ? { ...k, ...patch } : k)));
+	saveMyKeys(
+		listMyKeys().map((k) => (sameFpr(k.fingerprint, fingerprint) ? { ...k, ...patch } : k)),
+	);
 }
 
 export function forgetMyKey(fingerprint: string): void {
-	saveMyKeys(listMyKeys().filter((k) => k.fingerprint !== fingerprint));
+	saveMyKeys(listMyKeys().filter((k) => !sameFpr(k.fingerprint, fingerprint)));
 }
 
 /**
@@ -340,4 +350,235 @@ export function exportMyKeys(): string {
 		null,
 		2,
 	);
+}
+
+/* --------------------------- backup import/restore -------------------------- */
+
+/** Result of validating a backup file's contents. */
+export interface ParsedBackup {
+	/** ISO timestamp copied from the file, when present. */
+	exportedAt: string | null;
+	/** Structurally valid records, fingerprints normalized lowercase. */
+	keys: MyRegistryKey[];
+	/** Entries dropped because they failed structural validation. */
+	invalid: number;
+}
+
+const FPR_RE = /^[0-9a-f]{40}$/;
+
+/** Coerce one raw backup entry into a MyRegistryKey, or null if unusable. */
+function sanitizeBackupKey(raw: unknown): MyRegistryKey | null {
+	if (!raw || typeof raw !== "object") return null;
+	const r = raw as Record<string, unknown>;
+	const fpr = typeof r.fingerprint === "string" ? r.fingerprint.trim().toLowerCase() : "";
+	if (!FPR_RE.test(fpr)) return null;
+	const emails = Array.isArray(r.emails)
+		? r.emails.filter((e): e is string => typeof e === "string" && e.length > 0).slice(0, 10)
+		: [];
+	const publishedAt =
+		typeof r.publishedAt === "number" && Number.isFinite(r.publishedAt)
+			? r.publishedAt
+			: Date.now();
+	return {
+		fingerprint: fpr,
+		keyId:
+			typeof r.keyId === "string" && /^[0-9a-f]{8,16}$/i.test(r.keyId)
+				? r.keyId.toUpperCase()
+				: fpr.slice(-16).toUpperCase(),
+		emails,
+		label:
+			typeof r.label === "string" && r.label.trim()
+				? r.label.trim()
+				: (emails[0] ?? "Imported key"),
+		publishedAt,
+		...(typeof r.revocationToken === "string" && r.revocationToken
+			? { revocationToken: r.revocationToken }
+			: {}),
+		escrowed: r.escrowed === true,
+		...(typeof r.algo === "string" && r.algo ? { algo: r.algo } : {}),
+		...(typeof r.updatedAt === "number" && Number.isFinite(r.updatedAt)
+			? { updatedAt: r.updatedAt }
+			: {}),
+	};
+}
+
+/**
+ * Validate a keys-backup file's text. Throws with a human explanation for
+ * wrong files (bad JSON, foreign format, unknown version) so the UI can
+ * show exactly why a restore was refused; per-entry problems are counted
+ * instead of fatal — one corrupt record shouldn't block the other 49.
+ */
+export function parseKeysBackup(text: string): ParsedBackup {
+	let data: unknown;
+	try {
+		data = JSON.parse(text);
+	} catch {
+		throw new Error("That file is not valid JSON.");
+	}
+	if (!data || typeof data !== "object" || Array.isArray(data)) {
+		throw new Error("Not an Encryptor keys backup.");
+	}
+	const d = data as Record<string, unknown>;
+	if (d.format !== "encryptor-keys-backup") {
+		throw new Error("Not an Encryptor keys backup (missing format marker).");
+	}
+	if (d.version !== 1) {
+		throw new Error(`Unsupported backup version (${String(d.version)}). This app reads version 1.`);
+	}
+	if (!Array.isArray(d.keys)) throw new Error("Backup has no keys array.");
+	const keys: MyRegistryKey[] = [];
+	let invalid = 0;
+	for (const raw of d.keys.slice(0, 200)) {
+		const k = sanitizeBackupKey(raw);
+		if (k) keys.push(k);
+		else invalid += 1;
+	}
+	return { exportedAt: typeof d.exportedAt === "string" ? d.exportedAt : null, keys, invalid };
+}
+
+export interface RestoreReport {
+	added: number;
+	updated: number;
+	skipped: number;
+}
+
+const stampOf = (k: MyRegistryKey): number => k.updatedAt ?? k.publishedAt;
+
+/**
+ * Shared merge accounting: applies the newest-wins-by-fingerprint policy to
+ * a working map (without touching storage) and reports what happened. Used
+ * by both the confirmation-dialog preview and the actual merge so the two
+ * can never disagree about what a restore will do.
+ */
+function accountMerge(
+	incoming: MyRegistryKey[],
+	current: MyRegistryKey[],
+): { map: Map<string, MyRegistryKey>; report: RestoreReport } {
+	const byFpr = new Map(current.map((k) => [k.fingerprint.toLowerCase(), k]));
+	let added = 0;
+	let updated = 0;
+	let skipped = 0;
+	for (const inc of incoming) {
+		const cur = byFpr.get(inc.fingerprint.toLowerCase());
+		if (!cur) {
+			byFpr.set(inc.fingerprint.toLowerCase(), inc);
+			added += 1;
+			continue;
+		}
+		if (stampOf(inc) > stampOf(cur)) {
+			byFpr.set(inc.fingerprint, {
+				...inc,
+				...(inc.revocationToken || !cur.revocationToken
+					? {}
+					: { revocationToken: cur.revocationToken }),
+			});
+			updated += 1;
+		} else {
+			if (!cur.revocationToken && inc.revocationToken) {
+				byFpr.set(inc.fingerprint, { ...cur, revocationToken: inc.revocationToken });
+			}
+			skipped += 1;
+		}
+	}
+	return { map: byFpr, report: { added, updated, skipped } };
+}
+
+/**
+ * What a restore WOULD do, without mutating anything — shown in the
+ * confirmation dialog so "N new · M updated · K already current" is never a
+ * guess.
+ */
+export function previewRestore(incoming: MyRegistryKey[]): RestoreReport {
+	return accountMerge(incoming, listMyKeys()).report;
+}
+
+/** Apply the merge computed by accountMerge and persist it (cap 50). */
+export function mergeMyKeys(incoming: MyRegistryKey[]): RestoreReport {
+	const { map, report } = accountMerge(incoming, listMyKeys());
+	saveMyKeys([...map.values()].sort((a, b) => stampOf(b) - stampOf(a)).slice(0, 50));
+	return report;
+}
+
+/* --------------------------- registry status audit -------------------------- */
+
+export type MyKeyAuditOutcome = "ok" | "changed" | "revoked" | "missing" | "error";
+
+export interface MyKeyAudit {
+	fingerprint: string;
+	outcome: MyKeyAuditOutcome;
+	/** Human explanation rendered as the badge tooltip / summary. */
+	detail: string;
+}
+
+/**
+ * Bulk re-verification of the keys this device published: re-fetch each
+ * fingerprint from the registry and compare it with the last sighting the
+ * watch layer recorded — the same change-detection memory the lookup flow
+ * uses, applied to one's own keys. Sequential with a small gap so a full
+ * sweep stays friendly to the shared rate bucket; individual failures
+ * become "error" rows instead of aborting. Sightings are refreshed as the
+ * sweep goes, so the next lookup of the same key won't re-flag.
+ */
+export async function auditMyKeysOnRegistry(
+	keys: MyRegistryKey[],
+	opts: { max?: number; onResult?: (a: MyKeyAudit) => void } = {},
+): Promise<MyKeyAudit[]> {
+	const max = opts.max ?? 12;
+	const targets = keys.slice(0, max);
+	const results: MyKeyAudit[] = [];
+	for (let i = 0; i < targets.length; i += 1) {
+		const k = targets[i];
+		let audit: MyKeyAudit;
+		try {
+			const row = (await registryLookup({ fingerprint: k.fingerprint }))[0];
+			if (!row) {
+				audit = {
+					fingerprint: k.fingerprint,
+					outcome: "missing",
+					detail:
+						"Not on the registry — published from another device, purged, or never published.",
+				};
+			} else {
+				const prior = getKeySighting(k.fingerprint);
+				noteKeySighted(k.fingerprint, { updatedAt: row.updatedAt, revoked: row.revoked });
+				if (row.revoked) {
+					audit = {
+						fingerprint: k.fingerprint,
+						outcome: "revoked",
+						detail: row.revokeReason
+							? `Revoked on the registry: ${row.revokeReason}`
+							: "Revoked on the registry.",
+					};
+				} else if (prior && (prior.revoked || row.updatedAt > prior.updatedAt)) {
+					audit = {
+						fingerprint: k.fingerprint,
+						outcome: "changed",
+						detail: `Key material changed on the registry since ${new Date(prior.seenAt).toLocaleString()} — re-verify out of band.`,
+					};
+				} else if (prior) {
+					audit = {
+						fingerprint: k.fingerprint,
+						outcome: "ok",
+						detail: `Unchanged since ${new Date(prior.seenAt).toLocaleString()}.`,
+					};
+				} else {
+					audit = {
+						fingerprint: k.fingerprint,
+						outcome: "ok",
+						detail: "On the registry and healthy — baseline recorded.",
+					};
+				}
+			}
+		} catch (e) {
+			audit = {
+				fingerprint: k.fingerprint,
+				outcome: "error",
+				detail: e instanceof Error ? e.message : "Lookup failed.",
+			};
+		}
+		results.push(audit);
+		opts.onResult?.(audit);
+		if (i < targets.length - 1) await new Promise((r) => setTimeout(r, 150));
+	}
+	return results;
 }

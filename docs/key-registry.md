@@ -204,6 +204,44 @@ an offline export is the cheapest insurance against a wiped browser profile.
 The file contains nothing that was not already on the device, but it MUST be
 stored carefully: tokens grant permanent revocation power.
 
+### My-keys restore (backup import)
+
+The **Restore** button (always visible, even on an empty list) imports a
+`encryptor-keys-backup` JSON file back into the local list — completing the
+device-migration loop with Backup. Restores are never a surprise:
+
+- The file is validated FIRST (`format` marker + `version` 1; wrong files are
+  rejected with a specific reason, per-entry corruption is counted as
+  "unusable" instead of blocking the other entries).
+- A confirmation dialog previews exactly what WOULD happen before anything is
+  written: `+N new`, `~N newer`, `=N already current`, `!N unusable`, plus a
+  peek at the incoming records and which carry tokens.
+- The merge is newest-wins per fingerprint (`updatedAt ?? publishedAt`,
+  matched case-insensitively — the registry and backups mix hex case), and a
+  revocation token the local copy lost is rescued from the file even when the
+  local record is newer. Tokens stay on the device; the registry only ever
+  holds their hashes.
+
+### My-keys status audit ("Check on registry")
+
+The **Check on registry** button re-fetches every locally-known fingerprint
+(bounded at 12 per sweep, sequential with a small gap to stay friendly to the
+shared rate bucket) and compares each against the last sighting recorded by
+the registry watch — the same change-detection memory the lookup flow uses,
+applied to one's own keys. Each row gains a badge:
+
+| Badge                         | Meaning                                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `unchanged` (green)           | Registry row matches the last sighting (or first check: healthy, baseline recorded).        |
+| `changed on registry` (amber) | `updated_at` grew or the revoked flag flipped since the last sight — re-verify out of band. |
+| `revoked` (red)               | The registry now reports the key revoked (reason shown in the tooltip).                     |
+| `not on registry` (grey)      | Never published, published from another device, or purged.                                  |
+| `check failed` (dashed)       | Network/server error for that one key — never aborts the sweep.                             |
+
+The summary line reports `N checked · M needs attention` (attention =
+changed/revoked), and sightings are refreshed as the sweep goes, so the next
+lookup of the same key will not re-flag what you just saw.
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.

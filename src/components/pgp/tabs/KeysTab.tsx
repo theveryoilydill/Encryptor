@@ -11,7 +11,7 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	AudioLines,
 	Clock,
@@ -30,6 +30,7 @@ import {
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
+	Upload,
 	UserRound,
 } from "lucide-react";
 
@@ -51,12 +52,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+	type MyKeyAudit,
+	type MyKeyAuditOutcome,
 	type MyRegistryKey,
+	type ParsedBackup,
 	type RegistryHealth,
+	type RestoreReport,
+	auditMyKeysOnRegistry,
 	exportMyKeys,
 	forgetMyKey,
 	formatRegistryError,
 	listMyKeys,
+	mergeMyKeys,
+	parseKeysBackup,
+	previewRestore,
 	registryFetchEscrow,
 	registryHealth,
 	registryLookup,
@@ -1668,11 +1677,57 @@ function RestoreEscrow({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => v
 
 /* ------------------------------- my keys ---------------------------------- */
 
+/** Shared badge styling for the per-key status audit outcomes. */
+function auditBadgeProps(outcome: MyKeyAuditOutcome): { label: string; className: string } {
+	switch (outcome) {
+		case "ok":
+			return {
+				label: "unchanged",
+				className:
+					"border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-300",
+			};
+		case "changed":
+			return {
+				label: "changed on registry",
+				className:
+					"border-amber-500/50 bg-amber-500/10 text-amber-700 dark:border-amber-400/30 dark:text-amber-300",
+			};
+		case "revoked":
+			return {
+				label: "revoked",
+				className:
+					"border-red-400/50 bg-red-500/10 text-red-700 dark:border-red-400/30 dark:text-red-300",
+			};
+		case "missing":
+			return {
+				label: "not on registry",
+				className: "text-muted-foreground",
+			};
+		default:
+			return {
+				label: "check failed",
+				className: "border-dashed text-muted-foreground",
+			};
+	}
+}
+
 function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () => void }) {
 	const [revealed, setRevealed] = useState<string | null>(null);
 	const [revokeTarget, setRevokeTarget] = useState<MyRegistryKey | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Backup restore: parse first, show a preview dialog, merge on confirm.
+	const fileRef = useRef<HTMLInputElement>(null);
+	const [restoreOpen, setRestoreOpen] = useState(false);
+	const [restorePreview, setRestorePreview] = useState<{
+		fileName: string;
+		parsed: ParsedBackup;
+		counts: RestoreReport;
+	} | null>(null);
+	// Status audit: per-fingerprint outcome of the last "Check on registry".
+	const [audit, setAudit] = useState<Record<string, MyKeyAudit>>({});
+	const [auditing, setAuditing] = useState(false);
+	const [auditNote, setAuditNote] = useState<string | null>(null);
 
 	// Offline safety net: revocation tokens exist ONLY here (the registry
 	// keeps hashes), so a one-click JSON export is the cheapest insurance
@@ -1690,6 +1745,81 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 			description: "Store it offline — revocation tokens cannot be recovered from the registry.",
 		});
 	}, []);
+
+	const closeRestore = useCallback(() => {
+		setRestoreOpen(false);
+		setRestorePreview(null);
+	}, []);
+
+	// Read + validate the chosen file, then show what WOULD change before
+	// touching anything — a restore must never surprise.
+	const handleBackupFile = useCallback(async (file: File) => {
+		try {
+			const parsed = parseKeysBackup(await file.text());
+			if (parsed.keys.length === 0) {
+				toast({
+					title: "Nothing restorable in that file",
+					description:
+						parsed.invalid > 0
+							? `${parsed.invalid} unusable entr${parsed.invalid === 1 ? "y" : "ies"} and no valid keys.`
+							: "The backup contains no keys.",
+					variant: "destructive",
+				});
+				return;
+			}
+			setRestorePreview({
+				fileName: file.name,
+				parsed,
+				counts: previewRestore(parsed.keys),
+			});
+			setRestoreOpen(true);
+		} catch (e) {
+			toast({
+				title: "Restore failed",
+				description: e instanceof Error ? e.message : "Could not read that file.",
+				variant: "destructive",
+			});
+		}
+	}, []);
+
+	const confirmRestore = useCallback(() => {
+		if (!restorePreview) return;
+		const rep = mergeMyKeys(restorePreview.parsed.keys);
+		closeRestore();
+		onChanged();
+		setAudit({});
+		setAuditNote(null);
+		toast({
+			title: `Restored ${rep.added + rep.updated} key${rep.added + rep.updated === 1 ? "" : "s"}`,
+			description: `${rep.added} new · ${rep.updated} updated · ${rep.skipped} already current.${restorePreview.parsed.invalid > 0 ? ` ${restorePreview.parsed.invalid} unusable ${restorePreview.parsed.invalid === 1 ? "entry" : "entries"} ignored.` : ""}`,
+		});
+	}, [closeRestore, onChanged, restorePreview]);
+
+	// One-click health sweep: re-fetch every known fingerprint and compare
+	// against the watch layer's sightings. Bounded (12) and sequential so a
+	// big list can't hammer the shared rate bucket.
+	const runAudit = useCallback(async () => {
+		if (auditing || keys.length === 0) return;
+		setAuditing(true);
+		setAudit({});
+		setAuditNote(null);
+		const results = await auditMyKeysOnRegistry(keys, {
+			onResult: (a) => setAudit((prev) => ({ ...prev, [a.fingerprint]: a })),
+		});
+		const attention = results.filter(
+			(a) => a.outcome === "changed" || a.outcome === "revoked",
+		).length;
+		const head =
+			results.length < keys.length
+				? `${results.length} of ${keys.length} checked`
+				: `${results.length} checked`;
+		setAuditNote(
+			attention > 0
+				? `${head} · ${attention} need${attention === 1 ? "s" : ""} attention`
+				: `${head} · no changes or revocations detected`,
+		);
+		setAuditing(false);
+	}, [auditing, keys]);
 
 	const handleRevoke = useCallback(async () => {
 		if (!revokeTarget?.revocationToken) return;
@@ -1710,33 +1840,102 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 	return (
 		<Card>
 			<CardContent className="space-y-3 p-4">
-				<div className="flex items-center justify-between gap-2">
-					<h3 className="text-sm font-medium">Keys published from this device</h3>
-					{keys.length > 0 && (
-						<Badge variant="outline" className="font-mono text-[10px]">
-							{keys.length}
-						</Badge>
-					)}
-					{keys.length > 0 && (
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<div className="flex items-center gap-2">
+						<h3 className="text-sm font-medium">Keys published from this device</h3>
+						{keys.length > 0 && (
+							<Badge variant="outline" className="font-mono text-[10px]">
+								{keys.length}
+							</Badge>
+						)}
+					</div>
+					<div className="flex flex-wrap items-center gap-1.5">
+						{keys.length > 0 && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="h-7 gap-1.5 px-2.5 text-[11px]"
+								onClick={() => void runAudit()}
+								disabled={auditing}
+								aria-label="Re-fetch each key from the registry and compare with the last sighting"
+								data-testid="keys-audit"
+								title="Re-fetch each key from the registry and flag changes or revocations since your last check"
+							>
+								{auditing ? (
+									<Loader2 aria-hidden="true" className="size-3 animate-spin" />
+								) : (
+									<ShieldCheck aria-hidden="true" className="size-3" />
+								)}
+								Check on registry
+							</Button>
+						)}
 						<Button
 							type="button"
 							variant="outline"
 							size="sm"
 							className="h-7 gap-1.5 px-2.5 text-[11px]"
-							onClick={() => downloadKeysBackup()}
-							aria-label="Download a JSON backup of your published keys and revocation tokens"
-							data-testid="keys-backup"
-							title="Revocation tokens cannot be recovered from the registry — keep an offline backup"
+							onClick={() => fileRef.current?.click()}
+							aria-label="Restore keys from an offline JSON backup file"
+							data-testid="keys-backup-restore"
+							title="Bring back the keys from an offline backup — e.g. when migrating to a new device"
 						>
-							<Download aria-hidden="true" className="size-3" />
-							Backup
+							<Upload aria-hidden="true" className="size-3" />
+							Restore
 						</Button>
-					)}
+						{keys.length > 0 && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="h-7 gap-1.5 px-2.5 text-[11px]"
+								onClick={() => downloadKeysBackup()}
+								aria-label="Download a JSON backup of your published keys and revocation tokens"
+								data-testid="keys-backup"
+								title="Revocation tokens cannot be recovered from the registry — keep an offline backup"
+							>
+								<Download aria-hidden="true" className="size-3" />
+								Backup
+							</Button>
+						)}
+					</div>
+					<input
+						ref={fileRef}
+						type="file"
+						accept=".json,application/json"
+						className="hidden"
+						aria-label="Keys backup file"
+						data-testid="keys-restore-file"
+						onChange={(e) => {
+							const f = e.target.files?.[0];
+							if (f) void handleBackupFile(f);
+							e.target.value = "";
+						}}
+					/>
 				</div>
-				{keys.length === 0 && (
-					<p className="text-xs text-muted-foreground">
-						Nothing yet — publish a key above and it will be listed here with its revocation token.
+				{auditNote && (
+					<p
+						className="text-[11px] text-muted-foreground"
+						role="status"
+						data-testid="keys-audit-note"
+					>
+						{auditNote}
 					</p>
+				)}
+				{keys.length === 0 && (
+					<div
+						data-testid="keys-empty"
+						className="flex flex-col items-center gap-2 rounded-xl border border-dashed px-6 py-8 text-center"
+					>
+						<span className="flex size-10 items-center justify-center rounded-full bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]">
+							<KeyRound aria-hidden="true" className="size-5" />
+						</span>
+						<p className="text-sm font-medium">No keys from this device yet</p>
+						<p className="max-w-xs text-xs text-muted-foreground">
+							Publish a key above and it will be listed here with its revocation token — or restore
+							an offline backup to bring a previous device's list back.
+						</p>
+					</div>
 				)}
 				{error && (
 					<Alert variant="destructive">
@@ -1768,6 +1967,16 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 										className="border-[#0055dc]/40 text-[10px] text-[#0055dc] dark:border-[#5e94ff]/40 dark:text-[#5e94ff]"
 									>
 										escrowed
+									</Badge>
+								)}
+								{audit[k.fingerprint] && (
+									<Badge
+										variant="outline"
+										className={auditBadgeProps(audit[k.fingerprint].outcome).className}
+										title={audit[k.fingerprint].detail}
+										data-testid="keys-audit-badge"
+									>
+										{auditBadgeProps(audit[k.fingerprint].outcome).label}
 									</Badge>
 								)}
 								<span className="ml-auto text-muted-foreground">
@@ -1841,6 +2050,103 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 						</li>
 					))}
 				</ul>
+
+				<Dialog
+					open={restoreOpen}
+					onOpenChange={(open) => {
+						if (!open) closeRestore();
+					}}
+				>
+					<DialogContent className="max-w-md">
+						<DialogHeader>
+							<DialogTitle className="text-base">Restore this backup?</DialogTitle>
+							<DialogDescription className="break-all text-xs">
+								{restorePreview &&
+									`${restorePreview.fileName}${restorePreview.parsed.exportedAt ? ` · exported ${new Date(restorePreview.parsed.exportedAt).toLocaleString()}` : ""}`}
+							</DialogDescription>
+						</DialogHeader>
+						{restorePreview && (
+							<div className="space-y-2.5">
+								<div className="flex flex-wrap gap-1.5">
+									<Badge
+										variant="outline"
+										data-testid="keys-restore-added"
+										className="border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-300"
+									>
+										+{restorePreview.counts.added} new
+									</Badge>
+									<Badge
+										variant="outline"
+										data-testid="keys-restore-updated"
+										className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+									>
+										~{restorePreview.counts.updated} newer
+									</Badge>
+									<Badge
+										variant="outline"
+										data-testid="keys-restore-skipped"
+										className="text-[10px] text-muted-foreground"
+									>
+										={restorePreview.counts.skipped} already current
+									</Badge>
+									{restorePreview.parsed.invalid > 0 && (
+										<Badge
+											variant="outline"
+											data-testid="keys-restore-invalid"
+											className="border-red-400/50 bg-red-500/10 text-[10px] text-red-700 dark:border-red-400/30 dark:text-red-300"
+										>
+											!{restorePreview.parsed.invalid} unusable
+										</Badge>
+									)}
+								</div>
+								<ul
+									className="scrollbar-thin max-h-40 space-y-1 overflow-y-auto rounded-lg border bg-muted/30 p-2"
+									data-testid="keys-restore-preview-list"
+								>
+									{restorePreview.parsed.keys.slice(0, 6).map((k) => (
+										<li key={k.fingerprint} className="flex items-center gap-2 text-[11px]">
+											<span className="truncate font-medium">{k.label}</span>
+											<span className="ml-auto font-mono text-muted-foreground">
+												{k.fingerprint.slice(0, 12)}…
+											</span>
+											{k.revocationToken && (
+												<Badge variant="outline" className="text-[9px] text-muted-foreground">
+													token
+												</Badge>
+											)}
+										</li>
+									))}
+									{restorePreview.parsed.keys.length > 6 && (
+										<li className="text-[11px] text-muted-foreground">
+											+ {restorePreview.parsed.keys.length - 6} more…
+										</li>
+									)}
+								</ul>
+								<p className="text-[11px] text-muted-foreground">
+									Newest records win per fingerprint; a revocation token your list lost is rescued
+									from the file. Tokens stay on this device — the registry only stores their hashes.
+								</p>
+							</div>
+						)}
+						<DialogFooter className="gap-2">
+							<Button type="button" variant="outline" size="sm" onClick={closeRestore}>
+								Cancel
+							</Button>
+							<Button
+								type="button"
+								size="sm"
+								onClick={confirmRestore}
+								data-testid="keys-restore-confirm"
+								className="gap-1.5"
+								disabled={!restorePreview}
+							>
+								<Upload aria-hidden="true" className="size-3.5" />
+								Restore {restorePreview ? restorePreview.parsed.keys.length : 0} key
+								{restorePreview && restorePreview.parsed.keys.length === 1 ? "" : "s"}
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
 
 				<Dialog
 					open={revokeTarget !== null}

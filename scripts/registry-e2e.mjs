@@ -12,6 +12,8 @@ import * as openpgp from "openpgp";
 // Override the target with REGISTRY_TEST_BASE for preview deployments.
 // # Mr. AI Acting on s183173's Behalf
 const BASE = process.env.REGISTRY_TEST_BASE ?? "http://localhost:3000";
+// Unique-per-run identity suffix (see makeKey calls below).
+const RUN = Date.now().toString(36);
 let passed = 0;
 let failed = 0;
 
@@ -27,7 +29,15 @@ function check(name, cond, detail = "") {
 }
 
 async function api(path, opts = {}) {
-	const res = await fetch(`${BASE}${path}`, opts);
+	// Default IP bucket for header-less calls (lookups, escrow GETs): rate
+	// limits are per-IP, so re-runs from the same host would otherwise share
+	// and exhaust the anonymous bucket. The rotating RUN_OCTET keeps every
+	// run independent; explicit IP(n) headers override this default.
+	const { headers: extra, ...rest } = opts;
+	const res = await fetch(`${BASE}${path}`, {
+		...rest,
+		headers: { "cf-connecting-ip": `10.7.${RUN_OCTET}.99`, ...extra },
+	});
 	let body = null;
 	try {
 		body = await res.json();
@@ -65,7 +75,11 @@ async function signChallengeEncrypted(privateKey, passphrase, fingerprint, nonce
 	return signChallenge(unlocked, fingerprint, nonce);
 }
 
-const IP = (n) => ({ "cf-connecting-ip": `10.7.0.${n}` });
+// Per-run unique IP buckets: the second octet rotates with wall-clock
+// seconds so repeated runs never inherit a spent rate-limit window from a
+// persistent local D1. # Mr. AI Acting on s183173's Behalf
+const RUN_OCTET = (Math.floor(Date.now() / 1000) % 250) + 1;
+const IP = (n) => ({ "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
 
 /** Challenge fetch with its OWN IP bucket — challenges share one bucket per
  *  client IP (10/h), so the suite would exhaust the shared anon bucket once
@@ -124,7 +138,7 @@ console.log("== input validation ==");
 }
 
 console.log("== publish happy path (alice) ==");
-const alice = await makeKey("Alice", "alice@example.com");
+const alice = await makeKey("Alice", `alice.${RUN}@example.com`);
 const aliceArmor = alice.publicKey.armor();
 const aliceFpr = alice.publicKey.getFingerprint().toUpperCase();
 const aliceSubkeyIds = alice.publicKey
@@ -180,9 +194,9 @@ console.log("== lookup paths (alice) ==");
 		const bySub = await api(`/api/registry/lookup?key_id=${aliceSubkeyIds[0]}`);
 		check("lookup by subkey key_id", bySub.body?.keys?.length === 1);
 	}
-	const byEmail = await api("/api/registry/lookup?email=alice@example.com");
+	const byEmail = await api(`/api/registry/lookup?email=alice.${RUN}@example.com`);
 	check("lookup by email", byEmail.body?.keys?.length === 1);
-	const caseFold = await api("/api/registry/lookup?email=ALICE@EXAMPLE.COM");
+	const caseFold = await api(`/api/registry/lookup?email=ALICE.${RUN}@EXAMPLE.COM`);
 	check("email lookup case-insensitive", caseFold.body?.keys?.length === 1);
 }
 
@@ -210,7 +224,7 @@ console.log("== authorized replacement (alice) ==");
 
 	// Cross-fingerprint nonce attack: bob steals a challenge issued for
 	// ALICE's fingerprint and tries to use it to replace BOB's own record.
-	const bob = await makeKey("Bob", "bob@example.com");
+	const bob = await makeKey("Bob", `bob.${RUN}@example.com`);
 	const bobArmor = bob.publicKey.armor();
 	const bobPub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(40));
 	check("bob fresh publish -> 201 (setup)", bobPub.status === 201, JSON.stringify(bobPub.body));
@@ -262,7 +276,7 @@ console.log("== authorized replacement (alice) ==");
 
 console.log("== token revocation (bob) ==");
 {
-	const bob = await makeKey("Bob", "bob@example.com");
+	const bob = await makeKey("Bob", `bob.${RUN}@example.com`);
 	const bobArmor = bob.publicKey.armor();
 	const bobFpr = bob.publicKey.getFingerprint().toUpperCase();
 	const pub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(8));
@@ -315,14 +329,14 @@ console.log("== token revocation (bob) ==");
 
 console.log("== signed-challenge revocation (carol) + replay protection ==");
 {
-	const carol = await makeKey("Carol", "carol@example.com");
+	const carol = await makeKey("Carol", `carol.${RUN}@example.com`);
 	const carolFpr = carol.publicKey.getFingerprint().toUpperCase();
 	await jsonPost("/api/registry/publish", { armored: carol.publicKey.armor() }, IP(15));
 
 	const ch = await challengeFor(carolFpr, 55);
 	const sig = await signChallenge(carol.privateKey, carolFpr, ch.body.nonce);
 	// Wrong-key first: nonce is consumed, verification fails.
-	const bob = await makeKey("Bob2", "bob2@example.com");
+	const bob = await makeKey("Bob2", `bob2.${RUN}@example.com`);
 	const wrongSig = await signChallenge(bob.privateKey, carolFpr, ch.body.nonce);
 	const wrong = await jsonPost(
 		"/api/registry/revoke",
@@ -362,7 +376,7 @@ console.log("== signed-challenge revocation (carol) + replay protection ==");
 
 console.log("== admin override (dave) ==");
 {
-	const dave = await makeKey("Dave", "dave@example.com");
+	const dave = await makeKey("Dave", `dave.${RUN}@example.com`);
 	const daveFpr = dave.publicKey.getFingerprint().toUpperCase();
 	await jsonPost("/api/registry/publish", { armored: dave.publicKey.armor() }, IP(19));
 
@@ -409,8 +423,8 @@ console.log("== subkey squatting + structural validation (review regressions) ==
 {
 	// Build an attacker key carrying a VICTIM's subkey packet (armored
 	// round-trip — the realistic attack path).
-	const owner = await makeKey("Owner", "owner@example.com");
-	const attacker = await makeKey("Attacker", "attacker@example.com");
+	const owner = await makeKey("Owner", `owner.${RUN}@example.com`);
+	const attacker = await makeKey("Attacker", `attacker.${RUN}@example.com`);
 	const victimPub = await openpgp.readKey({ armoredKey: owner.publicKey.armor() });
 	const forged = await openpgp.readKey({ armoredKey: attacker.publicKey.armor() });
 	forged.subkeys.push(victimPub.subkeys[0]);
@@ -449,7 +463,7 @@ console.log("== encrypted private key escrow ==");
 	const escrowUser = await openpgp.generateKey({
 		type: "ecc",
 		curve: "curve25519",
-		userIDs: [{ name: "Escrow User", email: "escrow@example.com" }],
+		userIDs: [{ name: "Escrow User", email: `escrow.${RUN}@example.com` }],
 		passphrase: escrowPass,
 		format: "object",
 	});
@@ -464,7 +478,7 @@ console.log("== encrypted private key escrow ==");
 	check("publish with escrow -> 201", pub.status === 201, JSON.stringify(pub.body));
 	const escrowToken = pub.body?.revocationToken;
 
-	const got = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`);
+	const got = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, { headers: IP(60) });
 	check(
 		"escrow GET returns encrypted private",
 		got.status === 200 &&
@@ -475,10 +489,14 @@ console.log("== encrypted private key escrow ==");
 	check("escrow GET has no CORS header", got.headers.get("access-control-allow-origin") === null);
 
 	// No-CORS-private guarantee also holds on error paths.
-	const missing = await api(`/api/registry/private-key?fingerprint=${"D".repeat(40)}`);
+	const missing = await api(`/api/registry/private-key?fingerprint=${"D".repeat(40)}`, {
+		headers: IP(61),
+	});
 	check("escrow GET unknown fingerprint -> 404", missing.status === 404, `got ${missing.status}`);
 
-	const noEscrow = await api(`/api/registry/private-key?fingerprint=${aliceFpr}`);
+	const noEscrow = await api(`/api/registry/private-key?fingerprint=${aliceFpr}`, {
+		headers: IP(62),
+	});
 	check(
 		"escrow GET for key without escrow -> null blob",
 		noEscrow.status === 200 && noEscrow.body?.encryptedPrivate === null,
@@ -486,7 +504,7 @@ console.log("== encrypted private key escrow ==");
 	);
 
 	// Rejection 1: a DECRYPTED private key (no passphrase) must never be stored.
-	const naked = await makeKey("Naked", "naked@example.com");
+	const naked = await makeKey("Naked", `naked.${RUN}@example.com`);
 	const nakedRes = await jsonPost(
 		"/api/registry/publish",
 		{ armored: naked.publicKey.armor(), encryptedPrivate: naked.privateKey.armor() },
@@ -502,7 +520,7 @@ console.log("== encrypted private key escrow ==");
 	const other = await openpgp.generateKey({
 		type: "ecc",
 		curve: "curve25519",
-		userIDs: [{ name: "Other", email: "other@example.com" }],
+		userIDs: [{ name: "Other", email: `other.${RUN}@example.com` }],
 		passphrase: "another-passphrase",
 		format: "object",
 	});
@@ -538,7 +556,7 @@ console.log("== encrypted private key escrow ==");
 		escrowFpr,
 		ch.body.nonce,
 	);
-	const wrongSignerKey = await makeKey("Sneak", "sneak@example.com");
+	const wrongSignerKey = await makeKey("Sneak", `sneak.${RUN}@example.com`);
 	const sneak = await challengeFor(escrowFpr, 59);
 	const sneakBody = {
 		fingerprint: escrowFpr,
@@ -558,7 +576,9 @@ console.log("== encrypted private key escrow ==");
 		delRes.status === 200 && delRes.body?.escrowed === false,
 		`got ${delRes.status}: ${delRes.body?.error}`,
 	);
-	const afterDel = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`);
+	const afterDel = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+		headers: IP(63),
+	});
 	check(
 		"escrow deleted -> GET null",
 		afterDel.status === 200 && afterDel.body?.encryptedPrivate === null,
@@ -614,7 +634,9 @@ console.log("== encrypted private key escrow ==");
 		keep.status === 200 && keep.body?.replaced === true,
 		`got ${keep.status}`,
 	);
-	const afterKeep = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`);
+	const afterKeep = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+		headers: IP(64),
+	});
 	check(
 		"replace without escrow fields KEEPS escrow",
 		afterKeep.status === 200 && typeof afterKeep.body?.encryptedPrivate === "string",
@@ -638,7 +660,9 @@ console.log("== encrypted private key escrow ==");
 		IP(69),
 	);
 	check("replace with dropEncryptedPrivate -> 200", drop.status === 200, `got ${drop.status}`);
-	const afterDrop = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`);
+	const afterDrop = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+		headers: IP(65),
+	});
 	check(
 		"escrow dropped -> GET null",
 		afterDrop.status === 200 && afterDrop.body?.encryptedPrivate === null,
@@ -667,7 +691,9 @@ console.log("== encrypted private key escrow ==");
 		IP(71),
 	);
 	check("revoke escrowed key -> ok", revokeRes.status === 200, `got ${revokeRes.status}`);
-	const afterRevoke = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`);
+	const afterRevoke = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+		headers: IP(66),
+	});
 	check(
 		"revocation purges escrow",
 		afterRevoke.status === 200 && afterRevoke.body?.encryptedPrivate === null,

@@ -33,6 +33,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { PassphraseStrengthMeter } from "@/components/pgp/PassphraseStrengthMeter";
 import {
 	Dialog,
 	DialogContent,
@@ -427,6 +428,7 @@ function EncryptorSource({
 								)}
 							</Button>
 						</div>
+						<PassphraseStrengthMeter passphrase={passphrase} idPrefix="keys-pass" />
 						{passphaseTooWeak && (
 							<p className="text-[11px] text-amber-600 dark:text-amber-400">
 								Use at least 8 characters — this passphrase protects your escrowed key.
@@ -466,7 +468,7 @@ function EncryptorSource({
 				</div>
 
 				{generated && (
-					<div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+					<div className="animate-scale-in space-y-3 rounded-lg border border-[#0055dc]/25 bg-muted/30 p-3 shadow-sm dark:border-[#5e94ff]/20">
 						<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
 							<span className="font-medium">{generated.label}</span>
 							<span className="font-mono text-muted-foreground">
@@ -870,6 +872,7 @@ function LocalSource({
 									Encrypt locally
 								</Button>
 							</div>
+							<PassphraseStrengthMeter passphrase={authPass} idPrefix="keys-local-pass" />
 						</AlertDescription>
 					</Alert>
 				)}
@@ -1036,41 +1039,57 @@ function RegistryLookup() {
 				</div>
 
 				{results && results.length === 0 && (
-					<p className="text-xs text-muted-foreground">No keys found for that query.</p>
+					<div className="flex items-center justify-center gap-2 rounded-lg border border-dashed py-6 text-xs text-muted-foreground">
+						<Fingerprint aria-hidden="true" className="size-3.5" />
+						No keys found for that query — check the fingerprint or email spelling.
+					</div>
 				)}
 				{results && results.length > 0 && (
-					<ul className="max-h-64 space-y-2 overflow-y-auto pr-1">
-						{results.map((k) => (
-							<li key={k.fingerprint} className="rounded-lg border bg-muted/30 p-3 text-xs">
-								<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-									<span className="font-mono">{formatFingerprint(k.fingerprint)}</span>
-									{k.revoked ? (
-										<Badge variant="destructive" className="text-[10px]">
-											revoked{k.revokeReason ? `: ${k.revokeReason}` : ""}
-										</Badge>
-									) : (
-										<Badge
-											variant="outline"
-											className="border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-400"
-										>
-											active
-										</Badge>
-									)}
-									<span className="ml-auto text-muted-foreground">
-										{new Date(k.createdAt * 1000).toLocaleDateString()}
-									</span>
-								</div>
-								<details className="mt-2">
-									<summary className="cursor-pointer select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">
-										Show armored public key
-									</summary>
-									<pre className="mt-1.5 max-h-40 overflow-auto rounded bg-background/80 p-2 font-mono text-[10px] leading-relaxed">
-										{k.armored}
-									</pre>
-								</details>
-							</li>
-						))}
-					</ul>
+					<div className="space-y-1.5">
+						<p className="text-[11px] text-muted-foreground" aria-live="polite">
+							{results.length.toLocaleString()} key{results.length === 1 ? "" : "s"} found
+						</p>
+						<ul className="scrollbar-thin max-h-64 space-y-2 overflow-y-auto pr-1">
+							{results.map((k) => (
+								<li
+									key={k.fingerprint}
+									className="rounded-lg border bg-muted/30 p-3 text-xs transition-all duration-150 hover:border-[#0055dc]/35 hover:bg-muted/50 hover:shadow-sm dark:hover:border-[#5e94ff]/25"
+								>
+									<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+										<span className="font-mono">{formatFingerprint(k.fingerprint)}</span>
+										{k.revoked ? (
+											<Badge variant="destructive" className="text-[10px]">
+												revoked{k.revokeReason ? `: ${k.revokeReason}` : ""}
+											</Badge>
+										) : (
+											<Badge
+												variant="outline"
+												className="border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-400"
+											>
+												active
+											</Badge>
+										)}
+										<span className="ml-auto text-muted-foreground">
+											{new Date(k.createdAt * 1000).toLocaleDateString()}
+										</span>
+										<CopyButton
+											text={k.fingerprint}
+											label="Copy fpr"
+											ariaLabel={`Copy fingerprint ${k.fingerprint}`}
+										/>
+									</div>
+									<details className="mt-2">
+										<summary className="cursor-pointer select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">
+											Show armored public key
+										</summary>
+										<pre className="mt-1.5 max-h-40 overflow-auto rounded bg-background/80 p-2 font-mono text-[10px] leading-relaxed">
+											{k.armored}
+										</pre>
+									</details>
+								</li>
+							))}
+						</ul>
+					</div>
 				)}
 
 				{error && (
@@ -1258,9 +1277,12 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 						<AlertDescription className="text-xs">{error}</AlertDescription>
 					</Alert>
 				)}
-				<ul className="max-h-72 space-y-2 overflow-y-auto pr-1">
+				<ul className="scrollbar-thin max-h-72 space-y-2 overflow-y-auto pr-1">
 					{keys.map((k) => (
-						<li key={k.fingerprint} className="rounded-lg border bg-muted/30 p-3 text-xs">
+						<li
+							key={k.fingerprint}
+							className="rounded-lg border bg-muted/30 p-3 text-xs transition-all duration-150 hover:border-[#0055dc]/35 hover:bg-muted/50 hover:shadow-sm dark:hover:border-[#5e94ff]/25"
+						>
 							<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
 								<span className="max-w-full truncate font-medium">{k.label}</span>
 								{k.escrowed && (

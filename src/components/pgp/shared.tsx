@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
 	envelopeFileToDataUrl,
 	formatFileSize,
+	isLocalImageUrl,
 	isSafeImageUrl,
 	type EnvelopeFile,
 } from "@/lib/pgp/envelope";
@@ -761,30 +762,48 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 							{children}
 						</a>
 					),
-					img: ({ node: _node, src, alt, ...props }) => {
+					img: ({ node: _node, src, alt, title }) => {
 						const meta = parseInlineImageAlt(alt ?? "");
-						// Resolve envelope:// handles against the attachment list; every
-						// other URL (markdown-written by the sender) is guarded by the
-						// strict isSafeImageUrl allow-list before reaching the DOM.
+						// Resolve envelope:// handles against the attachment list. Every
+						// other URL (markdown written by the sender) must pass the strict
+						// LOCAL-ONLY allow-list (isLocalImageUrl) before reaching the DOM:
+						// unlike the encrypt-side previews, remote https: images are NOT
+						// rendered here — they would auto-load while reading a decrypted
+						// message and leak the recipient's IP to a tracking pixel.
+						const raw = typeof src === "string" ? src : null;
 						const candidate =
-							typeof src === "string" && src.startsWith("envelope://")
-								? (fileMap.get(decodeURIComponent(src.slice("envelope://".length))) ?? null)
-								: typeof src === "string"
-									? src
-									: null;
-						const safeSrc = candidate ? isSafeImageUrl(candidate) : null;
+							raw !== null && raw.startsWith("envelope://")
+								? (fileMap.get(decodeURIComponent(raw.slice("envelope://".length))) ?? null)
+								: raw;
+						const safeSrc = candidate ? isLocalImageUrl(candidate) : null;
+						const remoteBlocked = safeSrc === null && raw !== null && /^https?:/i.test(raw);
 						if (!safeSrc) {
 							return (
-								<span className="mx-1 inline-block rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] italic text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
-									[missing image: {meta.displayName}]
+								<span
+									title={
+										remoteBlocked
+											? "Remote images are blocked in decrypted messages (tracking-pixel privacy guard)."
+											: undefined
+									}
+									className="mx-1 inline-block rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] italic text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+								>
+									{remoteBlocked
+										? `[remote image blocked: ${meta.displayName}]`
+										: `[missing image: ${meta.displayName}]`}
 								</span>
 							);
 						}
+						// NOTE: sender-controlled markdown attributes are NOT spread onto
+						// the <img> — a crafted srcset/sizes attribute would bypass the
+						// src allow-list above. Only alt/src/style/className/title (ours)
+						// reach the DOM. loading=lazy also defers offscreen inline images.
 						return (
 							<img
-								{...props}
+								title={title}
 								src={safeSrc}
 								alt={meta.displayName}
+								loading="lazy"
+								decoding="async"
 								style={{
 									width: `${meta.scale}%`,
 									maxWidth: "100%",

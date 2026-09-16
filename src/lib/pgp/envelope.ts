@@ -136,6 +136,24 @@ export function isSafeImageUrl(url: string): string | null {
 	return null;
 }
 
+/**
+ * LOCAL-ONLY allow-list for URLs rendered inside DECRYPTED messages.
+ *
+ * Deliberately stricter than isSafeImageUrl: `https:` is NOT accepted here,
+ * because an <img> inside a decrypted message auto-loads when the plaintext
+ * is displayed — a sender (or anyone who tampered with a published key's
+ * escrowed message) could embed a remote tracking pixel and learn the
+ * recipient's IP address and the exact time they opened the message.
+ * `blob:` URLs are equally impossible for a decrypted message to mint, so
+ * they are excluded too. Only strict `data:image/*;base64` URLs survive —
+ * the same charset-enforced shape isSafeImageUrl accepts for data URLs.
+ */
+export function isLocalImageUrl(url: string): string | null {
+	return /^data:image\/(?:png|jpe?g|gif|webp|bmp|avif|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(url)
+		? url
+		: null;
+}
+
 /** Human-readable file size, e.g. "1.4 MB". */
 export function formatFileSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;

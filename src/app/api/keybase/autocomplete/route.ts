@@ -9,9 +9,9 @@ export const dynamic = "force-dynamic";
  * GET /api/keybase/autocomplete?q=<prefix>
  */
 export async function GET(req: NextRequest) {
-  const q = queryParam(req, "q");
-  if (q.trim().length < 1) {
-    return NextResponse.json([]);
-  }
-  return proxyCall(() => autocompleteKeybaseUsersServer(q), CACHE.none);
+	const q = queryParam(req, "q");
+	if (q.trim().length < 1) {
+		return NextResponse.json([]);
+	}
+	return proxyCall(() => autocompleteKeybaseUsersServer(q), CACHE.none);
 }

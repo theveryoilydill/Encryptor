@@ -21,34 +21,34 @@ import { Toaster as Sonner, ToasterProps } from "sonner";
  * component stays theme-correct for a drop-in swap.
  */
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { resolvedTheme = "system" } = useTheme();
+	const { resolvedTheme = "system" } = useTheme();
 
-  return (
-    <Sonner
-      theme={
-        (resolvedTheme === "dark"
-          ? "dark"
-          : resolvedTheme === "light"
-            ? "light"
-            : "system") as ToasterProps["theme"]
-      }
-      className="toaster group"
-      richColors
-      style={
-        {
-          "--normal-bg": "var(--popover)",
-          "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
-          "--normal-bg-hover": "var(--accent)",
-          "--border-radius": "var(--radius)",
-          "--success-bg": "color-mix(in srgb, var(--link) 8%, var(--popover))",
-          "--success-border": "color-mix(in srgb, var(--link) 30%, transparent)",
-          "--success-text": "var(--link)",
-        } as React.CSSProperties
-      }
-      {...props}
-    />
-  );
+	return (
+		<Sonner
+			theme={
+				(resolvedTheme === "dark"
+					? "dark"
+					: resolvedTheme === "light"
+						? "light"
+						: "system") as ToasterProps["theme"]
+			}
+			className="toaster group"
+			richColors
+			style={
+				{
+					"--normal-bg": "var(--popover)",
+					"--normal-text": "var(--popover-foreground)",
+					"--normal-border": "var(--border)",
+					"--normal-bg-hover": "var(--accent)",
+					"--border-radius": "var(--radius)",
+					"--success-bg": "color-mix(in srgb, var(--link) 8%, var(--popover))",
+					"--success-border": "color-mix(in srgb, var(--link) 30%, transparent)",
+					"--success-text": "var(--link)",
+				} as React.CSSProperties
+			}
+			{...props}
+		/>
+	);
 };
 
 export { Toaster };

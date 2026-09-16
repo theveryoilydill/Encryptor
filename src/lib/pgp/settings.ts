@@ -1,0 +1,138 @@
+/**
+ * User preferences (localStorage-backed, JSON).
+ *
+ * # Mr. AI Acting on s183173's Behalf
+ *
+ * Settings are small, typed, and always read through loadSettings() so a
+ * corrupted or partial stored value falls back to the defaults instead of
+ * breaking the app (same guarded posture as every other storage reader in
+ * the repo). Saved via saveSettings(); the ConfigureModal writes through it
+ * and PgpApp keeps the loaded object in React state so tabs re-render when
+ * a preference changes.
+ */
+import { STORAGE_KEYS } from "@/lib/constants";
+
+/** Message compression applied before encryption (see encryptAndSign).
+ *  - "zlib": maximum compression (default) — every OpenPGP.js-generated and
+ *    modern GnuPG recipient key advertises zlib support.
+ *  - "zip": standard DEFLATE (raw).
+ *  - "off": no compression.
+ *  NOTE: openpgp.js only uses the sender's preferred algorithm when ALL
+ *  recipient keys advertise it in their preferences; otherwise it falls
+ *  back to uncompressed automatically. bzip2 is intentionally not offered:
+ *  OpenPGP.js-generated keys don't advertise it, so it would silently
+ *  disable compression. */
+export type CompressionLevel = "zlib" | "zip" | "off";
+
+/** Message composer style on the Encrypt tab. */
+export type MarkdownEditorKind = "notion" | "vscode";
+
+export interface AppSettings {
+	compression: CompressionLevel;
+	markdownEditor: MarkdownEditorKind;
+	/** Session passphrase cache auto-lock, in minutes. 0 = no auto-lock (the
+	 *  pre-R9 behavior: cache lives until tab close / manual forget). The
+	 *  cache itself stays memory-only either way. */
+	autoLockMinutes: AutoLockMinutes;
+	/** Sign every encrypted message with the configured private key
+	 *  (default). When off, the Encrypt tab produces an encrypted-only
+	 *  message and no longer requires a configured key. */
+	autoSign: boolean;
+	/** When on AND the configured key carries a quantum-seal (ML-KEM-768)
+	 *  key, the Encrypt tab also produces a PQ-sealed copy of the armored
+	 *  output — defense in depth against harvest-now-decrypt-later. */
+	pqSealedCopy: boolean;
+}
+
+/** Session passphrase cache auto-lock choices (minutes). */
+export type AutoLockMinutes = 0 | 5 | 15 | 30;
+
+export const DEFAULT_SETTINGS: AppSettings = {
+	// Compress messages by default, at maximum supported compression.
+	compression: "zlib",
+	// Notion/Affine-style block editor by default.
+	markdownEditor: "notion",
+	// Auto-lock the (opt-in) session passphrase cache after 15 idle minutes —
+	// a memory-only cache that lives forever is the weaker default.
+	autoLockMinutes: 15,
+	// Signing has been part of every encrypt since the app shipped — keep it.
+	autoSign: true,
+	// Quantum-sealed copy is opt-in (it adds a second output artifact).
+	pqSealedCopy: false,
+};
+
+/** Human labels + the openpgp config value for each compression level. */
+export const COMPRESSION_OPTIONS: ReadonlyArray<{
+	value: CompressionLevel;
+	label: string;
+}> = [
+	{ value: "zlib", label: "Maximum" },
+	{ value: "zip", label: "Standard" },
+	{ value: "off", label: "Off" },
+];
+
+export const EDITOR_OPTIONS: ReadonlyArray<{
+	value: MarkdownEditorKind;
+	label: string;
+}> = [
+	{ value: "notion", label: "Notion-style editor" },
+	{ value: "vscode", label: "VS Code-style (split preview)" },
+];
+
+export const AUTOLOCK_OPTIONS: ReadonlyArray<{
+	value: AutoLockMinutes;
+	label: string;
+}> = [
+	{ value: 0, label: "No auto-lock" },
+	{ value: 5, label: "5 minutes" },
+	{ value: 15, label: "15 minutes" },
+	{ value: 30, label: "30 minutes" },
+];
+
+/** Parse an unknown stored value into AppSettings, keeping valid fields and
+ *  defaulting everything else. */
+function coerceSettings(raw: unknown): AppSettings {
+	const out: AppSettings = { ...DEFAULT_SETTINGS };
+	if (typeof raw === "object" && raw !== null) {
+		const r = raw as Partial<AppSettings>;
+		if (r.compression === "zlib" || r.compression === "zip" || r.compression === "off") {
+			out.compression = r.compression;
+		}
+		if (r.markdownEditor === "notion" || r.markdownEditor === "vscode") {
+			out.markdownEditor = r.markdownEditor;
+		}
+		if (
+			typeof r.autoLockMinutes === "number" &&
+			([0, 5, 15, 30] as number[]).includes(r.autoLockMinutes)
+		) {
+			out.autoLockMinutes = r.autoLockMinutes as AutoLockMinutes;
+		}
+		if (typeof r.autoSign === "boolean") {
+			out.autoSign = r.autoSign;
+		}
+		if (typeof r.pqSealedCopy === "boolean") {
+			out.pqSealedCopy = r.pqSealedCopy;
+		}
+	}
+	return out;
+}
+
+/** Load settings from localStorage (defaults when unavailable/corrupted). */
+export function loadSettings(): AppSettings {
+	try {
+		const raw = localStorage.getItem(STORAGE_KEYS.settings);
+		if (raw) return coerceSettings(JSON.parse(raw));
+	} catch {
+		// fall through to defaults
+	}
+	return { ...DEFAULT_SETTINGS };
+}
+
+/** Persist settings (guarded like every other storage write). */
+export function saveSettings(settings: AppSettings): void {
+	try {
+		localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
+	} catch {
+		// ignore
+	}
+}

@@ -15,13 +15,13 @@ export const dynamic = "force-dynamic";
  * GET /api/keybase?usernames=alice,bob,carol
  */
 export async function GET(req: NextRequest) {
-  const gate = requireCsvParam(
-    new URL(req.url),
-    "usernames",
-    "Missing or empty 'usernames' query parameter.",
-    "A maximum of 50 usernames is allowed per request.",
-  );
-  if (!gate.ok) return gate.response;
+	const gate = requireCsvParam(
+		new URL(req.url),
+		"usernames",
+		"Missing or empty 'usernames' query parameter.",
+		"A maximum of 50 usernames is allowed per request.",
+	);
+	if (!gate.ok) return gate.response;
 
-  return proxyCall(() => lookupKeybaseUsersServer(gate.values), CACHE.public);
+	return proxyCall(() => lookupKeybaseUsersServer(gate.values), CACHE.public);
 }

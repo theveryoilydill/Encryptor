@@ -186,6 +186,24 @@ with a stolen key) is flagged the next time a previous viewer looks it up.
 All storage access is best-effort: private-mode/quota failures degrade to
 "no change detection", never to broken lookups.
 
+### Encrypt to a looked-up key
+
+Every lookup row has an **Encrypt** action: the armored public key is parsed
+client-side and handed to the app as an encryption recipient, then the Encrypt
+tab opens with the chip in place (deduplicated by fingerprint; revoked keys
+refuse the action). This closes the loop the registry exists for —
+find someone's key, then USE it — without copy/pasting armor between tabs.
+
+### My-keys backup (revocation-token safety net)
+
+The "Keys published from this device" list offers a one-click **Backup**
+download (JSON: labels, fingerprints, publish dates, escrow state, and any
+stored revocation tokens). Revocation tokens are the one artifact the
+registry CANNOT recover — only their SHA-256 hash is stored server-side — so
+an offline export is the cheapest insurance against a wiped browser profile.
+The file contains nothing that was not already on the device, but it MUST be
+stored carefully: tokens grant permanent revocation power.
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.

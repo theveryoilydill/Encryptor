@@ -26,6 +26,7 @@ import {
 	Loader2,
 	RefreshCw,
 	Search,
+	Send,
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
@@ -52,6 +53,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
 	type MyRegistryKey,
 	type RegistryHealth,
+	exportMyKeys,
 	forgetMyKey,
 	formatRegistryError,
 	listMyKeys,
@@ -70,6 +72,7 @@ import {
 import { FingerprintQrButton } from "@/components/pgp/registry/FingerprintQr";
 import { ScanQrButton } from "@/components/pgp/registry/QrScanner";
 import { getKeySighting, noteKeySighted } from "@/lib/registry/watch";
+import { toast } from "@/hooks/use-toast";
 import { KEYBASE_USERNAME_RE } from "@/lib/constants";
 import { lookupKeybaseUsersClient } from "@/lib/pgp/keybase";
 import {
@@ -81,7 +84,7 @@ import {
 	type AnyKeyInfo,
 } from "@/lib/pgp/pgp";
 import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
-import type { PrivateKeyConfig } from "@/components/pgp/contracts";
+import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
 import { CopyButton } from "@/components/pgp/shared";
 
 type KeySource = "encryptor" | "keybase" | "local";
@@ -225,7 +228,14 @@ function RegistryHealthChip() {
 	);
 }
 
-export function KeysTab({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => void }) {
+export function KeysTab({
+	onUseKey,
+	onEncryptTo,
+}: {
+	onUseKey: (config: PrivateKeyConfig) => void;
+	/** Optional: looked-up public keys can be sent straight to Encrypt. */
+	onEncryptTo?: (recipient: Recipient) => void;
+}) {
 	const [source, setSource] = useState<KeySource>("encryptor");
 	const [outcome, setOutcome] = useState<PublishOutcome | null>(null);
 	const [myKeys, setMyKeys] = useState<MyRegistryKey[]>(() => listMyKeys());
@@ -314,7 +324,7 @@ export function KeysTab({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => 
 			{outcome && <PublishOutcomeCard outcome={outcome} />}
 
 			<RestoreEscrow onUseKey={onUseKey} />
-			<RegistryLookup />
+			<RegistryLookup onEncryptTo={onEncryptTo} />
 
 			<MyKeysList keys={myKeys} onChanged={refreshMyKeys} />
 		</div>
@@ -1290,7 +1300,7 @@ function WatchCallout({
 	);
 }
 
-function RegistryLookup() {
+function RegistryLookup({ onEncryptTo }: { onEncryptTo?: (recipient: Recipient) => void }) {
 	const [query, setQuery] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [results, setResults] = useState<
@@ -1374,6 +1384,34 @@ function RegistryLookup() {
 		[runSearch],
 	);
 
+	// Row action: parse the armored public key and hand a Recipient to the
+	// app (PgpApp dedups + jumps to Encrypt). Parse failures toast here;
+	// success feedback comes from the app-level toast.
+	const handleEncryptToKey = useCallback(
+		async (k: { armored: string; fingerprint: string }) => {
+			if (!onEncryptTo) return;
+			try {
+				const info = await describePublicKey(k.armored);
+				onEncryptTo({
+					source: "local",
+					label: info.userIDs[0]?.email ?? info.userIDs[0]?.name ?? info.keyID,
+					armored: k.armored,
+					fingerprint: k.fingerprint,
+					keyID: info.keyID,
+					algorithm: info.algorithm,
+					expiresAt: info.expirationTime ? info.expirationTime.getTime() : null,
+				});
+			} catch (e) {
+				toast({
+					title: "Could not use this key",
+					description: (e as Error).message,
+					variant: "destructive",
+				});
+			}
+		},
+		[onEncryptTo],
+	);
+
 	return (
 		<Card>
 			<CardContent className="space-y-4 p-4">
@@ -1443,6 +1481,24 @@ function RegistryLookup() {
 										<span className="ml-auto text-muted-foreground">
 											published {new Date(k.createdAt * 1000).toLocaleDateString()}
 										</span>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-9 gap-1.5 px-2.5 text-[11px] sm:h-7"
+											onClick={() => void handleEncryptToKey(k)}
+											disabled={k.revoked}
+											aria-label={`Encrypt to key ${k.fingerprint}`}
+											data-testid="keys-encrypt-to"
+											title={
+												k.revoked
+													? "Revoked keys must not be used"
+													: "Add as encryption recipient and open the Encrypt tab"
+											}
+										>
+											<Send aria-hidden="true" className="size-3" />
+											Encrypt
+										</Button>
 										<FingerprintQrButton fingerprint={k.fingerprint} />
 										<CopyButton
 											text={k.fingerprint}
@@ -1618,6 +1674,23 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
+	// Offline safety net: revocation tokens exist ONLY here (the registry
+	// keeps hashes), so a one-click JSON export is the cheapest insurance
+	// against a wiped browser profile.
+	const downloadKeysBackup = useCallback(() => {
+		const blob = new Blob([exportMyKeys()], { type: "application/json" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `encryptor-keys-backup-${new Date().toISOString().slice(0, 10)}.json`;
+		a.click();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+		toast({
+			title: "Backup downloaded",
+			description: "Store it offline — revocation tokens cannot be recovered from the registry.",
+		});
+	}, []);
+
 	const handleRevoke = useCallback(async () => {
 		if (!revokeTarget?.revocationToken) return;
 		setBusy(true);
@@ -1643,6 +1716,21 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 						<Badge variant="outline" className="font-mono text-[10px]">
 							{keys.length}
 						</Badge>
+					)}
+					{keys.length > 0 && (
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							className="h-7 gap-1.5 px-2.5 text-[11px]"
+							onClick={() => downloadKeysBackup()}
+							aria-label="Download a JSON backup of your published keys and revocation tokens"
+							data-testid="keys-backup"
+							title="Revocation tokens cannot be recovered from the registry — keep an offline backup"
+						>
+							<Download aria-hidden="true" className="size-3" />
+							Backup
+						</Button>
 					)}
 				</div>
 				{keys.length === 0 && (

@@ -318,3 +318,26 @@ export function updateMyKey(
 export function forgetMyKey(fingerprint: string): void {
 	saveMyKeys(listMyKeys().filter((k) => k.fingerprint !== fingerprint));
 }
+
+/**
+ * Build a portable JSON backup of the locally-known published keys.
+ *
+ * Revocation tokens are the ONE thing the registry cannot recover (only
+ * their hash is stored server-side), so the backup deliberately includes
+ * them: an offline copy is the emergency brake for every key this browser
+ * published. Everything in the file is already on this device — exporting
+ * leaks nothing new, but the FILE must be stored carefully (tokens grant
+ * revocation power).
+ */
+export function exportMyKeys(): string {
+	return JSON.stringify(
+		{
+			format: "encryptor-keys-backup",
+			version: 1,
+			exportedAt: new Date().toISOString(),
+			keys: listMyKeys(),
+		},
+		null,
+		2,
+	);
+}

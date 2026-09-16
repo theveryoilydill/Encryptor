@@ -343,6 +343,23 @@ export default function PgpApp() {
 		[handleSetPrivateKey, toast],
 	);
 
+	// Registry lookup -> Encrypt: add the looked-up PUBLIC key as an
+	// encryption recipient and jump to the Encrypt tab (dedup by
+	// fingerprint so repeated clicks don't stack chips).
+	const handleEncryptToRegistryKey = useCallback(
+		(recipient: Recipient) => {
+			setRecipients((prev) =>
+				prev.some((r) => r.fingerprint === recipient.fingerprint) ? prev : [...prev, recipient],
+			);
+			setTab("encrypt");
+			toast({
+				title: "Recipient added",
+				description: `“${recipient.label}” can now receive encrypted messages — Encrypt tab is ready.`,
+			});
+		},
+		[toast],
+	);
+
 	// R9 auto-lock enforcement for the UI state: the freshness gate covers real
 	// unlock attempts; this lightweight interval covers the header indicator +
 	// announcement when the deadline passes while the app is open.
@@ -526,7 +543,9 @@ export default function PgpApp() {
 								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
 							)}
 							{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
-							{t.id === "keys" && <KeysTab onUseKey={handleUseRegistryKey} />}
+							{t.id === "keys" && (
+								<KeysTab onUseKey={handleUseRegistryKey} onEncryptTo={handleEncryptToRegistryKey} />
+							)}
 						</div>
 					);
 				})}

@@ -717,6 +717,9 @@ console.log("== encrypted private key escrow ==");
 
 	// Replacement semantics: authorized replace WITHOUT escrow fields keeps
 	// the stored escrow (same-fingerprint update must not destroy backups).
+	// The 1.1s gap guarantees updated_at (whole seconds) moves past
+	// private_updated_at, creating a measurable escrow-drift signal.
+	await new Promise((r) => setTimeout(r, 1100));
 	const chR = await challengeFor(escrowFpr, 81);
 	const keep = await jsonPost(
 		"/api/registry/publish",
@@ -743,6 +746,19 @@ console.log("== encrypted private key escrow ==");
 	check(
 		"replace without escrow fields KEEPS escrow",
 		afterKeep.status === 200 && typeof afterKeep.body?.encryptedPrivate === "string",
+	);
+	// Escrow-drift contract: the KEPT backup's private_updated_at now lags
+	// the key's updated_at — the exact drift the client audit flags as
+	// "escrow outdated" (a restore would return pre-replace key material).
+	const lookAfterKeep = await api(`/api/registry/lookup?fingerprint=${escrowFpr}`, {
+		headers: IP(64),
+	});
+	const keyUpd = lookAfterKeep.body?.keys?.[0]?.updatedAt;
+	const escUpd = afterKeep.body?.updatedAt;
+	check(
+		"kept escrow updatedAt lags key updatedAt (drift detectable)",
+		typeof keyUpd === "number" && typeof escUpd === "number" && escUpd < keyUpd,
+		`escrow=${escUpd} key=${keyUpd}`,
 	);
 
 	// Replacement with dropEncryptedPrivate clears it.

@@ -280,6 +280,30 @@ export async function registryRevokeByToken(
 	if (body.alreadyRevoked === true) return;
 }
 
+/**
+ * POST /api/registry/revoke — ADMIN override path (service-compromise /
+ * abuse response). Requires the registry operator's ADMIN_REVOKE_TOKEN.
+ * The token lives ONLY in the caller's memory: it is sent once in the
+ * request body, never persisted, never logged, never echoed in errors.
+ */
+export async function registryAdminRevoke(
+	fingerprint: string,
+	adminToken: string,
+	reason?: string,
+): Promise<{ alreadyRevoked: boolean }> {
+	const res = await fetch("/api/registry/revoke", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			fingerprint,
+			adminToken,
+			...(reason ? { reason } : {}),
+		}),
+	});
+	const body = await expectOk(res, "Admin revocation failed");
+	return { alreadyRevoked: body.alreadyRevoked === true };
+}
+
 /* ------------------------- local "my keys" bookkeeping ------------------------ */
 
 export function listMyKeys(): MyRegistryKey[] {
@@ -511,6 +535,11 @@ export interface MyKeyAudit {
 	outcome: MyKeyAuditOutcome;
 	/** Human explanation rendered as the badge tooltip / summary. */
 	detail: string;
+	/** Escrow drift for keys the list believes are escrowed: the stored
+	 *  private-key backup predates the current key version (outdated) or
+	 *  is gone entirely (missing). Undefined = no drift detected / not
+	 *  checked (non-escrowed key, revoked key, or probe error). */
+	escrowDrift?: "outdated" | "missing";
 }
 
 /**
@@ -570,6 +599,23 @@ export async function auditMyKeysOnRegistry(
 						outcome: "ok",
 						detail: "On the registry and healthy — baseline recorded.",
 					};
+				}
+			}
+			// Escrow drift: for keys we BELIEVE are escrowed, the
+			// stored private-key backup must not predate the current
+			// key version — restoring it would hand back material that
+			// no longer matches the public record. Probe errors never
+			// fail the audit.
+			if (k.escrowed && row && !row.revoked) {
+				try {
+					const esc = await registryFetchEscrow(k.fingerprint);
+					if (!esc.encryptedPrivate) {
+						audit.escrowDrift = "missing";
+					} else if (typeof esc.updatedAt === "number" && esc.updatedAt < row.updatedAt) {
+						audit.escrowDrift = "outdated";
+					}
+				} catch {
+					// probe failure is not an audit failure
 				}
 			}
 		} catch (e) {

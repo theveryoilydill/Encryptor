@@ -15,6 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	AudioLines,
 	Clock,
+	ChevronDown,
+	ChevronUp,
 	Download,
 	Eye,
 	EyeOff,
@@ -28,6 +30,7 @@ import {
 	RefreshCw,
 	Search,
 	Send,
+	ShieldAlert,
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
@@ -74,6 +77,7 @@ import {
 	registryLookup,
 	registryPublish,
 	registryRevokeByToken,
+	registryAdminRevoke,
 	rememberMyKey,
 	updateMyKey,
 } from "@/lib/registry/client";
@@ -345,6 +349,8 @@ export function KeysTab({
 			<RegistryLookup onEncryptTo={onEncryptTo} myKeys={myKeys} onMyKeysChanged={refreshMyKeys} />
 
 			<MyKeysList keys={myKeys} onChanged={refreshMyKeys} />
+
+			<AdminConsole />
 		</div>
 	);
 }
@@ -2224,6 +2230,22 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 										{auditBadgeProps(audit[k.fingerprint].outcome).label}
 									</Badge>
 								)}
+								{audit[k.fingerprint]?.escrowDrift && (
+									<Badge
+										variant="outline"
+										className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+										title={
+											audit[k.fingerprint].escrowDrift === "outdated"
+												? "The escrowed private-key backup predates the current key version — restoring it would return an old key. Replace the key WITH escrow to refresh the backup."
+												: "The registry no longer holds the escrowed private-key backup for this key."
+										}
+										data-testid="keys-escrow-drift"
+									>
+										{audit[k.fingerprint].escrowDrift === "outdated"
+											? "escrow outdated"
+											: "escrow missing"}
+									</Badge>
+								)}
 								<span className="ml-auto text-muted-foreground">
 									published {new Date(k.publishedAt).toLocaleDateString()}
 									{k.updatedAt && k.updatedAt - k.publishedAt > 60_000
@@ -2595,6 +2617,190 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 								onClick={handleRevoke}
 								disabled={busy}
 								className="gap-1.5"
+							>
+								{busy && <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />}
+								Revoke permanently
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+			</CardContent>
+		</Card>
+	);
+}
+
+/* --------------------------- registry admin console ----------------------- */
+
+const ADMIN_FPR_RE = /^[0-9a-fA-F]{40}$/;
+
+/**
+ * Owner-only emergency console for the registry's ADMIN_REVOKE_TOKEN path
+ * (service compromise / abuse response). The token is kept in component
+ * state ONLY — never persisted, never logged — and is sent once per
+ * revocation call. Collapsed by default so regular users never meet it.
+ * # Mr. AI Acting on s183173's Behalf
+ */
+function AdminConsole() {
+	const [open, setOpen] = useState(false);
+	const [token, setToken] = useState("");
+	const [fpr, setFpr] = useState("");
+	const [reason, setReason] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [confirmOpen, setConfirmOpen] = useState(false);
+	const [status, setStatus] = useState<{ kind: "ok" | "info" | "error"; text: string } | null>(
+		null,
+	);
+
+	const fprClean = fpr.trim().replace(/\s+/g, "");
+	const fprValid = ADMIN_FPR_RE.test(fprClean);
+	const canSubmit = token.length > 0 && fprValid && !busy;
+
+	const handleSubmit = useCallback(async () => {
+		if (!canSubmit) return;
+		setBusy(true);
+		try {
+			const r = await registryAdminRevoke(fprClean, token, reason.trim() || undefined);
+			setStatus(
+				r.alreadyRevoked
+					? { kind: "info", text: "That key was already revoked." }
+					: { kind: "ok", text: `Key ${formatFingerprint(fprClean)} revoked.` },
+			);
+			setFpr("");
+			setReason("");
+		} catch (e) {
+			setStatus({ kind: "error", text: formatRegistryError(e, "Admin revocation failed") });
+		} finally {
+			setBusy(false);
+		}
+	}, [canSubmit, fprClean, reason, token]);
+
+	return (
+		<Card className={open ? "border-red-300/60 dark:border-red-900/50" : "border-dashed"}>
+			<CardContent className="space-y-3 p-4">
+				<button
+					type="button"
+					onClick={() => setOpen((v) => !v)}
+					aria-expanded={open}
+					className="flex w-full items-center gap-2 text-left"
+					data-testid="admin-toggle"
+				>
+					<ShieldAlert
+						aria-hidden="true"
+						className={`size-4 ${open ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}
+					/>
+					<span className="text-sm font-medium">Registry admin</span>
+					{open ? (
+						<ChevronUp aria-hidden="true" className="ml-auto size-4 text-muted-foreground" />
+					) : (
+						<ChevronDown aria-hidden="true" className="ml-auto size-4 text-muted-foreground" />
+					)}
+				</button>
+				{open && (
+					<div className="space-y-3" data-testid="admin-panel">
+						<p className="text-[11px] leading-relaxed text-muted-foreground">
+							Owner-only emergency override backed by the deployment&apos;s ADMIN_REVOKE_TOKEN
+							secret: permanently revoke any published key (service compromise, abuse response). The
+							token is kept in memory for this session only — never stored, never logged.
+						</p>
+						<div className="grid gap-3 sm:grid-cols-2">
+							<div className="space-y-1.5">
+								<Label htmlFor="admin-token">Admin token</Label>
+								<Input
+									id="admin-token"
+									type="password"
+									value={token}
+									onChange={(e) => setToken(e.target.value)}
+									autoComplete="off"
+									className="font-mono text-xs"
+									data-testid="admin-token"
+								/>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="admin-fpr">Fingerprint</Label>
+								<Input
+									id="admin-fpr"
+									value={fpr}
+									onChange={(e) => setFpr(e.target.value)}
+									placeholder="40 hex characters"
+									autoComplete="off"
+									className="font-mono text-xs"
+									data-testid="admin-fpr"
+								/>
+							</div>
+						</div>
+						<div className="space-y-1.5">
+							<Label htmlFor="admin-reason">Reason (optional, shown on the revoked record)</Label>
+							<Input
+								id="admin-reason"
+								value={reason}
+								onChange={(e) => setReason(e.target.value)}
+								maxLength={200}
+								autoComplete="off"
+								className="text-xs"
+								data-testid="admin-reason"
+							/>
+						</div>
+						<div className="flex flex-wrap items-center gap-2">
+							<Button
+								type="button"
+								variant="destructive"
+								size="sm"
+								className="h-8 gap-1.5 px-3 text-xs"
+								onClick={() => setConfirmOpen(true)}
+								disabled={!canSubmit}
+								data-testid="admin-submit"
+							>
+								<Trash2 aria-hidden="true" className="size-3.5" />
+								Revoke key
+							</Button>
+							{status && (
+								<p
+									role="status"
+									data-testid="admin-status"
+									className={
+										status.kind === "error"
+											? "text-[11px] text-red-600 dark:text-red-400"
+											: status.kind === "ok"
+												? "text-[11px] text-emerald-700 dark:text-emerald-400"
+												: "text-[11px] text-muted-foreground"
+									}
+								>
+									{status.text}
+								</p>
+							)}
+						</div>
+					</div>
+				)}
+				<Dialog open={confirmOpen} onOpenChange={(o) => !o && setConfirmOpen(false)}>
+					<DialogContent className="max-w-md">
+						<DialogHeader>
+							<DialogTitle className="text-base">Admin-revoke this key?</DialogTitle>
+							<DialogDescription className="break-all text-xs">
+								{formatFingerprint(fprClean)} — revocation is PERMANENT: the fingerprint can never
+								be re-published, any escrowed private key is purged, and the record stays visible
+								with a revoked marker. This action is attributed to the registry administrator.
+							</DialogDescription>
+						</DialogHeader>
+						<DialogFooter className="gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => setConfirmOpen(false)}
+							>
+								Cancel
+							</Button>
+							<Button
+								type="button"
+								variant="destructive"
+								size="sm"
+								onClick={() => {
+									setConfirmOpen(false);
+									void handleSubmit();
+								}}
+								disabled={busy}
+								className="gap-1.5"
+								data-testid="admin-confirm"
 							>
 								{busy && <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />}
 								Revoke permanently

@@ -282,6 +282,47 @@ time:
   untouched, so a one-click heal of multi-device drift can never strand the
   token.
 
+### Escrow staleness audit ("escrow outdated" / "escrow missing")
+
+A same-fingerprint replace WITHOUT escrow fields deliberately KEEPS the
+stored private-key backup — but that means the escrowed blob can silently
+end up PREDATING the current key version: restoring it would hand back key
+material that no longer matches the public record. The audit sweep now
+detects this drift for keys the list believes are escrowed (the escrow
+probe only runs for non-revoked keys; probe errors never fail the audit):
+
+| Badge                   | Meaning                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| `escrow outdated` (amber) | `private_updated_at` < the key's `updated_at` — replace the key WITH escrow to refresh the backup. |
+| `escrow missing` (amber)  | The registry no longer holds an escrowed backup for this key (dropped, or never stored).           |
+
+The API contract is pinned by an e2e check (`kept escrow updatedAt lags key
+updatedAt`), and a repo fixture script exercises the real drift end-to-end:
+
+```bash
+node scripts/make-escrow-stale.mjs [baseUrl]   # prints {"fingerprint": ...}
+```
+
+### Registry admin console (owner-only)
+
+A collapsed **Registry admin** card at the bottom of the Keys tab exposes
+the deployment's `ADMIN_REVOKE_TOKEN` override path (service compromise /
+abuse response — the same endpoint the offline token and key-signed
+challenges use):
+
+- The token is typed per session and kept in component memory ONLY — never
+  persisted to storage, never logged, never echoed; the input is a password
+  field.
+- Fingerprint is validated client-side (40 hex); the reason (optional, ≤200
+  chars, stored on the revoked record) identifies the takedown.
+- Submission requires an explicit confirm dialog spelling out that
+  revocation is PERMANENT (fingerprint can never re-publish, escrow is
+  purged, the record stays visible as revoked).
+- Outcomes are surfaced inline: revoked (with the fingerprint), already
+  revoked, key not found, token rejected (generic 403 — an unconfigured
+  deployment answers the same way, so there is no config disclosure), and
+  rate-limited (with the server's Retry-After).
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.

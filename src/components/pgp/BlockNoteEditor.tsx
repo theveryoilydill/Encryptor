@@ -32,7 +32,13 @@ import {
 } from "@blocknote/react";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useTheme } from "next-themes";
 import { ListTree } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -407,11 +413,11 @@ export default function BlockNoteEditor({
 				slashMenu={false}
 				aria-label="Message (markdown)"
 			>
-			<SuggestionMenuController
-				triggerCharacter="/"
-				getItems={async (query) => getSlashMenuItems(editor, query)}
-			/>
-		</BlockNoteView>
+				<SuggestionMenuController
+					triggerCharacter="/"
+					getItems={async (query) => getSlashMenuItems(editor, query)}
+				/>
+			</BlockNoteView>
 		</div>
 	);
 }

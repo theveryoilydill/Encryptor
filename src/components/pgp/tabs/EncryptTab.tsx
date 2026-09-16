@@ -1648,9 +1648,7 @@ export function EncryptTab({
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full flex-col">
-							{composerBody}
-						</div>
+						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
 					</div>,
 					document.body,
 				)}

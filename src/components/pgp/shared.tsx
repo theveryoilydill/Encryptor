@@ -7,7 +7,15 @@
  * (src/components/pgp/PgpApp.tsx in the audit tree) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ComponentProps,
+	type ReactNode,
+} from "react";
 import {
 	BadgeCheck,
 	Check,

@@ -848,7 +848,11 @@ export default function PgpApp() {
 								/>
 							)}
 							{t.id === "sign" && (
-								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} markdownEditor={settings.markdownEditor} />
+								<SignTab
+									privateKey={privateKey}
+									requestDecryptedKey={requestDecryptedKey}
+									markdownEditor={settings.markdownEditor}
+								/>
 							)}
 							{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
 						</div>

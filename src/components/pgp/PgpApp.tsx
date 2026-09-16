@@ -386,38 +386,6 @@ export default function PgpApp() {
 		!privateKey?.pq &&
 		pqBannerDismissedFp !== privateKey?.info?.fingerprint;
 
-	// Unencrypted-own-key banner (round-12 product pass): fires when the
-	// configured key is PRIVATE and its material is DECRYPTED — i.e. stored
-	// without passphrase protection (describePrivateKey reports
-	// isDecrypted:false only for passphrase-protected keys; a generated or
-	// pasted passphrase-less key comes back isDecrypted:true).
-	const [unprotectedKeyDismissedFp, setUnprotectedKeyDismissedFp] = useState<string | null>(() => {
-		try {
-			return localStorage.getItem(STORAGE_KEYS.unprotectedKeyBannerDismissed);
-		} catch {
-			return null;
-		}
-	});
-	const handleDismissUnprotectedKeyBanner = useCallback(() => {
-		const fp = privateKey?.info?.fingerprint ?? null;
-		if (fp) {
-			try {
-				localStorage.setItem(STORAGE_KEYS.unprotectedKeyBannerDismissed, fp);
-			} catch {
-				// guarded storage posture — the in-memory dismissal still applies
-			}
-		}
-		setUnprotectedKeyDismissedFp(fp);
-	}, [privateKey]);
-	// "isPrivate" in info narrows AnyKeyInfo to PrivateKeyInfo so both
-	// protection fields are honestly read from the key's own metadata.
-	const ownInfo = privateKey?.info;
-	const showUnprotectedKeyBanner =
-		!!ownInfo &&
-		"isPrivate" in ownInfo &&
-		ownInfo.isPrivate &&
-		ownInfo.isDecrypted &&
-		unprotectedKeyDismissedFp !== ownInfo.fingerprint;
 
 	// Screen-reader-only tab-change announcement (see live region below).
 	const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
@@ -759,6 +727,7 @@ export default function PgpApp() {
 		}
 	}, [toast]);
 
+
 	return (
 		<div className="flex min-h-dvh flex-col bg-background text-foreground">
 			{/* Screen-reader-only announcement when the active tab changes. */}
@@ -776,14 +745,7 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-				{showUnprotectedKeyBanner && privateKey && (
-					<div className="mb-4">
-						<OwnKeyUnprotectedBanner
-							label={privateKey.label}
-							onDismiss={handleDismissUnprotectedKeyBanner}
-						/>
-					</div>
-				)}
+
 				{showPqBanner && privateKey && (
 					<div className="mb-4">
 						<PostQuantumBanner

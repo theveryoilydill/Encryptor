@@ -56,12 +56,19 @@ export default function BlockNoteEditor({
 	onChange,
 	files,
 	onNewImageDataUrl,
+	expanded = false,
 }: {
 	value: string;
 	onChange: (text: string) => void;
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
 	placeholder?: string;
+	/** Full-screen composer overlay mode (round-12 editor pass):
+	 *  # Mr. AI Acting on s183173's Behalf
+	 *  the wrapper fills the overlay through an h-full + flex chain and
+	 *  the fixed composer min-heights are dropped so BlockNote grows with
+	 *  the viewport (.bn-container owns the scrolling). */
+	expanded?: boolean;
 }) {
 	const { resolvedTheme } = useTheme();
 
@@ -170,10 +177,19 @@ export default function BlockNoteEditor({
 		return unsub;
 	}, [editor]);
 
+	const editorShell =
+		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
 		<div
 			ref={viewRef}
-			className="min-h-[320px] overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20 [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed"
+			// Full-screen overlay: fill the viewport through an h-full + flex
+			// chain and drop the fixed composer min-heights (.bn-container owns
+			// the scrolling); the inline composer keeps them.
+			className={
+				expanded
+					? `${editorShell} flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
+					: `${editorShell} min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
+			}
 		>
 			<BlockNoteView
 				editor={editor}

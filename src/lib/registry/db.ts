@@ -71,6 +71,11 @@ export interface RateLimitOutcome {
 	allowed: boolean;
 	/** Seconds until the current window rolls over (>=1 when denied). */
 	retryAfterSeconds: number;
+	/** True when the limiter itself could not reach D1 and the call was
+	 *  fail-closed. A denial in this state is an AVAILABILITY problem
+	 *  (503), not a client problem (429): "you sent too many requests"
+	 *  would be a lie, and a Retry-After horizon is unknowable. */
+	limiterDown?: boolean;
 }
 
 /** Development-only fallback salt — NEVER used in production builds. */
@@ -221,7 +226,39 @@ export async function rateLimitSafe(
 		return await rateLimit(db, action, ip, limit, windowSeconds);
 	} catch (e) {
 		console.error(`[registry] rate limiter unavailable (${action}):`, e);
-		return { allowed: failOpen, retryAfterSeconds: 0 };
+		return { allowed: failOpen, retryAfterSeconds: 0, limiterDown: true };
+	}
+}
+
+/**
+ * Enforce a mutation/read rate limit and throw the RIGHT error on denial:
+ *
+ * - over-limit with a healthy limiter → 429 + Retry-After so clients can
+ *   back off precisely ("resets in 42s");
+ * - limiter outage on a fail-closed call (D1 unreachable, write quota
+ *   exhausted) → 503 with NO Retry-After, because the outage horizon is
+ *   unknowable and "too many requests" would blame the client for a
+ *   server-side condition (observed live: preview D1 hiccup returned a
+ *   misleading 429 with Retry-After: 1, causing immediate retry storms).
+ *
+ * Shared by every route so the distinction cannot drift site-by-site.
+ */
+export async function enforceRateLimit(
+	db: D1DatabaseLike,
+	action: string,
+	ip: string,
+	limit: number,
+	windowSeconds: number,
+	tooManyMessage: string,
+	failOpen = false,
+): Promise<void> {
+	const gate = await rateLimitSafe(db, action, ip, limit, windowSeconds, failOpen);
+	if (gate.limiterDown) {
+		if (failOpen) return; // availability first: public reads proceed unthrottled
+		throw new RegistryError("Registry is temporarily unavailable — please try again shortly", 503);
+	}
+	if (!gate.allowed) {
+		throw tooManyRequests(tooManyMessage, gate.retryAfterSeconds);
 	}
 }
 

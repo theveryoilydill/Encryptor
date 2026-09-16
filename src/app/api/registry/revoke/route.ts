@@ -7,8 +7,7 @@ import {
 	getCloudflareEnv,
 	getRegistryDBReady,
 	nowSeconds,
-	rateLimitSafe,
-	tooManyRequests,
+	enforceRateLimit,
 	sha256Hex,
 	timingSafeHexEqual,
 } from "@/lib/registry/db";
@@ -50,17 +49,14 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		const gate = await rateLimitSafe(
+		await enforceRateLimit(
 			db,
 			"revoke",
 			clientIP(req),
 			LIMITS.registryRevokeLimit,
 			LIMITS.registryRevokeWindowSec,
-			false,
+			"Too many revoke requests — try again later",
 		);
-		if (!gate.allowed) {
-			throw tooManyRequests("Too many revoke requests — try again later", gate.retryAfterSeconds);
-		}
 
 		const body = await readJsonBody(req);
 		const rawFpr = stringField(body, "fingerprint", 64);

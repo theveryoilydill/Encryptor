@@ -44,6 +44,12 @@ export interface MyRegistryKey {
             be lost; the registry only stores its SHA-256 hash. */
 	revocationToken?: string;
 	escrowed: boolean;
+	/** Human algorithm label captured at publish time (e.g. "Ed25519",
+	 *  "RSA · 3072-bit") so the list can badge keys without re-parsing
+	 *  armor from the network. Absent on pre-existing local records. */
+	algo?: string;
+	/** Last local change to this record (publish/replace/escrow update). */
+	updatedAt?: number;
 }
 
 /** Thrown for non-2xx registry responses; carries the server's error text. */
@@ -302,7 +308,9 @@ export function rememberMyKey(key: MyRegistryKey): void {
 
 export function updateMyKey(
 	fingerprint: string,
-	patch: Partial<Pick<MyRegistryKey, "escrowed" | "revocationToken" | "label">>,
+	patch: Partial<
+		Pick<MyRegistryKey, "escrowed" | "revocationToken" | "label" | "algo" | "updatedAt">
+	>,
 ): void {
 	saveMyKeys(listMyKeys().map((k) => (k.fingerprint === fingerprint ? { ...k, ...patch } : k)));
 }

@@ -125,6 +125,15 @@ the window rolls over) and a matching numeric `retryAfter` field in the JSON
 body, so clients can back off precisely instead of polling. The browser
 client (`formatRegistryError`) surfaces this as "resets in 42s" in the UI.
 
+When the LIMITER itself is unavailable (D1 quota exhausted, transient
+outage), fail-closed mutations (publish/challenge/revoke/private-key) return
+**503** — `"Registry is temporarily unavailable — please try again shortly"`
+with NO `Retry-After`, because the outage horizon is unknowable and a 429
+would wrongly blame the client (this distinction lives in one place,
+`enforceRateLimit` in `src/lib/registry/db.ts`, so it cannot drift
+site-by-site). Public reads (lookup) keep failing OPEN and are simply
+unthrottled for the duration of the outage.
+
 ### Verifying fingerprints aloud (PGP word list)
 
 Lookup results can render the fingerprint as its **PGP words** (the
@@ -134,6 +143,20 @@ the even- and odd-offset tables, with canonical capitalization preserved
 the words to the key owner over a voice channel — the two alternating lists
 detect transposed, duplicated, and skipped words, which defeats MitM key
 substitution during out-of-band verification.
+
+REST consumers get the same data opt-in: append **`&words=1`** (or `words=true`)
+to any lookup call and each key gains a `words: string[20]` field.
+Without the parameter the field is omitted entirely, keeping default
+responses small.
+
+### QR fingerprint exchange
+
+The Keys tab renders a **QR code per fingerprint** encoding the standard
+`openpgp4fpr:<FINGERPRINT>` URI (OpenKeychain/GnuPG convention). Scanning is
+an out-of-band verification channel: the fingerprint travels camera-to-camera
+instead of through the (possibly tampered) network path, so a MitM who swaps
+keys in API responses cannot survive the comparison. The dialog also copies
+the raw `openpgp4fpr:` URI.
 
 ### Threat model coverage
 

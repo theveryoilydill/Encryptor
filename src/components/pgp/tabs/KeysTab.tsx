@@ -67,6 +67,7 @@ import {
 	TurnstileWidget,
 	turnstileSiteKeyConfigured,
 } from "@/components/pgp/registry/TurnstileWidget";
+import { FingerprintQrButton } from "@/components/pgp/registry/FingerprintQr";
 import { KEYBASE_USERNAME_RE } from "@/lib/constants";
 import { lookupKeybaseUsersClient } from "@/lib/pgp/keybase";
 import {
@@ -154,6 +155,8 @@ interface PublishOutcome {
 	replaced: boolean;
 	revocationToken?: string;
 	escrowed: boolean;
+	/** Human algorithm label for the local my-keys list badge. */
+	algo?: string;
 }
 
 /** Status chip — probes /api/registry/health (which also self-migrates a
@@ -238,6 +241,8 @@ export function KeysTab({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => 
 				publishedAt: Date.now(),
 				revocationToken: result.revocationToken,
 				escrowed: result.escrowed,
+				algo: result.algo,
+				updatedAt: Date.now(),
 			});
 			refreshMyKeys();
 		},
@@ -443,6 +448,7 @@ function EncryptorSource({
 					replaced: result.replaced,
 					revocationToken: result.revocationToken,
 					escrowed: escrow,
+					algo: prettyAlgorithm(generated.info.algorithm, generated.info.curve ?? null),
 				},
 				generated.label,
 			);
@@ -698,6 +704,7 @@ function KeybaseSource({
 					replaced: result.replaced,
 					revocationToken: result.revocationToken,
 					escrowed: false,
+					algo: found.algorithm,
 				},
 				`keybase.io/${found.username}`,
 			);
@@ -894,6 +901,9 @@ function LocalSource({
 					replaced: result.replaced,
 					revocationToken: result.revocationToken,
 					escrowed: Boolean(escrowBlob),
+					algo: parsed.info
+						? prettyAlgorithm(parsed.info.algorithm, parsed.info.curve ?? null)
+						: undefined,
 				},
 				parsed.label,
 			);
@@ -1361,6 +1371,7 @@ function RegistryLookup() {
 										<span className="ml-auto text-muted-foreground">
 											published {new Date(k.createdAt * 1000).toLocaleDateString()}
 										</span>
+										<FingerprintQrButton fingerprint={k.fingerprint} />
 										<CopyButton
 											text={k.fingerprint}
 											label="Copy fpr"
@@ -1580,6 +1591,16 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 						>
 							<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
 								<span className="max-w-full truncate font-medium">{k.label}</span>
+								{k.algo && (
+									<Badge
+										variant="outline"
+										className="border-violet-500/40 bg-violet-500/5 text-[10px] font-medium text-violet-700 dark:border-violet-400/30 dark:text-violet-300"
+										title="Primary key algorithm"
+									>
+										<KeyRound aria-hidden="true" className="mr-1 inline size-3" />
+										{k.algo}
+									</Badge>
+								)}
 								{k.escrowed && (
 									<Badge
 										variant="outline"
@@ -1589,13 +1610,22 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 									</Badge>
 								)}
 								<span className="ml-auto text-muted-foreground">
-									{new Date(k.publishedAt).toLocaleDateString()}
+									published {new Date(k.publishedAt).toLocaleDateString()}
+									{k.updatedAt && k.updatedAt - k.publishedAt > 60_000
+										? ` · updated ${new Date(k.updatedAt).toLocaleDateString()}`
+										: ""}
 								</span>
 							</div>
 							<p className="mt-1 font-mono text-[11px] text-muted-foreground">
 								{formatFingerprint(k.fingerprint)}
 							</p>
 							<div className="mt-2 flex flex-wrap items-center gap-1.5">
+								<CopyButton
+									text={k.fingerprint}
+									label="Copy fpr"
+									ariaLabel={`Copy fingerprint ${k.fingerprint}`}
+								/>
+								<FingerprintQrButton fingerprint={k.fingerprint} />
 								{k.revocationToken && (
 									<>
 										<Button

@@ -6,8 +6,7 @@ import {
 	auditSafe,
 	getRegistryDBReady,
 	nowSeconds,
-	rateLimitSafe,
-	tooManyRequests,
+	enforceRateLimit,
 } from "@/lib/registry/db";
 import {
 	normalizeFingerprint,
@@ -40,20 +39,14 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		const gate = await rateLimitSafe(
+		await enforceRateLimit(
 			db,
 			"private-key",
 			clientIP(req),
 			LIMITS.registryPrivateKeyLimit,
 			LIMITS.registryPrivateKeyWindowSec,
-			false,
+			"Too many private-key requests — try again later",
 		);
-		if (!gate.allowed) {
-			throw tooManyRequests(
-				"Too many private-key requests — try again later",
-				gate.retryAfterSeconds,
-			);
-		}
 
 		const body = await readJsonBody(req);
 		const rawFpr = stringField(body, "fingerprint", 64);
@@ -160,20 +153,14 @@ export async function GET(req: NextRequest) {
 		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
 
 		const db = await getRegistryDBReady();
-		const gate = await rateLimitSafe(
+		await enforceRateLimit(
 			db,
 			"private-key-read",
 			clientIP(req),
 			LIMITS.registryPrivateKeyLimit,
 			LIMITS.registryPrivateKeyWindowSec,
-			false,
+			"Too many private-key requests — try again later",
 		);
-		if (!gate.allowed) {
-			throw tooManyRequests(
-				"Too many private-key requests — try again later",
-				gate.retryAfterSeconds,
-			);
-		}
 
 		const row = await db
 			.prepare(

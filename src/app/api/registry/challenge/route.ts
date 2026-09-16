@@ -7,8 +7,7 @@ import {
 	getRegistryDBReady,
 	nowSeconds,
 	randomHex,
-	rateLimitSafe,
-	tooManyRequests,
+	enforceRateLimit,
 } from "@/lib/registry/db";
 import { challengeMessage, normalizeFingerprint } from "@/lib/registry/keys";
 import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
@@ -28,20 +27,14 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
 	try {
 		const db = await getRegistryDBReady();
-		const gate = await rateLimitSafe(
+		await enforceRateLimit(
 			db,
 			"challenge",
 			clientIP(req),
 			LIMITS.registryChallengeLimit,
 			LIMITS.registryChallengeWindowSec,
-			false,
+			"Too many challenge requests — try again later",
 		);
-		if (!gate.allowed) {
-			throw tooManyRequests(
-				"Too many challenge requests — try again later",
-				gate.retryAfterSeconds,
-			);
-		}
 
 		const url = new URL(req.url);
 		const raw = url.searchParams.get("fingerprint");

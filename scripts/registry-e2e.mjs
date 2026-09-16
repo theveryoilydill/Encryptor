@@ -227,6 +227,24 @@ console.log("== lookup paths (alice) ==");
 	check("lookup by email", byEmail.body?.keys?.length === 1);
 	const caseFold = await api(`/api/registry/lookup?email=ALICE.${RUN}@EXAMPLE.COM`);
 	check("email lookup case-insensitive", caseFold.body?.keys?.length === 1);
+
+	// ?words=1 — PGP word-list (biometric) fingerprints, opt-in per call.
+	const withWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}&words=1`);
+	const words = withWords.body?.keys?.[0]?.words;
+	check(
+		"lookup ?words=1 returns 20 PGP words",
+		Array.isArray(words) && words.length === 20,
+		JSON.stringify(words?.length),
+	);
+	check(
+		"PGP words are space-free single tokens",
+		Array.isArray(words) && words.every((w) => typeof w === "string" && /^[A-Za-z]+$/.test(w)),
+	);
+	const noWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
+	check(
+		"lookup without ?words omits words field",
+		noWords.body?.keys?.[0] && !("words" in noWords.body.keys[0]),
+	);
 }
 
 console.log("== authorized replacement (alice) ==");

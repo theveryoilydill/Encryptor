@@ -1,13 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
-import {
-	RegistryError,
-	getRegistryDBReady,
-	rateLimitSafe,
-	tooManyRequests,
-} from "@/lib/registry/db";
+import { RegistryError, getRegistryDBReady, enforceRateLimit } from "@/lib/registry/db";
 import { normalizeEmail, normalizeFingerprint, normalizeKeyID } from "@/lib/registry/keys";
+import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import { REGISTRY_CACHE_PUBLIC, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 
 export const runtime = "nodejs";
@@ -24,6 +20,11 @@ export const dynamic = "force-dynamic";
  * Returns { keys: [...] } so callers can iterate uniformly. Revoked keys
  * are returned WITH their revocation status — hiding them would let an
  * attacker silently suppress revocations.
+ *
+ * Add ?words=1 to include a `words` array per key: the PGP word list
+ * (biometric) rendering of the fingerprint, e.g. "topmost Istanbul Pluto
+ * vagabond …". 20 words, canonical capitalization — read aloud over a
+ * voice call to verify a fingerprint without trusting the channel.
  */
 
 interface RegistryRow {
@@ -51,28 +52,33 @@ function toPublic(row: RegistryRow) {
 	};
 }
 
+/** ?words=1 (or =true) opts into PGP word-list fingerprints per key. */
+function wantsWords(url: URL): boolean {
+	const v = url.searchParams.get("words");
+	return v === "1" || v === "true";
+}
+
 export async function GET(req: NextRequest) {
 	try {
 		const url = new URL(req.url);
 		const fingerprint = url.searchParams.get("fingerprint");
 		const keyID = url.searchParams.get("key_id");
 		const email = url.searchParams.get("email");
+		const includeWords = wantsWords(url);
 
 		const db = await getRegistryDBReady();
 		// Public read endpoint — still rate limited (read-first limiter:
 		// over-limit callers cost ~1 indexed read, zero writes; limiter
 		// failures fail OPEN so reads stay available). 120 lookups/hour/IP.
-		const gate = await rateLimitSafe(
+		await enforceRateLimit(
 			db,
 			"lookup",
 			clientIP(req),
 			LIMITS.registryLookupLimit,
 			LIMITS.registryLookupWindowSec,
+			"Too many lookup requests — try again later",
 			true,
 		);
-		if (!gate.allowed) {
-			throw tooManyRequests("Too many lookup requests — try again later", gate.retryAfterSeconds);
-		}
 		let rows: RegistryRow[] = [];
 
 		if (fingerprint) {
@@ -122,7 +128,12 @@ export async function GET(req: NextRequest) {
 		}
 
 		return NextResponse.json(
-			{ keys: rows.map(toPublic) },
+			{
+				keys: rows.map((row) => ({
+					...toPublic(row),
+					...(includeWords ? { words: fingerprintToPgpWords(row.fingerprint) } : {}),
+				})),
+			},
 			{
 				headers: {
 					"Cache-Control": REGISTRY_CACHE_PUBLIC,

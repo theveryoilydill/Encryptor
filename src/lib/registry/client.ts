@@ -317,7 +317,10 @@ export function rememberMyKey(key: MyRegistryKey): void {
 export function updateMyKey(
 	fingerprint: string,
 	patch: Partial<
-		Pick<MyRegistryKey, "escrowed" | "revocationToken" | "label" | "algo" | "updatedAt">
+		Pick<
+			MyRegistryKey,
+			"escrowed" | "revocationToken" | "label" | "algo" | "updatedAt" | "keyId" | "emails"
+		>
 	>,
 ): void {
 	saveMyKeys(

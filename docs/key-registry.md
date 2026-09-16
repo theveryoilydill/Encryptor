@@ -242,6 +242,46 @@ The summary line reports `N checked · M needs attention` (attention =
 changed/revoked), and sightings are refreshed as the sweep goes, so the next
 lookup of the same key will not re-flag what you just saw.
 
+### Encrypted backups (passphrase-sealed export)
+
+The plaintext backup contains revocation tokens — the only revocation power
+that exists for a key — so the **Encrypted backup** button seals the exact
+same payload with a passphrase before it ever touches disk:
+
+- **Crypto**: PBKDF2-SHA256 at 600,000 iterations (random 16-byte salt per
+  export) derives an AES-256-GCM key (random 12-byte IV per export). All
+  WebCrypto, in-browser; the passphrase never leaves the call scope.
+- **Envelope**: `encryptor-keys-backup-encrypted` `version` 2 — cleartext
+  `exportedAt` + advisory `keyCount`, everything else (fingerprints, emails,
+  tokens) inside the GCM ciphertext. A wrong passphrase or a tampered file
+  fails authentication and is reported as "Wrong passphrase — the backup
+  stays sealed." (no silent recovery path exists).
+- **Gating**: export is blocked until the passphrase reaches at least "Fair"
+  strength (the same zxcvbn-style estimator as key generation) and both
+  fields match; the dialog shows a live strength meter and the KDF
+  parameters.
+- **Restore**: the restore flow sniffs the format — encrypted files open a
+  passphrase stage first ("Unlock"), then the same what-would-change preview
+  as plaintext restores. Plaintext v1 files keep working unchanged; the
+  plaintext **Backup** button stays available but now warns that anyone with
+  the file can revoke your keys.
+
+### "Yours" badge & refresh saved copy
+
+Lookup rows are cross-referenced against the local my-keys list at render
+time:
+
+- A row whose fingerprint is already saved on this device gets an emerald
+  **yours** badge (tooltip shows the local label) — instant "this is mine"
+  recognition when checking your own key.
+- If the registry version is NEWER than the saved copy (e.g. the key was
+  replaced from another device, or an older backup was restored), the row
+  also gets an amber **newer on registry** badge plus a **Refresh copy**
+  action that pulls emails, algorithm label and key ID from the current
+  armored key into the local record — label and revocation token stay
+  untouched, so a one-click heal of multi-device drift can never strand the
+  token.
+
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.
@@ -326,7 +366,7 @@ keep/drop semantics, revocation purge):
 ```bash
 npx wrangler d1 migrations apply REGISTRY_DB --local   # local D1 + schema
 bun run dev                                            # terminal 1
-bun run test:registry                                  # terminal 2 (73 checks)
+bun run test:registry                                  # terminal 2 (81 checks)
 ```
 
 `REGISTRY_TEST_BASE` overrides the target URL for preview deployments.

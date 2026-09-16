@@ -11,7 +11,7 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	AudioLines,
 	Clock,
@@ -24,6 +24,7 @@ import {
 	HardDrive,
 	KeyRound,
 	Loader2,
+	Lock,
 	RefreshCw,
 	Search,
 	Send,
@@ -31,6 +32,7 @@ import {
 	Trash2,
 	TriangleAlert,
 	Upload,
+	UserCheck,
 	UserRound,
 } from "lucide-react";
 
@@ -40,6 +42,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PassphraseStrengthMeter } from "@/components/pgp/PassphraseStrengthMeter";
+import { estimatePassphraseStrength } from "@/lib/pgp/passphrase-strength";
 import {
 	Dialog,
 	DialogContent,
@@ -80,6 +83,12 @@ import {
 } from "@/components/pgp/registry/TurnstileWidget";
 import { FingerprintQrButton } from "@/components/pgp/registry/FingerprintQr";
 import { ScanQrButton } from "@/components/pgp/registry/QrScanner";
+import {
+	BackupDecryptFailure,
+	decryptKeysBackup,
+	encryptKeysBackup,
+	isEncryptedBackupText,
+} from "@/lib/registry/backup-crypto";
 import { getKeySighting, noteKeySighted } from "@/lib/registry/watch";
 import { toast } from "@/hooks/use-toast";
 import { KEYBASE_USERNAME_RE } from "@/lib/constants";
@@ -333,7 +342,7 @@ export function KeysTab({
 			{outcome && <PublishOutcomeCard outcome={outcome} />}
 
 			<RestoreEscrow onUseKey={onUseKey} />
-			<RegistryLookup onEncryptTo={onEncryptTo} />
+			<RegistryLookup onEncryptTo={onEncryptTo} myKeys={myKeys} onMyKeysChanged={refreshMyKeys} />
 
 			<MyKeysList keys={myKeys} onChanged={refreshMyKeys} />
 		</div>
@@ -1309,7 +1318,17 @@ function WatchCallout({
 	);
 }
 
-function RegistryLookup({ onEncryptTo }: { onEncryptTo?: (recipient: Recipient) => void }) {
+function RegistryLookup({
+	onEncryptTo,
+	myKeys,
+	onMyKeysChanged,
+}: {
+	onEncryptTo?: (recipient: Recipient) => void;
+	/** Local list — rows whose fingerprint is saved here get a “yours” badge. */
+	myKeys: MyRegistryKey[];
+	/** Called after "Refresh saved copy" updates local bookkeeping. */
+	onMyKeysChanged?: () => void;
+}) {
 	const [query, setQuery] = useState("");
 	const [loading, setLoading] = useState(false);
 	const [results, setResults] = useState<
@@ -1331,6 +1350,14 @@ function RegistryLookup({ onEncryptTo }: { onEncryptTo?: (recipient: Recipient) 
 		| null
 	>(null);
 	const [error, setError] = useState<string | null>(null);
+	// Rows whose fingerprint exists in the local my-keys list get a “yours”
+	// badge; a registry row NEWER than the saved copy gets a refresh
+	// affordance so multi-device drift can be healed in one click.
+	const mineMap = useMemo(
+		() => new Map(myKeys.map((k) => [k.fingerprint.toLowerCase(), k])),
+		[myKeys],
+	);
+	const [refreshingFpr, setRefreshingFpr] = useState<string | null>(null);
 
 	const runSearch = useCallback(async (raw: string) => {
 		const kind = detectQueryKind(raw);
@@ -1420,6 +1447,44 @@ function RegistryLookup({ onEncryptTo }: { onEncryptTo?: (recipient: Recipient) 
 		},
 		[onEncryptTo],
 	);
+	// Row action: the saved copy of this key predates the registry version
+	// (old backup, or replaced from another device). Pull emails/algo/keyId
+	// from the CURRENT armored key and refresh the local record — label and
+	// revocation token stay untouched.
+	const handleRefreshCopy = useCallback(
+		async (k: { armored: string; fingerprint: string; updatedAt: number }) => {
+			if (!onMyKeysChanged) return;
+			setRefreshingFpr(k.fingerprint);
+			try {
+				const info = await describePublicKey(k.armored);
+				const emails = info.userIDs
+					.map((u) => u.email ?? u.name)
+					.filter((v): v is string => Boolean(v))
+					.slice(0, 10);
+				updateMyKey(k.fingerprint, {
+					keyId: info.keyID,
+					...(emails.length > 0 ? { emails } : {}),
+					...(info.algorithm ? { algo: prettyAlgorithm(info.algorithm, info.curve ?? null) } : {}),
+					updatedAt: k.updatedAt * 1000,
+				});
+				onMyKeysChanged();
+				toast({
+					title: "Saved copy refreshed",
+					description:
+						"Local record now matches the registry version — label and revocation token untouched.",
+				});
+			} catch (e) {
+				toast({
+					title: "Could not refresh this copy",
+					description: (e as Error).message,
+					variant: "destructive",
+				});
+			} finally {
+				setRefreshingFpr(null);
+			}
+		},
+		[onMyKeysChanged],
+	);
 
 	return (
 		<Card>
@@ -1468,70 +1533,116 @@ function RegistryLookup({ onEncryptTo }: { onEncryptTo?: (recipient: Recipient) 
 							{results.length.toLocaleString()} key{results.length === 1 ? "" : "s"} found
 						</p>
 						<ul className="scrollbar-thin max-h-96 space-y-2 overflow-y-auto pr-1">
-							{results.map((k) => (
-								<li
-									key={k.fingerprint}
-									className="rounded-lg border bg-muted/30 p-3 text-xs transition-all duration-150 hover:border-[#0055dc]/35 hover:bg-muted/50 hover:shadow-sm dark:hover:border-[#5e94ff]/25"
-								>
-									<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-										<span className="font-mono">{formatFingerprint(k.fingerprint)}</span>
-										{k.revoked ? (
-											<Badge variant="destructive" className="text-[10px]">
-												revoked{k.revokeReason ? `: ${k.revokeReason}` : ""}
-											</Badge>
-										) : (
-											<Badge
+							{results.map((k) => {
+								const mine = mineMap.get(k.fingerprint.toLowerCase());
+								const mineStamp = mine ? (mine.updatedAt ?? mine.publishedAt) : 0;
+								const mineStale = Boolean(mine && mineStamp < k.updatedAt * 1000 - 500);
+								return (
+									<li
+										key={k.fingerprint}
+										className="rounded-lg border bg-muted/30 p-3 text-xs transition-all duration-150 hover:border-[#0055dc]/35 hover:bg-muted/50 hover:shadow-sm dark:hover:border-[#5e94ff]/25"
+									>
+										<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+											<span className="font-mono">{formatFingerprint(k.fingerprint)}</span>
+											{k.revoked ? (
+												<Badge variant="destructive" className="text-[10px]">
+													revoked{k.revokeReason ? `: ${k.revokeReason}` : ""}
+												</Badge>
+											) : (
+												<Badge
+													variant="outline"
+													className="border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-400"
+												>
+													active
+												</Badge>
+											)}
+											{mine && (
+												<Badge
+													variant="outline"
+													className="border-emerald-500/40 bg-emerald-500/5 text-[10px] font-medium text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-300"
+													title={`Saved in your keys list as “${mine.label}”`}
+													data-testid="keys-yours"
+												>
+													<UserCheck aria-hidden="true" className="mr-1 inline size-3" />
+													yours
+												</Badge>
+											)}
+											{mine && mineStale && (
+												<Badge
+													variant="outline"
+													className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+													title="The registry has a newer version than your saved copy"
+													data-testid="keys-yours-stale"
+												>
+													newer on registry
+												</Badge>
+											)}
+											<span className="ml-auto text-muted-foreground">
+												published {new Date(k.createdAt * 1000).toLocaleDateString()}
+											</span>
+											<Button
+												type="button"
 												variant="outline"
-												className="border-emerald-500/40 text-[10px] text-emerald-700 dark:text-emerald-400"
+												size="sm"
+												className="h-9 gap-1.5 px-2.5 text-[11px] sm:h-7"
+												onClick={() => void handleEncryptToKey(k)}
+												disabled={k.revoked}
+												aria-label={`Encrypt to key ${k.fingerprint}`}
+												data-testid="keys-encrypt-to"
+												title={
+													k.revoked
+														? "Revoked keys must not be used"
+														: "Add as encryption recipient and open the Encrypt tab"
+												}
 											>
-												active
-											</Badge>
-										)}
-										<span className="ml-auto text-muted-foreground">
-											published {new Date(k.createdAt * 1000).toLocaleDateString()}
-										</span>
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											className="h-9 gap-1.5 px-2.5 text-[11px] sm:h-7"
-											onClick={() => void handleEncryptToKey(k)}
-											disabled={k.revoked}
-											aria-label={`Encrypt to key ${k.fingerprint}`}
-											data-testid="keys-encrypt-to"
-											title={
-												k.revoked
-													? "Revoked keys must not be used"
-													: "Add as encryption recipient and open the Encrypt tab"
-											}
-										>
-											<Send aria-hidden="true" className="size-3" />
-											Encrypt
-										</Button>
-										<FingerprintQrButton fingerprint={k.fingerprint} />
-										<CopyButton
-											text={k.fingerprint}
-											label="Copy fpr"
-											ariaLabel={`Copy fingerprint ${k.fingerprint}`}
-										/>
-									</div>
-									{k.meta && (
-										<div className="mt-2">
-											<KeyMetaBadges meta={k.meta} />
+												<Send aria-hidden="true" className="size-3" />
+												Encrypt
+											</Button>
+											{mine && mineStale && !k.revoked && (
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													className="h-9 gap-1.5 px-2.5 text-[11px] sm:h-7"
+													onClick={() => void handleRefreshCopy(k)}
+													disabled={refreshingFpr === k.fingerprint}
+													aria-label={`Refresh the locally saved copy of ${k.fingerprint}`}
+													data-testid="keys-refresh-copy"
+													title="Update your saved copy to the registry version — label and revocation token stay"
+												>
+													{refreshingFpr === k.fingerprint ? (
+														<Loader2 aria-hidden="true" className="size-3 animate-spin" />
+													) : (
+														<RefreshCw aria-hidden="true" className="size-3" />
+													)}
+													Refresh copy
+												</Button>
+											)}
+											<FingerprintQrButton fingerprint={k.fingerprint} />
+											<CopyButton
+												text={k.fingerprint}
+												label="Copy fpr"
+												ariaLabel={`Copy fingerprint ${k.fingerprint}`}
+											/>
 										</div>
-									)}
-									<WatchCallout watch={k.watch} />
-									<PgpWordsPanel fingerprint={k.fingerprint} />
-									<details className="mt-2">
-										<summary className="cursor-pointer select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">
-											Show armored public key
-										</summary>
-										<pre className="mt-1.5 max-h-40 overflow-auto rounded bg-background/80 p-2 font-mono text-[10px] leading-relaxed">
-											{k.armored}
-										</pre>
-									</details>
-								</li>
-							))}
+										{k.meta && (
+											<div className="mt-2">
+												<KeyMetaBadges meta={k.meta} />
+											</div>
+										)}
+										<WatchCallout watch={k.watch} />
+										<PgpWordsPanel fingerprint={k.fingerprint} />
+										<details className="mt-2">
+											<summary className="cursor-pointer select-none text-[11px] text-[#0055dc] hover:underline dark:text-[#5e94ff]">
+												Show armored public key
+											</summary>
+											<pre className="mt-1.5 max-h-40 overflow-auto rounded bg-background/80 p-2 font-mono text-[10px] leading-relaxed">
+												{k.armored}
+											</pre>
+										</details>
+									</li>
+								);
+							})}
 						</ul>
 					</div>
 				)}
@@ -1728,6 +1839,27 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 	const [audit, setAudit] = useState<Record<string, MyKeyAudit>>({});
 	const [auditing, setAuditing] = useState(false);
 	const [auditNote, setAuditNote] = useState<string | null>(null);
+	// Encrypted backup: same JSON payload sealed with a passphrase
+	// (PBKDF2-SHA256 → AES-256-GCM) so a stray file can't hand out
+	// revocation power.
+	const [exportOpen, setExportOpen] = useState(false);
+	const [exportPass, setExportPass] = useState("");
+	const [exportPass2, setExportPass2] = useState("");
+	const [showExportPass, setShowExportPass] = useState(false);
+	const [exportBusy, setExportBusy] = useState(false);
+	// Encrypted restore: a v2 envelope must be UNLOCKED before its
+	// contents can be previewed — one dialog, two stages.
+	const [restoreStage, setRestoreStage] = useState<"passphrase" | "preview">("preview");
+	const [restoreLocked, setRestoreLocked] = useState<{
+		fileName: string;
+		text: string;
+	} | null>(null);
+	const [restorePass, setRestorePass] = useState("");
+	const [restorePassError, setRestorePassError] = useState<string | null>(null);
+
+	const exportStrength = useMemo(() => estimatePassphraseStrength(exportPass), [exportPass]);
+	const exportReady =
+		exportPass.length > 0 && exportPass === exportPass2 && exportStrength.score >= 2 && !exportBusy;
 
 	// Offline safety net: revocation tokens exist ONLY here (the registry
 	// keeps hashes), so a one-click JSON export is the cheapest insurance
@@ -1742,20 +1874,38 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 		setTimeout(() => URL.revokeObjectURL(url), 1000);
 		toast({
 			title: "Backup downloaded",
-			description: "Store it offline — revocation tokens cannot be recovered from the registry.",
+			description:
+				"Unencrypted file — anyone who gets it can revoke your keys. Prefer the encrypted backup.",
 		});
 	}, []);
 
 	const closeRestore = useCallback(() => {
 		setRestoreOpen(false);
 		setRestorePreview(null);
+		setRestoreLocked(null);
+		setRestorePass("");
+		setRestorePassError(null);
+		setRestoreStage("preview");
 	}, []);
 
 	// Read + validate the chosen file, then show what WOULD change before
 	// touching anything — a restore must never surprise.
+	// Read + validate the chosen file. Encrypted envelopes (v2) go to a
+	// passphrase stage first — contents stay sealed until decrypt — while
+	// plaintext files go straight to the what-would-change preview. A
+	// restore must never surprise.
 	const handleBackupFile = useCallback(async (file: File) => {
+		const text = await file.text();
+		if (isEncryptedBackupText(text)) {
+			setRestoreLocked({ fileName: file.name, text });
+			setRestorePass("");
+			setRestorePassError(null);
+			setRestoreStage("passphrase");
+			setRestoreOpen(true);
+			return;
+		}
 		try {
-			const parsed = parseKeysBackup(await file.text());
+			const parsed = parseKeysBackup(text);
 			if (parsed.keys.length === 0) {
 				toast({
 					title: "Nothing restorable in that file",
@@ -1772,6 +1922,7 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 				parsed,
 				counts: previewRestore(parsed.keys),
 			});
+			setRestoreStage("preview");
 			setRestoreOpen(true);
 		} catch (e) {
 			toast({
@@ -1781,6 +1932,85 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 			});
 		}
 	}, []);
+
+	// Stage 1 → 2: derive the key, open the envelope, and only then show
+	// the preview. Wrong passphrases keep the dialog open with an inline
+	// error — the file never leaves the browser either way.
+	const handleUnlockRestore = useCallback(async () => {
+		if (!restoreLocked) return;
+		setRestorePassError(null);
+		try {
+			const plain = await decryptKeysBackup(restoreLocked.text, restorePass);
+			const parsed = parseKeysBackup(plain);
+			if (parsed.keys.length === 0) {
+				setRestorePassError("That backup unlocked but holds no restorable keys.");
+				return;
+			}
+			setRestorePreview({
+				fileName: restoreLocked.fileName,
+				parsed,
+				counts: previewRestore(parsed.keys),
+			});
+			setRestoreStage("preview");
+			setRestoreLocked(null);
+			setRestorePass("");
+		} catch (e) {
+			if (e instanceof BackupDecryptFailure && e.reason === "wrong-passphrase") {
+				setRestorePassError(e.message);
+			} else {
+				closeRestore();
+				toast({
+					title: "Restore failed",
+					description: e instanceof Error ? e.message : "Could not unlock that backup.",
+					variant: "destructive",
+				});
+			}
+		}
+	}, [closeRestore, restoreLocked, restorePass]);
+
+	const openEncryptedExport = useCallback(() => {
+		setExportPass("");
+		setExportPass2("");
+		setShowExportPass(false);
+		setExportOpen(true);
+	}, []);
+
+	const closeExport = useCallback(() => {
+		setExportOpen(false);
+		setExportPass("");
+		setExportPass2("");
+		setShowExportPass(false);
+		setExportBusy(false);
+	}, []);
+
+	const handleEncryptedExport = useCallback(async () => {
+		if (exportPass !== exportPass2 || exportStrength.score < 2) return;
+		setExportBusy(true);
+		try {
+			const sealed = await encryptKeysBackup(exportMyKeys(), exportPass);
+			const blob = new Blob([sealed], { type: "application/json" });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = `encryptor-keys-backup-encrypted-${new Date().toISOString().slice(0, 10)}.json`;
+			a.click();
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+			closeExport();
+			toast({
+				title: "Encrypted backup downloaded",
+				description:
+					"Sealed with AES-256-GCM. Keep the passphrase safe — without it the tokens are unrecoverable.",
+			});
+		} catch (e) {
+			toast({
+				title: "Encryption failed",
+				description: e instanceof Error ? e.message : "Could not seal the backup.",
+				variant: "destructive",
+			});
+		} finally {
+			setExportBusy(false);
+		}
+	}, [closeExport, exportPass, exportPass2, exportStrength.score]);
 
 	const confirmRestore = useCallback(() => {
 		if (!restorePreview) return;
@@ -1889,10 +2119,25 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 								variant="outline"
 								size="sm"
 								className="h-7 gap-1.5 px-2.5 text-[11px]"
+								onClick={openEncryptedExport}
+								aria-label="Download a passphrase-encrypted backup of your keys and revocation tokens"
+								data-testid="keys-backup-encrypted"
+								title="Seal the backup with a passphrase (PBKDF2 + AES-256-GCM) — safe to keep anywhere"
+							>
+								<Lock aria-hidden="true" className="size-3" />
+								Encrypted backup
+							</Button>
+						)}
+						{keys.length > 0 && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="h-7 gap-1.5 px-2.5 text-[11px]"
 								onClick={() => downloadKeysBackup()}
-								aria-label="Download a JSON backup of your published keys and revocation tokens"
+								aria-label="Download an unencrypted JSON backup of your keys and revocation tokens"
 								data-testid="keys-backup"
-								title="Revocation tokens cannot be recovered from the registry — keep an offline backup"
+								title="Unencrypted JSON — anyone with this file can revoke your keys. Prefer the encrypted backup"
 							>
 								<Download aria-hidden="true" className="size-3" />
 								Backup
@@ -2058,91 +2303,261 @@ function MyKeysList({ keys, onChanged }: { keys: MyRegistryKey[]; onChanged: () 
 					}}
 				>
 					<DialogContent className="max-w-md">
-						<DialogHeader>
-							<DialogTitle className="text-base">Restore this backup?</DialogTitle>
-							<DialogDescription className="break-all text-xs">
-								{restorePreview &&
-									`${restorePreview.fileName}${restorePreview.parsed.exportedAt ? ` · exported ${new Date(restorePreview.parsed.exportedAt).toLocaleString()}` : ""}`}
-							</DialogDescription>
-						</DialogHeader>
-						{restorePreview && (
-							<div className="space-y-2.5">
-								<div className="flex flex-wrap gap-1.5">
-									<Badge
-										variant="outline"
-										data-testid="keys-restore-added"
-										className="border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-300"
-									>
-										+{restorePreview.counts.added} new
-									</Badge>
-									<Badge
-										variant="outline"
-										data-testid="keys-restore-updated"
-										className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
-									>
-										~{restorePreview.counts.updated} newer
-									</Badge>
-									<Badge
-										variant="outline"
-										data-testid="keys-restore-skipped"
-										className="text-[10px] text-muted-foreground"
-									>
-										={restorePreview.counts.skipped} already current
-									</Badge>
-									{restorePreview.parsed.invalid > 0 && (
-										<Badge
-											variant="outline"
-											data-testid="keys-restore-invalid"
-											className="border-red-400/50 bg-red-500/10 text-[10px] text-red-700 dark:border-red-400/30 dark:text-red-300"
+						{restoreStage === "passphrase" ? (
+							<>
+								<DialogHeader>
+									<DialogTitle className="flex items-center gap-2 text-base">
+										<span className="flex size-7 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:bg-amber-400/10 dark:text-amber-300">
+											<Lock aria-hidden="true" className="size-3.5" />
+										</span>
+										Encrypted backup
+									</DialogTitle>
+									<DialogDescription className="break-all text-xs">
+										{restoreLocked?.fileName} — sealed with a passphrase. Unlock to preview what a
+										restore would change; nothing leaves this browser.
+									</DialogDescription>
+								</DialogHeader>
+								<div className="space-y-1.5">
+									<Label htmlFor="keys-restore-pass">Backup passphrase</Label>
+									<Input
+										id="keys-restore-pass"
+										type="password"
+										value={restorePass}
+										onChange={(e) => setRestorePass(e.target.value)}
+										autoComplete="off"
+										className="font-mono text-xs"
+										data-testid="keys-restore-pass"
+										onKeyDown={(e) => {
+											if (e.key === "Enter" && restorePass) void handleUnlockRestore();
+										}}
+									/>
+									{restorePassError && (
+										<p
+											className="text-[11px] text-red-600 dark:text-red-400"
+											role="alert"
+											data-testid="keys-restore-pass-error"
 										>
-											!{restorePreview.parsed.invalid} unusable
-										</Badge>
+											{restorePassError}
+										</p>
 									)}
+									<p className="font-mono text-[10px] text-muted-foreground">
+										PBKDF2-SHA256 · AES-256-GCM — verified locally
+									</p>
 								</div>
-								<ul
-									className="scrollbar-thin max-h-40 space-y-1 overflow-y-auto rounded-lg border bg-muted/30 p-2"
-									data-testid="keys-restore-preview-list"
-								>
-									{restorePreview.parsed.keys.slice(0, 6).map((k) => (
-										<li key={k.fingerprint} className="flex items-center gap-2 text-[11px]">
-											<span className="truncate font-medium">{k.label}</span>
-											<span className="ml-auto font-mono text-muted-foreground">
-												{k.fingerprint.slice(0, 12)}…
-											</span>
-											{k.revocationToken && (
-												<Badge variant="outline" className="text-[9px] text-muted-foreground">
-													token
+								<DialogFooter className="gap-2">
+									<Button type="button" variant="outline" size="sm" onClick={closeRestore}>
+										Cancel
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										onClick={() => void handleUnlockRestore()}
+										disabled={!restorePass}
+										className="gap-1.5"
+										data-testid="keys-restore-unlock"
+									>
+										<Lock aria-hidden="true" className="size-3.5" />
+										Unlock
+									</Button>
+								</DialogFooter>
+							</>
+						) : (
+							<>
+								<DialogHeader>
+									<DialogTitle className="text-base">Restore this backup?</DialogTitle>
+									<DialogDescription className="break-all text-xs">
+										{restorePreview &&
+											`${restorePreview.fileName}${restorePreview.parsed.exportedAt ? ` · exported ${new Date(restorePreview.parsed.exportedAt).toLocaleString()}` : ""}`}
+									</DialogDescription>
+								</DialogHeader>
+								{restorePreview && (
+									<div className="space-y-2.5">
+										<div className="flex flex-wrap gap-1.5">
+											<Badge
+												variant="outline"
+												data-testid="keys-restore-added"
+												className="border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:border-emerald-400/30 dark:text-emerald-300"
+											>
+												+{restorePreview.counts.added} new
+											</Badge>
+											<Badge
+												variant="outline"
+												data-testid="keys-restore-updated"
+												className="border-amber-500/50 bg-amber-500/10 text-[10px] text-amber-700 dark:border-amber-400/30 dark:text-amber-300"
+											>
+												~{restorePreview.counts.updated} newer
+											</Badge>
+											<Badge
+												variant="outline"
+												data-testid="keys-restore-skipped"
+												className="text-[10px] text-muted-foreground"
+											>
+												={restorePreview.counts.skipped} already current
+											</Badge>
+											{restorePreview.parsed.invalid > 0 && (
+												<Badge
+													variant="outline"
+													data-testid="keys-restore-invalid"
+													className="border-red-400/50 bg-red-500/10 text-[10px] text-red-700 dark:border-red-400/30 dark:text-red-300"
+												>
+													!{restorePreview.parsed.invalid} unusable
 												</Badge>
 											)}
-										</li>
-									))}
-									{restorePreview.parsed.keys.length > 6 && (
-										<li className="text-[11px] text-muted-foreground">
-											+ {restorePreview.parsed.keys.length - 6} more…
-										</li>
-									)}
-								</ul>
-								<p className="text-[11px] text-muted-foreground">
-									Newest records win per fingerprint; a revocation token your list lost is rescued
-									from the file. Tokens stay on this device — the registry only stores their hashes.
-								</p>
-							</div>
+										</div>
+										<ul
+											className="scrollbar-thin max-h-40 space-y-1 overflow-y-auto rounded-lg border bg-muted/30 p-2"
+											data-testid="keys-restore-preview-list"
+										>
+											{restorePreview.parsed.keys.slice(0, 6).map((k) => (
+												<li key={k.fingerprint} className="flex items-center gap-2 text-[11px]">
+													<span className="truncate font-medium">{k.label}</span>
+													<span className="ml-auto font-mono text-muted-foreground">
+														{k.fingerprint.slice(0, 12)}…
+													</span>
+													{k.revocationToken && (
+														<Badge variant="outline" className="text-[9px] text-muted-foreground">
+															token
+														</Badge>
+													)}
+												</li>
+											))}
+											{restorePreview.parsed.keys.length > 6 && (
+												<li className="text-[11px] text-muted-foreground">
+													+ {restorePreview.parsed.keys.length - 6} more…
+												</li>
+											)}
+										</ul>
+										<p className="text-[11px] text-muted-foreground">
+											Newest records win per fingerprint; a revocation token your list lost is
+											rescued from the file. Tokens stay on this device — the registry only stores
+											their hashes.
+										</p>
+									</div>
+								)}
+								<DialogFooter className="gap-2">
+									<Button type="button" variant="outline" size="sm" onClick={closeRestore}>
+										Cancel
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										onClick={confirmRestore}
+										data-testid="keys-restore-confirm"
+										className="gap-1.5"
+										disabled={!restorePreview}
+									>
+										<Upload aria-hidden="true" className="size-3.5" />
+										Restore {restorePreview ? restorePreview.parsed.keys.length : 0} key
+										{restorePreview && restorePreview.parsed.keys.length === 1 ? "" : "s"}
+									</Button>
+								</DialogFooter>
+							</>
 						)}
+					</DialogContent>
+				</Dialog>
+
+				<Dialog
+					open={exportOpen}
+					onOpenChange={(open) => {
+						if (!open) closeExport();
+					}}
+				>
+					<DialogContent className="max-w-md">
+						<DialogHeader>
+							<DialogTitle className="flex items-center gap-2 text-base">
+								<span className="flex size-7 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:bg-amber-400/10 dark:text-amber-300">
+									<Lock aria-hidden="true" className="size-3.5" />
+								</span>
+								Encrypted backup
+							</DialogTitle>
+							<DialogDescription className="text-xs">
+								Seals all {keys.length} key{keys.length === 1 ? "" : "s"} — labels, emails, escrow
+								flags and revocation tokens — behind a passphrase only you know.
+							</DialogDescription>
+						</DialogHeader>
+						<div className="space-y-3">
+							<div className="space-y-1.5">
+								<Label htmlFor="keys-export-pass">Backup passphrase</Label>
+								<div className="relative">
+									<Input
+										id="keys-export-pass"
+										type={showExportPass ? "text" : "password"}
+										value={exportPass}
+										onChange={(e) => setExportPass(e.target.value)}
+										autoComplete="new-password"
+										className="pr-9 font-mono text-xs"
+										data-testid="keys-export-pass"
+									/>
+									<button
+										type="button"
+										onClick={() => setShowExportPass((v) => !v)}
+										aria-label={showExportPass ? "Hide passphrase" : "Show passphrase"}
+										className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+										data-testid="keys-export-toggle"
+									>
+										{showExportPass ? (
+											<EyeOff aria-hidden="true" className="size-3.5" />
+										) : (
+											<Eye aria-hidden="true" className="size-3.5" />
+										)}
+									</button>
+								</div>
+								<PassphraseStrengthMeter passphrase={exportPass} idPrefix="keys-export-pass" />
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="keys-export-pass2">Confirm passphrase</Label>
+								<Input
+									id="keys-export-pass2"
+									type={showExportPass ? "text" : "password"}
+									value={exportPass2}
+									onChange={(e) => setExportPass2(e.target.value)}
+									autoComplete="new-password"
+									className="font-mono text-xs"
+									data-testid="keys-export-pass2"
+									onKeyDown={(e) => {
+										if (e.key === "Enter" && exportReady) void handleEncryptedExport();
+									}}
+								/>
+								{exportPass2 && exportPass !== exportPass2 && (
+									<p
+										className="text-[11px] text-red-600 dark:text-red-400"
+										data-testid="keys-export-mismatch"
+									>
+										Passphrases don&apos;t match yet.
+									</p>
+								)}
+								{exportPass && exportStrength.score < 2 && (
+									<p
+										className="text-[11px] text-amber-600 dark:text-amber-400"
+										data-testid="keys-export-weak"
+									>
+										Too weak for revocation tokens — go longer or less predictable.
+									</p>
+								)}
+							</div>
+							<p className="rounded-lg border bg-muted/30 px-2.5 py-2 font-mono text-[10px] leading-relaxed text-muted-foreground">
+								PBKDF2-SHA256 · 600,000 iterations → AES-256-GCM · fresh salt + IV every export ·
+								unsealed only in this browser
+							</p>
+						</div>
 						<DialogFooter className="gap-2">
-							<Button type="button" variant="outline" size="sm" onClick={closeRestore}>
+							<Button type="button" variant="outline" size="sm" onClick={closeExport}>
 								Cancel
 							</Button>
 							<Button
 								type="button"
 								size="sm"
-								onClick={confirmRestore}
-								data-testid="keys-restore-confirm"
+								onClick={() => void handleEncryptedExport()}
+								disabled={!exportReady}
 								className="gap-1.5"
-								disabled={!restorePreview}
+								data-testid="keys-export-confirm"
 							>
-								<Upload aria-hidden="true" className="size-3.5" />
-								Restore {restorePreview ? restorePreview.parsed.keys.length : 0} key
-								{restorePreview && restorePreview.parsed.keys.length === 1 ? "" : "s"}
+								{exportBusy ? (
+									<Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+								) : (
+									<Download aria-hidden="true" className="size-3.5" />
+								)}
+								Download encrypted backup
 							</Button>
 						</DialogFooter>
 					</DialogContent>

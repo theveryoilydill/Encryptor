@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
-import { TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { List, Maximize2, Minimize2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,6 +29,24 @@ import { LIMITS } from "@/lib/constants";
 import type { AppSettings } from "@/lib/pgp/settings";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { getKeyExpiryStatus, parseLooseDate } from "@/lib/pgp/key-details";
+import { githubSlug } from "@/lib/pgp/github-slug";
+import { useToast } from "@/hooks/use-toast";
+
+/** Build a GitHub-style table of contents from the composer's markdown:
+ *  every ATX heading (`#` through `######`) becomes an indented
+ *  `- [Title](#slug)` row (2 spaces of indent per level below h1).
+ *  Returns "" when the message has no headings — the caller toasts
+ *  instead of inserting an empty TOC. */
+function buildTableOfContents(markdown: string): string {
+	const rows: string[] = [];
+	for (const line of markdown.split("\n")) {
+		const match = /^(#{1,6})\s+(.*)$/.exec(line);
+		if (!match) continue;
+		const title = match[2].trim();
+		rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${githubSlug(title)})`);
+	}
+	return rows.join("\n");
+}
 
 export function EncryptTab({
 	privateKey,
@@ -50,6 +69,15 @@ export function EncryptTab({
 }) {
 	const [plaintext, setPlaintext] = useState("");
 	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
+	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
+	// image-paste bridge must return the FINAL (deduped) filename in the same
+	// tick it registers the file, but React state updates are async and the
+	// updater function must stay pure. The ref is updated eagerly on every
+	// mutation path and re-synced to the committed state after each render.
+	const attachmentsRef = useRef<EnvelopeFile[]>(attachments);
+	useEffect(() => {
+		attachmentsRef.current = attachments;
+	}, [attachments]);
 	const [output, setOutput] = useState("");
 	// Quantum-sealed copy of the LAST output (settings.pqSealedCopy + a key
 	// with a quantum-seal pair): an ML-KEM-768 outer layer only the owner
@@ -63,6 +91,57 @@ export function EncryptTab({
 	// the textarea (or typing different content) re-arms the hint without
 	// needing a state-reset effect.
 	const [hintDismissedFor, setHintDismissedFor] = useState<string | null>(null);
+
+	// Full-screen composer overlay ("blow up the editor"): when expanded, the
+	// whole composer — editor + utility row — moves into a portal dialog
+	// filling the viewport. The state lives HERE in the tab; the editor engine
+	// simply re-mounts with the same value props, so text, files and
+	// attachments survive expand AND collapse untouched.
+	const [composerExpanded, setComposerExpanded] = useState(false);
+	// Body scroll lock while the overlay is up; the previous inline value is
+	// restored on cleanup (also fires if the tab unmounts mid-expanded).
+	useEffect(() => {
+		if (!composerExpanded) return;
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	}, [composerExpanded]);
+
+	// Global Ctrl/Cmd+Shift+E — "shortcut to expand should apply everywhere":
+	// the tab components stay mounted across tab switches, so a window-level
+	// capture listener lets the composer open from ANY tab (Encrypt, Decrypt,
+	// Sign, Verify…). Same dialog-safe guards as the section handler: keys
+	// aimed at an open Radix dialog/popover/menu belong to that surface, and
+	// an already-handled event is left alone. The section + overlay handlers
+	// see defaultPrevented and skip, so the toggle never double-fires.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (
+				(e.ctrlKey || e.metaKey) &&
+				e.shiftKey &&
+				!e.altKey &&
+				(e.key === "E" || e.key === "e") &&
+				!e.defaultPrevented
+			) {
+				const target = e.target as HTMLElement | null;
+				if (
+					target?.closest(
+						'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+					)
+				) {
+					return;
+				}
+				e.preventDefault();
+				setComposerExpanded((v) => !v);
+			}
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, []);
 
 	// Expiry pre-flight (R8): recipients whose key has an expired PRIMARY key.
 	// Same detection the recipient chips' "Expired" badge uses
@@ -174,7 +253,14 @@ export function EncryptTab({
 
 	/** Editor paste bridge: store a pasted image (as a data URL) as an
 	 *  attachment and return the stored entry so the editor can reference it
-	 *  with an envelope:// marker. Sync by contract — throws on read errors. */
+	 *  with an envelope:// marker. Sync by contract — throws on read errors.
+	 *
+	 *  BUGFIX (was "VS Code is super broken"): this used to return the
+	 *  PRE-dedupe name while the state updater stored the DEDUPED one, so
+	 *  the second pasted image's marker pointed at the FIRST image's file —
+	 *  recipients silently saw the wrong image (browser-verified). The
+	 *  unique name is now computed against attachmentsRef BEFORE the state
+	 *  update and the FINAL entry is returned. */
 	const handleNewImageDataUrl = useCallback((dataUrl: string): EnvelopeFile => {
 		// Parse "data:<mime>;base64,<data>".
 		const match = /^data:([^;,]+);base64,([\s\S]*)$/.exec(dataUrl);
@@ -186,30 +272,50 @@ export function EncryptTab({
 			throw new Error(`Image is ${formatFileSize(size)} — max ${LIMITS.maxFileLabel}.`);
 		}
 		const ext = type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-		const stored: EnvelopeFile = {
-			name: `pasted-image.${ext}`,
-			type,
-			data,
-			size,
-		};
-		setAttachments((prev) => {
-			const usedNames = new Set(prev.map((a) => a.name));
-			if (!usedNames.has(stored.name)) return [...prev, stored];
-			const dot = stored.name.lastIndexOf(".");
-			let counter = 1;
-			let unique = stored.name;
-			while (usedNames.has(unique)) {
-				unique =
-					dot > 0
-						? `${stored.name.slice(0, dot)}-${counter}${stored.name.slice(dot)}`
-						: `${stored.name}-${counter}`;
-				counter++;
-			}
-			usedNames.add(unique);
-			return [...prev, { ...stored, name: unique }];
-		});
+		const baseName = `pasted-image.${ext}`;
+		// Dedupe against the mirrored list (sync, no stale closure).
+		const usedNames = new Set(attachmentsRef.current.map((a) => a.name));
+		const dot = baseName.lastIndexOf(".");
+		let unique = baseName;
+		let counter = 1;
+		while (usedNames.has(unique)) {
+			unique =
+				dot > 0
+					? `${baseName.slice(0, dot)}-${counter}${baseName.slice(dot)}`
+					: `${baseName}-${counter}`;
+			counter++;
+		}
+		const stored: EnvelopeFile = { name: unique, type, data, size };
+		// Eager mirror update so a same-tick follow-up paste sees this name.
+		attachmentsRef.current = [...attachmentsRef.current, stored];
+		// Guarded commit (idempotent under StrictMode double-invoke).
+		setAttachments((prev) => (prev.some((a) => a.name === stored.name) ? prev : [...prev, stored]));
 		return stored;
 	}, []);
+
+	// Orphan garbage collection (was "VS Code is super broken", part 2):
+	// deleting an image out of the message used to leave its file attached —
+	// it still got encrypted into the envelope (bloat + surprise files for
+	// recipients, verified in the browser). Whenever the message text no
+	// longer references an auto-named PASTED image, drop it. Files added via
+	// "Add files" keep their original names and are NEVER touched here.
+	useEffect(() => {
+		const referenced = new Set<string>();
+		const re = /!\[[^\]]*\]\(envelope:\/\/([^)\s]+)\)/g;
+		for (const m of plaintext.matchAll(re)) {
+			try {
+				referenced.add(decodeURIComponent(m[1]));
+			} catch {
+				referenced.add(m[1]);
+			}
+		}
+		setAttachments((prev) => {
+			const kept = prev.filter(
+				(a) => !/^pasted-image(-\d+)?\.[a-z0-9]+$/.test(a.name) || referenced.has(a.name),
+			);
+			return kept.length === prev.length ? prev : kept;
+		});
+	}, [plaintext]);
 
 	const handleAddFiles = useCallback(
 		(files: FileList | null) => {
@@ -217,6 +323,20 @@ export function EncryptTab({
 		},
 		[addFiles],
 	);
+
+	// "Insert table of contents" (round-12 editor pass): parse the CURRENT
+	// composer markdown for ATX headings and PREPEND a GitHub-style TOC
+	// (slug anchors, one blank line after). Heading-less messages get a
+	// toast and are left completely untouched.
+	const { toast } = useToast();
+	const insertTableOfContents = useCallback(() => {
+		const toc = buildTableOfContents(plaintext);
+		if (!toc) {
+			toast({ title: "No headings found — add some `#` headings first" });
+			return;
+		}
+		setPlaintext(`${toc}\n\n${plaintext}`);
+	}, [plaintext, toast]);
 
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
@@ -366,6 +486,67 @@ export function EncryptTab({
 		[plaintext, attachments],
 	);
 
+	// The whole composer — utility row (TOC, Expand) + editor + counter +
+	// smart-input hint — as one value, rendered EITHER inline OR inside the
+	// full-screen portal overlay further down. Moving it in and out of the
+	// overlay is therefore a pure re-mount: no state lives in the subtree.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	const composerBody = (
+		<>
+			{/* Composer utility row: table-of-contents insert + full-screen
+                            toggle, right-aligned. */}
+			<div className="mb-1.5 flex items-center justify-end gap-2">
+				<button
+					type="button"
+					aria-label="Insert table of contents"
+					title="Insert table of contents"
+					onClick={insertTableOfContents}
+					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+				>
+					<List aria-hidden="true" className="size-3.5" />
+				</button>
+				<button
+					type="button"
+					aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
+					title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
+					onClick={() => setComposerExpanded((v) => !v)}
+					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+				>
+					{composerExpanded ? (
+						<Minimize2 aria-hidden="true" className="size-3.5" />
+					) : (
+						<Maximize2 aria-hidden="true" className="size-3.5" />
+					)}
+				</button>
+			</div>
+			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
+                            the viewport; plain block inline. */}
+			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
+				<MessageEditor
+					value={plaintext}
+					onChange={setPlaintext}
+					files={attachments}
+					onNewImageDataUrl={handleNewImageDataUrl}
+					editorKind={settings.markdownEditor}
+					placeholder="Type the message you want to encrypt + sign…"
+					expanded={composerExpanded}
+				/>
+			</div>
+			{/* Char/word/size counter (visual feedback only). */}
+			<InputSizeCounter text={plaintext} />
+			{showEncryptHint && detectedBlock && (
+				<InputHint
+					tone={detectedBlock === "encrypted" ? "amber" : "info"}
+					onDismiss={() => setHintDismissedFor(plaintext)}
+				>
+					{detectedBlock === "encrypted"
+						? "This looks like an already-encrypted message. Encrypting it again is rarely what you want."
+						: "This looks like a PGP key. Keys are imported in the key configuration dialog, not encrypted as messages."}
+				</InputHint>
+			)}
+		</>
+	);
 	return (
 		<section
 			className="relative space-y-6"
@@ -418,28 +599,57 @@ export function EncryptTab({
 				onIncludeSelfChange={onIncludeSelfChange}
 			/>
 
-			<div className="rounded-xl">
-				<MessageEditor
-					value={plaintext}
-					onChange={setPlaintext}
-					files={attachments}
-					onNewImageDataUrl={handleNewImageDataUrl}
-					editorKind={settings.markdownEditor}
-					placeholder="Type the message you want to encrypt + sign…"
-				/>
-				{/* Char/word/size counter (visual feedback only). */}
-				<InputSizeCounter text={plaintext} />
-				{showEncryptHint && detectedBlock && (
-					<InputHint
-						tone={detectedBlock === "encrypted" ? "amber" : "info"}
-						onDismiss={() => setHintDismissedFor(plaintext)}
+			{!composerExpanded && <div className="rounded-xl">{composerBody}</div>}
+			{/* Full-screen composer overlay ("blow up the editor"): a portal
+                            dialog filling the viewport. Escape collapses it — EXCEPT when a
+                            Radix surface opened FROM the composer is on stage: those consume
+                            Escape themselves and must never come back to a collapsed
+                            composer. Most Radix layers portal OUTSIDE this overlay, so their
+                            Escapes never even bubble through it; the target checks + the
+                            defaultPrevented guard cover the paths that still do. */}
+			{composerExpanded &&
+				createPortal(
+					<div
+						data-composer-overlay
+						role="dialog"
+						aria-modal="true"
+						aria-label="Composer, full screen"
+						onPointerDown={(e) => {
+							// Click-off close: a press on the overlay itself (the backdrop
+							// around the editor card) collapses — presses inside the
+							// composer content target deeper nodes and are ignored.
+							if (e.target === e.currentTarget) {
+								e.preventDefault();
+								setComposerExpanded(false);
+							}
+						}}
+						onKeyDownCapture={(e) => {
+							if (e.key !== "Escape" || e.defaultPrevented) return;
+							const target = e.target as HTMLElement | null;
+							if (
+								target?.closest(
+									'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+								)
+							) {
+								return;
+							}
+							e.preventDefault();
+							setComposerExpanded(false);
+						}}
+						onKeyDown={(e) => {
+							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
+							// portal sits outside the <section> keydown handler.
+							if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+								e.preventDefault();
+								if (!busy) void handleEncrypt();
+							}
+						}}
+						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						{detectedBlock === "encrypted"
-							? "This looks like an already-encrypted message. Encrypting it again is rarely what you want."
-							: "This looks like a PGP key. Keys are imported in the key configuration dialog, not encrypted as messages."}
-					</InputHint>
+						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
+					</div>,
+					document.body,
 				)}
-			</div>
 
 			<AttachmentList
 				attachments={attachments}

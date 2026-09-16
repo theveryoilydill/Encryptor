@@ -506,7 +506,11 @@ export default function PgpApp() {
 								<DecryptTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
 							)}
 							{t.id === "sign" && (
-								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
+								<SignTab
+									privateKey={privateKey}
+									requestDecryptedKey={requestDecryptedKey}
+									markdownEditor={settings.markdownEditor}
+								/>
 							)}
 							{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
 						</div>

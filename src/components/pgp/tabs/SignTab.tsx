@@ -8,9 +8,9 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
+import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { signMessage } from "@/lib/pgp/pgp";
-import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 
 export function SignTab({
 	privateKey,
@@ -93,10 +93,10 @@ export function SignTab({
 						<p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
 					</div>
 				)}
-				{/* Markdown editor for signing — same two engines as the Encrypt
-				    composer ("markdown for signing too"). Signing has no attachment
-				    pipeline, so image registration intentionally fails closed: pasted
-				    images stay inline as data URLs inside the signed text. */}
+				{/* Markdown editor for signing ("markdown for signing too") — same
+				    two engines as the Encrypt composer. Signing has no attachment
+				    pipeline, so image registration intentionally fails closed:
+				    pasted images stay inline as data URLs inside the signed text. */}
 				<MessageEditor
 					value={plaintext}
 					onChange={setPlaintext}
@@ -159,11 +159,6 @@ export function SignTab({
 					title={detached ? "Detached signature" : "Cleartext signed message"}
 					output={output}
 					operation={detached ? "sign-detached" : "sign-cleartext"}
-					onReset={() => {
-						setOutput("");
-						setPlaintext("");
-						setError(null);
-					}}
 				/>
 			)}
 		</section>

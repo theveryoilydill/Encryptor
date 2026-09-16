@@ -31,7 +31,7 @@ import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 /** Register a freshly pasted image (given as a data: URL) as a new
  *  attachment. Returns the stored EnvelopeFile (with its unique name) so
  *  the editor can reference it. */
-export type OnNewImageDataUrl = (dataUrl: string) => EnvelopeFile;
+export type OnNewImageDataUrl = (dataUrl: string, suggestedName?: string) => EnvelopeFile;
 
 const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 	ssr: false,
@@ -114,6 +114,7 @@ export function MessageEditor({
 	onNewImageDataUrl,
 	editorKind,
 	placeholder,
+	onFilesDropped: _onFilesDropped,
 	expanded = false,
 }: {
 	value: string;
@@ -121,6 +122,9 @@ export function MessageEditor({
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
 	editorKind: MarkdownEditorKind;
+	/** Non-image files pasted/dropped in the editor — forwarded to the
+	 *  composer's attachment flow (qol layer wires this up). */
+	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
 	 *  # Mr. AI Acting on s183173's Behalf
@@ -202,6 +206,7 @@ export function MessageEditor({
 		[value, onChange, onNewImageDataUrl],
 	);
 
+	void _onFilesDropped;
 	const { resolvedTheme } = useTheme();
 	const editorMd = useMemo(() => markersToDataUrls(value, files), [value, files]);
 	const previewMd = editorMd;

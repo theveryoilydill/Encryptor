@@ -41,6 +41,7 @@ import {
 } from "react";
 import { useTheme } from "next-themes";
 import { ListTree } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
 
@@ -58,10 +59,11 @@ const schema = BlockNoteSchema.create({
 	blockSpecs: keptBlockSpecs,
 });
 
-/** "Insert table of contents" as a / command — the maintainer asked for TOC
- *  insertion to live in the slash menu, not only in the composer utility
- *  row. Builds a GitHub-style TOC from the document's headings and prepends
- *  it (same output as the Encrypt-tab utility button). */
+/** "Insert table of contents" as a / command — TOC insertion lives in the
+ *  slash menu, not only in the composer utility row. Builds a GitHub-style
+ *  TOC from the document's headings and prepends it.
+ *
+ *  # Mr. AI Acting on s183173's Behalf */
 const insertTableOfContentsSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
 	title: "Table of contents",
 	subtext: "Insert a TOC from the document headings",
@@ -73,18 +75,16 @@ const insertTableOfContentsSlashItem = (editor: Editor): DefaultReactSuggestionI
 				const match = /^(#{1,6})\s+(.*)$/.exec(line);
 				if (!match) continue;
 				const title = match[2].trim().replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
-				rows.push(
-					`${"  ".repeat(match[1].length - 1)}- [${title}](#${title
-						.toLowerCase()
-						.replace(/[^\p{L}\p{N}\s-]/gu, "")
-						.replace(/\s+/g, "-")})`,
-				);
+				const slug = title
+					.toLowerCase()
+					.replace(/[^\p{L}\p{N}\s-]/gu, "")
+					.replace(/\s+/g, "-");
+				rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${slug})`);
 			}
 			if (rows.length === 0) return;
 			const tocBlocks = await editor.tryParseMarkdownToBlocks(`${rows.join("\n")}\n`);
 			if (tocBlocks && tocBlocks.length > 0) {
-				const first = editor.document[0];
-				editor.insertBlocks(tocBlocks, first, "before");
+				editor.insertBlocks(tocBlocks, editor.document[0], "before");
 			}
 		})();
 	},
@@ -112,12 +112,17 @@ export default function BlockNoteEditor({
 	onChange,
 	files,
 	onNewImageDataUrl,
+	onFilesDropped,
 	expanded = false,
 }: {
 	value: string;
 	onChange: (text: string) => void;
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
+	/** Round 18: non-image files the editor can't carry — PASTED or
+	 *  DROPPED — forwarded to the composer's attachment flow. Absent →
+	 *  the editor keeps its old guidance-toast fallback instead. */
+	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
 	 *  # Mr. AI Acting on s183173's Behalf
@@ -127,12 +132,15 @@ export default function BlockNoteEditor({
 	expanded?: boolean;
 }) {
 	const { resolvedTheme } = useTheme();
+	// Fallback guidance for non-image pastes/drops when the parent didn't
+	// thread the onFilesDropped bridge (round 18).
+	const { toast } = useToast();
 
 	// Latest props, read inside callbacks without re-creating the editor.
 	// (Assigned in an effect — refs must not be updated during render.)
-	const latest = useRef({ onChange, files, onNewImageDataUrl });
+	const latest = useRef({ onChange, files, onNewImageDataUrl, onFilesDropped });
 	useEffect(() => {
-		latest.current = { onChange, files, onNewImageDataUrl };
+		latest.current = { onChange, files, onNewImageDataUrl, onFilesDropped };
 	});
 
 	// Accessible name + textbox semantics for the inner ProseMirror
@@ -156,14 +164,35 @@ export default function BlockNoteEditor({
 			const items = event.clipboardData?.items;
 			if (!items) return defaultPasteHandler();
 			const imageFiles: File[] = [];
+			const otherFiles: File[] = [];
 			for (let i = 0; i < items.length; i++) {
 				const it = items[i];
-				if (it.kind === "file" && it.type.startsWith("image/")) {
-					const f = it.getAsFile();
-					if (f) imageFiles.push(f);
+				if (it.kind !== "file") continue;
+				const f = it.getAsFile();
+				if (!f) continue;
+				if (f.type.startsWith("image/")) imageFiles.push(f);
+				else otherFiles.push(f);
+			}
+			if (imageFiles.length === 0 && otherFiles.length === 0) return defaultPasteHandler();
+
+			// Round 18: non-image pastes FORWARD to the composer's attachment
+			// flow (onFilesDropped) instead of dying in BlockNote's default
+			// handler — which logs "uploadFile is not set" and does nothing.
+			// The toast is only the fallback when the parent didn't thread
+			// the bridge.
+			if (otherFiles.length > 0) {
+				const forward = latest.current.onFilesDropped;
+				if (forward) {
+					forward(otherFiles);
+				} else {
+					toast({
+						title: "Files can't be pasted into the message",
+						description: "Attach them with the Add files control below the composer instead.",
+					});
+					return defaultPasteHandler();
 				}
 			}
-			if (imageFiles.length === 0) return defaultPasteHandler();
+			if (imageFiles.length === 0) return true; // consumed: forwarded only
 
 			// Own the image paste: register each image as an attachment, then
 			// insert it as a block rendering the stored data URL. The onChange
@@ -233,15 +262,59 @@ export default function BlockNoteEditor({
 		return unsub;
 	}, [editor]);
 
-	const editorShell =
-		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
+	// Round 18: file drops are consumed BY THE EDITOR — images insert
+	// inline blocks (paste parity) keeping their REAL filename via
+	// onNewImageDataUrl's suggestedName; non-images forward through
+	// onFilesDropped. Capture phase + stopPropagation so a consumed drop
+	// never ALSO reaches the tab-level attachment dropzone (double
+	// attachments) — which is exactly why EncryptTab resets its drag
+	// overlay from handleComposerFilesDropped instead of onDrop.
+	const handleEditorDropCapture = (e: React.DragEvent<HTMLDivElement>) => {
+		const files = Array.from(e.dataTransfer?.files ?? []);
+		if (files.length === 0) return; // text / internal drags: normal drop
+		const images = files.filter((f) => f.type.startsWith("image/"));
+		const others = files.filter((f) => !f.type.startsWith("image/"));
+		// Without the parent bridge we can only handle pure-image drops
+		// here; anything carrying non-image files keeps the old behavior
+		// (bubbles to the tab-level dropzone → addFiles).
+		if (others.length > 0 && !latest.current.onFilesDropped) return;
+		e.preventDefault();
+		e.stopPropagation();
+		void (async () => {
+			for (const f of images) {
+				const dataUrl = await new Promise<string>((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+					reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
+					reader.readAsDataURL(f);
+				});
+				let stored: EnvelopeFile;
+				try {
+					stored = latest.current.onNewImageDataUrl(dataUrl, f.name);
+				} catch {
+					continue;
+				}
+				const cursor = editor.getTextCursorPosition().block;
+				editor.insertBlocks(
+					[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
+					cursor,
+					"after",
+				);
+			}
+			// ALWAYS notify when the bridge exists — even with an EMPTY list
+			// (image-only drop): the parent resets its drag overlay on the
+			// call itself, forwarded or not.
+			latest.current.onFilesDropped?.(others);
+		})();
+	};
 
 	// Drag-select in the editor's left sidebar/margin ("drag in sidebars of
-	// the markdown editor to make a drag select box"): pressing in the gutter
-	// starts a selection rectangle; every block whose box intersects is
-	// selected by extending the browser's native selection from the first to
-	// the last intersecting block — the same multi-block selection a shift-
-	// click range produces, so copy/delete/etc. keep working.
+	// the markdown editor to make a drag select box"): pressing in the
+	// gutter starts a selection rectangle; every block whose box intersects
+	// is selected by extending the browser's native selection from the
+	// first to the last intersecting block — copy/delete keep working.
+	//
+	// # Mr. AI Acting on s183173's Behalf
 	const [dragBox, setDragBox] = useState<{ x: number; y: number; w: number; h: number } | null>(
 		null,
 	);
@@ -305,18 +378,23 @@ export default function BlockNoteEditor({
 		},
 		[selectRange],
 	);
-
+	const editorShell =
+		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
 		<div
 			ref={viewRef}
+			onDropCapture={handleEditorDropCapture}
+			// Full-screen overlay: fill the viewport through an h-full + flex
+			// chain and drop the fixed composer min-heights (.bn-container owns
+			// the scrolling); the inline composer keeps them.
 			className={
 				expanded
-					? `${editorShell} relative flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
-					: `${editorShell} relative min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
+					? `${editorShell} flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
+					: `${editorShell} min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 			}
 		>
 			{/* Left-margin drag-select surface: sits beside the blocks, never on
-                            top of them (pointer-events only on the 24px strip). */}
+			    top of them (pointer-events only on the 24px strip). */}
 			<div
 				aria-hidden="true"
 				onPointerDown={onGutterPointerDown}

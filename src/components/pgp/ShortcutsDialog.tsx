@@ -22,13 +22,16 @@ import {
 } from "@/components/ui/dialog";
 
 /** The global bindings from PgpApp.tsx (tab order: TABS array), plus the
- *  per-tab Ctrl/Cmd+Enter binding handled inside each tab component. */
+ *  per-tab bindings handled inside the tab components: Ctrl/Cmd+Enter runs
+ *  the tab's action; Ctrl/Cmd+Shift+E toggles the Encrypt tab's full-screen
+ *  composer. */
 const SHORTCUTS: { keys: string; description: string }[] = [
 	{ keys: "Alt+1", description: "Encrypt" },
 	{ keys: "Alt+2", description: "Decrypt" },
 	{ keys: "Alt+3", description: "Sign" },
 	{ keys: "Alt+4", description: "Verify" },
 	{ keys: "Ctrl+Enter", description: "Run the tab's action (encrypt / sign / verify)" },
+	{ keys: "Ctrl+Shift+E", description: "Expand / collapse the composer" },
 	{ keys: "Ctrl+,", description: "Open Settings" },
 ];
 

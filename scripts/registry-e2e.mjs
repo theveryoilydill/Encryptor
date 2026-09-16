@@ -450,22 +450,42 @@ console.log("== rate limiting (separate IP bucket) ==");
 	// Retry-After: a denied request must carry the retry horizon both as the
 	// standard header and as a body field, so clients can back off precisely.
 	const limited = await jsonPost("/api/registry/publish", { armored: "garbage-x" }, IP(250));
-	check("429 body carries numeric retryAfter", limited.status === 429 && Number.isInteger(limited.body?.retryAfter) && limited.body.retryAfter >= 1, JSON.stringify(limited.body));
+	check(
+		"429 body carries numeric retryAfter",
+		limited.status === 429 &&
+			Number.isInteger(limited.body?.retryAfter) &&
+			limited.body.retryAfter >= 1,
+		JSON.stringify(limited.body),
+	);
 	const retryHeader = limited.headers?.get("retry-after");
-	check("429 sets Retry-After header", retryHeader != null && /^\d+$/.test(retryHeader) && Number(retryHeader) >= 1, `got ${retryHeader}`);
-	const headerFromBody = limited.body?.retryAfter != null && retryHeader != null && Math.abs(Number(retryHeader) - limited.body.retryAfter) <= 2;
-	check("Retry-After header ~ body retryAfter", headerFromBody, `header=${retryHeader} body=${limited.body?.retryAfter}`);
+	check(
+		"429 sets Retry-After header",
+		retryHeader != null && /^\d+$/.test(retryHeader) && Number(retryHeader) >= 1,
+		`got ${retryHeader}`,
+	);
+	const headerFromBody =
+		limited.body?.retryAfter != null &&
+		retryHeader != null &&
+		Math.abs(Number(retryHeader) - limited.body.retryAfter) <= 2;
+	check(
+		"Retry-After header ~ body retryAfter",
+		headerFromBody,
+		`header=${retryHeader} body=${limited.body?.retryAfter}`,
+	);
 
 	// Lookup limiter (fail-open, 120/h) — denial shape check with its own bucket.
 	let lookupRetry = null;
 	for (let i = 0; i < 121 && lookupRetry === null; i++) {
-		const r = await api(`/api/registry/lookup?email=probe.${RUN}@example.com`, { headers: IP(251) });
+		const r = await api(`/api/registry/lookup?email=probe.${RUN}@example.com`, {
+			headers: IP(251),
+		});
 		if (r.status === 429) lookupRetry = r;
 	}
 	check(
 		"lookup 429 (if reached) carries Retry-After too",
 		lookupRetry === null ||
-			(Number.isInteger(lookupRetry.body?.retryAfter) && /^\d+$/.test(lookupRetry.headers?.get("retry-after") ?? "")),
+			(Number.isInteger(lookupRetry.body?.retryAfter) &&
+				/^\d+$/.test(lookupRetry.headers?.get("retry-after") ?? "")),
 		lookupRetry ? JSON.stringify(lookupRetry.body) : "not reached (fail-open limiter)",
 	);
 }

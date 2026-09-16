@@ -386,7 +386,6 @@ export default function PgpApp() {
 		!privateKey?.pq &&
 		pqBannerDismissedFp !== privateKey?.info?.fingerprint;
 
-
 	// Screen-reader-only tab-change announcement (see live region below).
 	const currentTabLabel = TABS.find((t) => t.id === tab)?.label ?? "Encrypt";
 
@@ -727,7 +726,6 @@ export default function PgpApp() {
 		}
 	}, [toast]);
 
-
 	return (
 		<div className="flex min-h-dvh flex-col bg-background text-foreground">
 			{/* Screen-reader-only announcement when the active tab changes. */}
@@ -745,7 +743,6 @@ export default function PgpApp() {
 			/>
 
 			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-
 				{showPqBanner && privateKey && (
 					<div className="mb-4">
 						<PostQuantumBanner

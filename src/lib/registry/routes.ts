@@ -20,11 +20,13 @@ export const REGISTRY_CACHE_PUBLIC = "public, max-age=60, s-maxage=300";
  * for local development.
  */
 export function clientIP(req: NextRequest): string {
-	return (
-		req.headers.get("cf-connecting-ip") ??
-		req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-		"unknown"
-	);
+	const cfIP = req.headers.get("cf-connecting-ip");
+	if (cfIP) return cfIP;
+	// Off the Cloudflare edge, x-forwarded-for is client-controlled and
+	// must never back the rate limiter in production. Dev keeps the
+	// fallback so local testing can exercise per-IP buckets.
+	if (process.env.NODE_ENV === "production") return "unknown";
+	return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 }
 
 /** Uniform JSON error response; RegistryError carries its own status. */
@@ -71,7 +73,11 @@ export async function readJsonBody(req: NextRequest): Promise<Record<string, unk
 	}
 }
 
-/** String field getter with an upper bound; null when absent or wrong type. */
+/**
+ * String field getter. Absent/wrong-type fields return null (the caller
+ * decides the error); over-length fields are REJECTED outright — silent
+ * truncation would turn a clear 4xx into a confusing downstream failure.
+ */
 export function stringField(
 	body: Record<string, unknown>,
 	name: string,
@@ -79,7 +85,10 @@ export function stringField(
 ): string | null {
 	const value = body[name];
 	if (typeof value !== "string" || value.length === 0) return null;
-	return value.length > maxLength ? value.slice(0, maxLength) : value;
+	if (value.length > maxLength) {
+		throw new RegistryError(`The '${name}' field exceeds its maximum length`, 400);
+	}
+	return value;
 }
 
 /** Strip control characters from a user-supplied reason before storing. */

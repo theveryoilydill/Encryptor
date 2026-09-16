@@ -7,7 +7,7 @@ import {
 	getRegistryDB,
 	nowSeconds,
 	randomHex,
-	rateLimit,
+	rateLimitSafe,
 	sha256Hex,
 } from "@/lib/registry/db";
 import { parsePublicArmored, verifyChallengeSignature } from "@/lib/registry/keys";
@@ -37,12 +37,13 @@ export async function POST(req: NextRequest) {
 	try {
 		const db = getRegistryDB();
 		if (
-			!(await rateLimit(
+			!(await rateLimitSafe(
 				db,
 				"publish",
 				clientIP(req),
 				LIMITS.registryPublishLimit,
 				LIMITS.registryPublishWindowSec,
+				false,
 			))
 		) {
 			throw new RegistryError("Too many publish requests — try again later", 429);
@@ -72,6 +73,23 @@ export async function POST(req: NextRequest) {
 					409,
 				);
 			}
+			// Email-squatting budget applies to replacements too — but the
+			// key being replaced does not count against its own emails.
+			for (const email of parsed.emails) {
+				const claimed = await db
+					.prepare(
+						"SELECT COUNT(*) AS n FROM registry_emails WHERE email = ?1 AND fingerprint != ?2",
+					)
+					.bind(email, parsed.fingerprint)
+					.first<{ n: number }>();
+				if ((claimed?.n ?? 0) >= LIMITS.registryMaxKeysPerEmail) {
+					throw new RegistryError(
+						"This email address is already associated with the maximum number of keys",
+						409,
+					);
+				}
+			}
+
 			// Consume the nonce FIRST (atomic delete scoped to THIS fingerprint)
 			// so challenges are single-use and a nonce issued for one key can
 			// never authorize a mutation of another key.
@@ -166,7 +184,7 @@ export async function POST(req: NextRequest) {
 			// Concurrent first-publish of the same fingerprint loses the PK
 			// race — map it to the same 409 a pre-check would give (fail-closed).
 			const message = (e as Error).message ?? "";
-			if (message.includes("UNIQUE")) {
+			if (message.includes("UNIQUE constraint failed: registry_keys.fingerprint")) {
 				throw new RegistryError(
 					"Key already exists. To replace it, fetch a challenge from /api/registry/challenge and sign it with the stored key (send nonce + signature).",
 					409,
@@ -205,17 +223,23 @@ async function replaceKeyRecord(
 	parsed: Awaited<ReturnType<typeof parsePublicArmored>>,
 ) {
 	const now = nowSeconds();
-	// `AND revoked = 0` closes the TOCTOU window where a concurrent revocation
-	// lands between the earlier read and this write — a revoked record must
-	// never be mutated. Subkey/email re-inserts mirror the fresh-publish
-	// conflict policy (drop colliding IDs instead of failing the batch).
-	await db.batch([
-		db
-			.prepare(
-				`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4
+	// The status UPDATE runs FIRST and alone, gated on `AND revoked = 0` so a
+	// concurrent revocation between the earlier read and this write makes the
+	// replacement fail with 409 instead of mutating a revoked record. Only
+	// after the UPDATE is confirmed do the index rows get rebuilt.
+	// Subkey/email re-inserts mirror the fresh-publish conflict policy (drop
+	// colliding IDs instead of failing the batch).
+	const updated = await db
+		.prepare(
+			`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4
 			 WHERE fingerprint = ?1 AND revoked = 0`,
-			)
-			.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now),
+		)
+		.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now)
+		.run();
+	if (!updated.meta || Number(updated.meta.changes ?? 0) === 0) {
+		throw new RegistryError("Key was revoked concurrently — replacement refused", 409);
+	}
+	await db.batch([
 		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(parsed.fingerprint),
 		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(parsed.fingerprint),
 		...parsed.subkeyIds.map((id) =>

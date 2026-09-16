@@ -68,12 +68,12 @@ the existing Encryptor Worker deployment:
 
 ## API
 
-| Route                                                | Method | Auth                               | Notes                                                                                                                                                 |
-| ---------------------------------------------------- | ------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/api/registry/lookup?fingerprint=\|key_id=\|email=` | GET    | none                               | CORS `*`, cached (60s browser / 300s edge), returns revoked records with status                                                                       |
-| `/api/registry/publish`                              | POST   | rate-limited                       | parses server-side, rejects private material, returns one-time `revocationToken`; replacement requires signed challenge from the currently stored key |
-| `/api/registry/challenge?fingerprint=`               | GET    | rate-limited                       | one-time nonce + exact canonical message to sign                                                                                                      |
-| `/api/registry/revoke`                               | POST   | token OR signed challenge OR admin | permanent; token path works without the private key                                                                                                   |
+| Route                                                | Method | Auth                               | Notes                                                                                                                                                                         |
+| ---------------------------------------------------- | ------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/registry/lookup?fingerprint=\|key_id=\|email=` | GET    | none                               | CORS `*`, browser-cached 60s (edge caching NOT enabled by default on Workers — see hardening notes); params take priority fingerprint > key_id > email; rate limited 120/h/IP |
+| `/api/registry/publish`                              | POST   | rate-limited                       | parses server-side, rejects private material, returns one-time `revocationToken`; replacement requires signed challenge from the currently stored key                         |
+| `/api/registry/challenge?fingerprint=`               | GET    | rate-limited                       | one-time nonce + exact canonical message to sign                                                                                                                              |
+| `/api/registry/revoke`                               | POST   | token OR signed challenge OR admin | permanent; token path works without the private key                                                                                                                           |
 
 ### Threat model coverage
 
@@ -83,14 +83,16 @@ the existing Encryptor Worker deployment:
 - **DB dump leak** → only public keys + token hashes + hashed-IP rate buckets; no raw IPs, no plaintext tokens, no PII beyond self-published User IDs. Rate buckets use a server-side salt that fails CLOSED in production if unset.
 - **Replay** → challenges are single-use with 10-minute expiry, consumed before verification (failed verification attempts burn the nonce — fail-closed).
 - **Timing attacks** → token/admin comparisons run on SHA-256 digests with a constant-time compare; challenge-signature validity is verified explicitly (every signature's `verified` promise), never inferred from array length.
-- **Quota exhaustion (free tier)** → the D1 rate limiter is read-first: over-limit requests cost one indexed read and ZERO writes, so abuse cannot burn the daily write quota through the limiter itself. Lookups are rate limited too (120/h/IP, read-first). Email lookups, key-ID lookups and results are bounded; one email can be claimed by at most 5 keys; a sampled global storage guard caps total keys at 50,000.
-- **Revocation suppression** → revoked records stay visible (`revoked: true`), and re-publication of a revoked fingerprint is refused forever.
+- **Quota exhaustion (free tier)** → the D1 rate limiter is read-first: PER-IP OVER-LIMIT requests cost one indexed read and ZERO writes. Lookups are rate limited too (120/h/IP). If the limiter itself cannot reach D1 (quota exhaustion, transient errors), public reads fail OPEN while publish/challenge/revoke fail CLOSED — limiter failure degrades instead of 500-ing everything. Distributed abuse (many IPs under their per-IP limits) can still burn quota, so the free Cloudflare WAF rate-limiting rule for `/api/registry/*` is the real outer defense. Email lookups, key-ID lookups and results are bounded; one email can be claimed by at most 5 keys (revoked keys release their email claims); a sampled global storage guard caps total keys at 50,000. Request caps are enforced on UTF-16 length before buffering (Content-Length) and re-checked after.
+- **Revocation suppression** → revoked records stay visible by FINGERPRINT lookup (`revoked: true`), and re-publication of a revoked fingerprint is refused forever. Revocation RELEASES the email and subkey indexes so revoked keys cannot squat scarce namespaces (email claims, 64-bit key IDs).
 - **Index hygiene** → cleanup queries hit indexed columns (`reset_at`, `expires_at` — migration 0002) so purges never full-scan.
-- **Admin compromise path** → `ADMIN_REVOKE_TOKEN` secret enables emergency revocation; set via `wrangler secret put`.
+- **Admin compromise path** → `ADMIN_REVOKE_TOKEN` secret enables emergency revocation; set via `wrangler secret put`. An unconfigured deployment answers admin attempts with the generic 403 (never a 5xx or config disclosure).
+- **Token lifetime** → the revocation token survives authorized replacements (the ORIGINAL publisher keeps the fail-safe). Rotate offline copies accordingly; token power is revoke-only.
 
 ### Production hardening recommendations (outside the app)
 
-- Add a free Cloudflare WAF rate-limiting rule for `/api/registry/*` as the outer layer (the D1 limiter is the second line).
+- Add a free Cloudflare WAF rate-limiting rule for `/api/registry/*` as the outer layer (the D1 limiter is the second line, per-IP only).
+- Worker responses are not edge-cached by default; if lookup traffic becomes expensive, add Cache API caching for hot GETs or enable OpenNext cache instrumentation.
 - Monitor D1 metrics (`rows_read`, `rows_written`) and set alerts; the storage guard caps keys at `LIMITS.registryStorageCapKeys`.
 - Set `RE_SALT` (long random string) and optionally `ADMIN_REVOKE_TOKEN` via `wrangler secret put` — the registry fails closed (503) in production without `RE_SALT`.
 
@@ -107,6 +109,20 @@ bun run deploy
 Local development works out of the box: `initOpenNextCloudflareForDev()`
 proxies a local D1 into `next dev`; apply the migration with
 `npx wrangler d1 migrations apply REGISTRY_DB --local`.
+
+## Testing
+
+The repository ships an end-to-end suite covering every route plus the
+negative security cases (SQLi grammar probes, replay, forged signer,
+cross-fingerprint nonce use, rate limiting, payload guards):
+
+```bash
+npx wrangler d1 migrations apply REGISTRY_DB --local   # local D1 + schema
+bun run dev                                            # terminal 1
+bun run test:registry                                  # terminal 2 (49 checks)
+```
+
+`REGISTRY_TEST_BASE` overrides the target URL for preview deployments.
 
 ## Deliberate non-goals
 

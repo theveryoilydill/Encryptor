@@ -7,7 +7,7 @@ import {
 	getCloudflareEnv,
 	getRegistryDB,
 	nowSeconds,
-	rateLimit,
+	rateLimitSafe,
 	sha256Hex,
 	timingSafeHexEqual,
 } from "@/lib/registry/db";
@@ -50,12 +50,13 @@ export async function POST(req: NextRequest) {
 	try {
 		const db = getRegistryDB();
 		if (
-			!(await rateLimit(
+			!(await rateLimitSafe(
 				db,
 				"revoke",
 				clientIP(req),
 				LIMITS.registryRevokeLimit,
 				LIMITS.registryRevokeWindowSec,
+				false,
 			))
 		) {
 			throw new RegistryError("Too many revoke requests — try again later", 429);
@@ -171,9 +172,10 @@ async function revokeByAdmin(
 	if (!adminToken) return null;
 	const env = getCloudflareEnv();
 	const expected = env?.ADMIN_REVOKE_TOKEN;
-	if (!expected) {
-		throw new RegistryError("Admin revocation is not configured on this deployment", 503);
-	}
+	// Unconfigured deployments fall through to the generic 403 below — an
+	// unauthenticated caller must never be able to trigger a 5xx or learn
+	// configuration state.
+	if (!expected) return null;
 	const ok = timingSafeHexEqual(await sha256Hex(adminToken), await sha256Hex(expected));
 	if (!ok) {
 		throw new RegistryError("Invalid admin token", 403);
@@ -186,7 +188,12 @@ async function revokeByAdmin(
 	);
 }
 
-/** Flip the revoked flag permanently and drop any live challenge nonces. */
+/**
+ * Flip the revoked flag permanently, drop any live challenge nonces, and
+ * RELEASE the email + subkey indexes. Revocation stays visible by
+ * fingerprint lookup; releasing the indexes frees scarce namespaces
+ * (email claims, 64-bit key IDs) so revoked keys cannot squat them.
+ */
 async function markRevoked(
 	db: ReturnType<typeof getRegistryDB>,
 	fingerprint: string,
@@ -199,5 +206,7 @@ async function markRevoked(
 			)
 			.bind(fingerprint, nowSeconds(), reason),
 		db.prepare("DELETE FROM registry_challenges WHERE fingerprint = ?1").bind(fingerprint),
+		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(fingerprint),
+		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(fingerprint),
 	]);
 }

@@ -150,6 +150,28 @@ export async function rateLimit(
 	return true;
 }
 
+/**
+ * rateLimit with explicit failure policy: if the limiter itself cannot
+ * reach D1 (quota exhaustion, transient errors), PUBLIC READS fail OPEN
+ * (availability first) while MUTATIONS fail CLOSED (never lose the gate).
+ * Without this, a write-quota outage would turn every route into a 500.
+ */
+export async function rateLimitSafe(
+	db: D1DatabaseLike,
+	action: string,
+	ip: string,
+	limit: number,
+	windowSeconds: number,
+	failOpen: boolean,
+): Promise<boolean> {
+	try {
+		return await rateLimit(db, action, ip, limit, windowSeconds);
+	} catch (e) {
+		console.error(`[registry] rate limiter unavailable (${action}):`, e);
+		return failOpen;
+	}
+}
+
 /** Append an audit row (fingerprints and action names only). */
 export async function audit(
 	db: D1DatabaseLike,

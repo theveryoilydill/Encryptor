@@ -7,7 +7,7 @@ import {
 	getRegistryDB,
 	nowSeconds,
 	randomHex,
-	rateLimit,
+	rateLimitSafe,
 } from "@/lib/registry/db";
 import { challengeMessage, normalizeFingerprint } from "@/lib/registry/keys";
 import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
@@ -28,12 +28,13 @@ export async function GET(req: NextRequest) {
 	try {
 		const db = getRegistryDB();
 		if (
-			!(await rateLimit(
+			!(await rateLimitSafe(
 				db,
 				"challenge",
 				clientIP(req),
 				LIMITS.registryChallengeLimit,
 				LIMITS.registryChallengeWindowSec,
+				false,
 			))
 		) {
 			throw new RegistryError("Too many challenge requests — try again later", 429);

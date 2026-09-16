@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
-import { RegistryError, getRegistryDB, rateLimit } from "@/lib/registry/db";
+import { RegistryError, getRegistryDB, rateLimitSafe } from "@/lib/registry/db";
 import { normalizeEmail, normalizeFingerprint, normalizeKeyID } from "@/lib/registry/keys";
 import { REGISTRY_CACHE_PUBLIC, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 
@@ -54,16 +54,17 @@ export async function GET(req: NextRequest) {
 		const email = url.searchParams.get("email");
 
 		const db = getRegistryDB();
-		// Public read endpoint — still rate limited (read-first limiter: an
-		// abusive caller costs ~1 indexed read, zero writes). Legit callers
-		// get 120 lookups/hour/IP, and identical URLs are edge-cached.
+		// Public read endpoint — still rate limited (read-first limiter:
+		// over-limit callers cost ~1 indexed read, zero writes; limiter
+		// failures fail OPEN so reads stay available). 120 lookups/hour/IP.
 		if (
-			!(await rateLimit(
+			!(await rateLimitSafe(
 				db,
 				"lookup",
 				clientIP(req),
 				LIMITS.registryLookupLimit,
 				LIMITS.registryLookupWindowSec,
+				true,
 			))
 		) {
 			throw new RegistryError("Too many lookup requests — try again later", 429);

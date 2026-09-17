@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type ComponentProps } from "react";
 import { useTheme } from "next-themes";
 import {
+	KeyRound,
 	Loader2,
 	Monitor,
 	Moon,
@@ -161,6 +162,26 @@ export default function PgpApp() {
 	// Lazy initializers are safe here: page.tsx renders this component with
 	// ssr:false, so localStorage is always available on first render.
 	const [tab, setTab] = useState<Tab>(loadLastTab);
+
+	// Registry discoverability banner (Task 24 feedback: the registry was
+	// invisible from the landing view — the owner literally could not find
+	// it). Dismissal is persisted best-effort so it stays gone for the user,
+	// but reappears for fresh visitors on every device.
+	const [registryBannerGone, setRegistryBannerGone] = useState<boolean>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.registryBannerDismissed) === "1";
+		} catch {
+			return false;
+		}
+	});
+	const dismissRegistryBanner = useCallback(() => {
+		setRegistryBannerGone(true);
+		try {
+			localStorage.setItem(STORAGE_KEYS.registryBannerDismissed, "1");
+		} catch {
+			/* private mode — session-only dismissal is fine */
+		}
+	}, []);
 	const { toast } = useToast();
 	const [recipients, setRecipients] = useState<Recipient[]>([]);
 	// Lazy initializers are safe here: page.tsx renders this component with
@@ -501,6 +522,46 @@ export default function PgpApp() {
 							onOpenSettings={() => setConfigOpen(true)}
 							onDismiss={() => setExpiryDismissed(expiryKey)}
 						/>
+					</div>
+				)}
+				{tab !== "keys" && !registryBannerGone && (
+					<div
+						data-testid="registry-banner"
+						className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-violet-500/30 bg-violet-500/5 px-4 py-3 shadow-xs"
+					>
+						<span
+							aria-hidden="true"
+							className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-violet-500/15"
+						>
+							<KeyRound className="size-4.5 text-violet-500" />
+						</span>
+						<div className="min-w-0 flex-1">
+							<p className="text-sm font-medium leading-tight">Public key registry is live</p>
+							<p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+								Publish your key so anyone can find it by email or fingerprint — then verify aloud
+								with PGP words or swap fingerprints via QR.
+							</p>
+						</div>
+						<Button
+							type="button"
+							size="sm"
+							onClick={() => setTab("keys")}
+							data-testid="registry-banner-open"
+						>
+							<KeyRound aria-hidden="true" className="size-4" />
+							Open Keys
+						</Button>
+						<Button
+							type="button"
+							size="icon"
+							variant="ghost"
+							aria-label="Dismiss the registry banner"
+							data-testid="registry-banner-dismiss"
+							onClick={dismissRegistryBanner}
+							className="size-8 shrink-0 text-muted-foreground hover:text-foreground"
+						>
+							<X aria-hidden="true" className="size-4" />
+						</Button>
 					</div>
 				)}
 				<Tabs value={tab} onChange={setTab} />

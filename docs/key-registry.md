@@ -401,6 +401,55 @@ it behaves like a preference; the "yours" badge on each row is unaffected.
 - Monitor D1 metrics (`rows_read`, `rows_written`) and set alerts; the storage guard caps keys at `LIMITS.registryStorageCapKeys`.
 - Set `RE_SALT` (long random string) and optionally `ADMIN_REVOKE_TOKEN` via `wrangler secret put` — the registry fails closed (503) in production without `RE_SALT`.
 
+## Deployment permissions & database writes
+
+Who can touch the registry database — the short version for repository owners:
+
+| Actor                        | Can they write to YOUR D1?        | Why                                                                                                                                                                                                                |
+| ---------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| This repo's deployed Worker  | **Yes** (the only writer)         | The D1 binding lives in the owner's Cloudflare account; only deploys from THIS repository's branches build a Worker that holds it.                                                                                 |
+| A fork / outside contributor | **No**                            | Their deploy would create/bind THEIR OWN D1 (or fail — they have neither the database_id nor your account). Pull requests from forks never gain access to your data.                                               |
+| Outside users via the API    | **Only the designed write paths** | `publish` (rate-limited, canonical-parsed, challenge-gated for replacement), escrow store/delete (key-signed challenge), revoke (revocation token / signed challenge / admin token). Everything else is read-only. |
+| Anonymous attackers          | **Destructive paths: no**         | Revocation without the token requires a signature from the key itself; the admin path requires `ADMIN_REVOKE_TOKEN` which lives only in the owner's Worker secrets.                                                |
+
+Repository-side recommendations (GitHub, not Cloudflare):
+
+- **Branch protection** on `main` and `develop` (require PR review + status checks) — since the Worker deploys branch heads, protecting the branches protects what gets deployed. The repo owner merging with admin privileges bypasses review only deliberately.
+- **Outsiders cannot push branches to this repository** unless you add them as collaborators — for a public repo they fork instead. That is the correct default; nothing to fix.
+
+## If registry writes fail (503 "Registry is temporarily unavailable")
+
+`GET /api/registry/health` reports `limiterWrite: false` when D1 **reads** work but D1
+**writes** fail. Symptom: lookups return 200, every mutation (`publish`, challenge,
+revoke, escrow) returns 503. Observed live on a public `workers.dev` preview: bot
+scanners found the URL (it appears in PR comments on a public repo) and burned the
+account's **daily D1 write quota** — the fixed-window limiter performs one upsert
+per request to count traffic.
+
+Diagnosis checklist for the operator:
+
+```bash
+# 1. Confirm the outage shape from anywhere:
+curl -s https://<worker>/api/registry/health | jq   # limiterWrite:false = writes down, reads fine
+
+# 2. In the Cloudflare dashboard → Workers & Pages → D1 → encryptor-registry:
+#    check "Rows written / day" against the 100k free-tier limit, and storage size.
+
+# 3. From a machine with wrangler auth to the account, free stale rate buckets
+#    (they self-expire, but this reclaims space / confirms write access):
+npx wrangler d1 execute encryptor-registry --remote \
+  --command "DELETE FROM registry_rate WHERE reset_at < strftime('%s','now')"
+
+# 4. Check Workers logs (observability is enabled) — the limiter logs the exact
+#    D1 error on every failure, e.g. "exceeded daily limit" vs "database or disk is full".
+```
+
+Quota resets at **00:00 UTC**. If it re-exhausts within hours, reduce bot write burn:
+enable a Cloudflare WAF rate-limiting rule on `/api/*`, provision Turnstile (writes
+then require a human token), or keep the worker on a non-obvious route. The limiter
+already minimizes writes: over-limit requests are rejected from a plain read with
+zero writes, and public reads fail open without blocking when the limiter is down.
+
 ## Deployment (free tier, ~5 minutes)
 
 ```bash

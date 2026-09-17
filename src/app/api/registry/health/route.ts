@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
-import { RegistryError, getRegistryDBReady, rateLimitSafe } from "@/lib/registry/db";
+import { RegistryError, getRegistryDBReady, nowSeconds, rateLimitSafe } from "@/lib/registry/db";
 import { appliedSchemaVersions, pendingSchemaVersions } from "@/lib/registry/migrate";
 import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
 import { turnstileEnforced } from "@/lib/registry/turnstile";
@@ -14,11 +14,18 @@ export const dynamic = "force-dynamic";
  *
  * Runs the self-migration FIRST (so a fresh database heals just by opening
  * this URL) and then reports the applied/pending schema versions, database
- * reachability, and whether Turnstile write-gating is enforced. No secrets,
- * no user data — safe to expose; rate limited generously (fail-open so a
- * limiter outage can never make a healthy database look unhealthy).
+ * reachability, whether Turnstile write-gating is enforced, and whether D1
+ * WRITES currently succeed (limiterWrite). No secrets, no user data — safe
+ * to expose; rate limited generously (fail-open so a limiter outage can
+ * never make a healthy database look unhealthy).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * limiterWrite exists because reads and writes fail differently: the daily
+ * D1 write quota (or a full database) leaves every read working while ALL
+ * mutations 503 — observed live on a bot-hammered preview. Probing writes
+ * from health turns that outage into a one-URL diagnosis. The probe writes
+ * and immediately deletes a dedicated bucket row (self-cleaning even if
+ * the DELETE fails: the opportunistic registry_rate sweep eventually
+ * removes it). # Mr. AI Acting on s183173's Behalf
  */
 export async function GET(req: NextRequest) {
 	try {
@@ -34,10 +41,30 @@ export async function GET(req: NextRequest) {
 			true,
 		);
 		const applied = await appliedSchemaVersions(db);
+		let limiterWrite = true;
+		try {
+			// Write probe: reads and writes fail differently — the daily
+			// D1 write quota (or a full database) leaves every read healthy
+			// while ALL mutations 503. Write + delete a dedicated bucket row
+			// so operators get a one-URL diagnosis (self-cleaning even if
+			// the DELETE fails: the opportunistic rate sweep removes it).
+			const probeBucket = "registry-health-write-probe";
+			await db
+				.prepare(
+					`INSERT INTO registry_rate (bucket, count, reset_at) VALUES (?1, 1, ?2)
+                                         ON CONFLICT (bucket) DO UPDATE SET count = count + 1, reset_at = ?2`,
+				)
+				.bind(probeBucket, nowSeconds() + 300)
+				.run();
+			await db.prepare("DELETE FROM registry_rate WHERE bucket = ?1").bind(probeBucket).run();
+		} catch {
+			limiterWrite = false;
+		}
 		return NextResponse.json(
 			{
 				ok: true,
 				db: true,
+				limiterWrite,
 				schema: {
 					applied,
 					pending: pendingSchemaVersions(applied),

@@ -121,6 +121,9 @@ async function expectOk(res: Response, fallback: string): Promise<Record<string,
 export interface RegistryHealth {
 	ok: boolean;
 	db: boolean;
+	/** False when D1 writes fail while reads work (quota/full/account) —
+	 *  every mutation route will 503 until the operator intervenes. */
+	limiterWrite?: boolean;
 	schema?: { applied: string[]; pending: string[] };
 	turnstile?: "enforced" | "disabled";
 	error?: string;

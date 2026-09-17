@@ -607,7 +607,19 @@ export function RecipientPicker({
 				!(showSuggestions && visibleSuggestions.length > 0) &&
 				visibleRecentRecipients.length > 0 && (
 					<div className="mt-2">
-						<p className="text-[10px] text-muted-foreground">Recent:</p>
+						<p className="flex items-center gap-2 text-[10px] text-muted-foreground">
+							Recent:
+							{/* Privacy affordance: wipe the recent-recipients list without
+                  touching the saved key or recipients. */}
+							<button
+								type="button"
+								onClick={() => setRecentRecipients([])}
+								aria-label="Clear recent recipients"
+								className="rounded text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-destructive hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff]"
+							>
+								Clear
+							</button>
+						</p>
 						<div className="mt-1 flex flex-wrap gap-1.5">
 							{visibleRecentRecipients.map((r, i) => {
 								const alreadyAdded = recipients.some(
@@ -615,39 +627,19 @@ export function RecipientPicker({
 										(r.username !== undefined && p.username === r.username) ||
 										(r.fingerprint !== undefined && p.fingerprint === r.fingerprint),
 								);
-								const removeKey = r.fingerprint || r.label;
 								return (
-									<span
-										key={`${removeKey}-${i}`}
-										className="inline-flex items-center overflow-hidden rounded-full border text-[11px] text-muted-foreground transition-colors focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-[#0055dc] dark:focus-within:outline-[#5e94ff]"
+									<button
+										key={`${r.fingerprint || r.label}-${i}`}
+										type="button"
+										onClick={() => addRecentRecipient(r)}
+										disabled={alreadyAdded}
+										aria-label={`Add recent recipient ${r.label}`}
+										className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[#0055dc]/5 hover:text-foreground dark:hover:bg-[#5e94ff]/5 ${
+											alreadyAdded ? "cursor-not-allowed opacity-50" : ""
+										}`}
 									>
-										<button
-											type="button"
-											onClick={() => addRecentRecipient(r)}
-											disabled={alreadyAdded}
-											aria-label={`Add recent recipient ${r.label}`}
-											className={`max-w-40 truncate px-2 py-0.5 transition-colors hover:bg-[#0055dc]/5 hover:text-foreground dark:hover:bg-[#5e94ff]/5 ${
-												alreadyAdded ? "cursor-not-allowed opacity-50" : ""
-											}`}
-										>
-											{r.label}
-										</button>
-										{/* Per-entry removal (human feedback: "make a button on the
-                        individual names … to remove the recipient from
-                        recents") — replaces the wipe-everything Clear. */}
-										<button
-											type="button"
-											onClick={() =>
-												setRecentRecipients((prev) =>
-													prev.filter((p) => (p.fingerprint || p.label) !== removeKey),
-												)
-											}
-											aria-label={`Remove ${r.label} from recents`}
-											className="h-full px-1.5 py-0.5 text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#0055dc] dark:focus-visible:outline-[#5e94ff]"
-										>
-											<X aria-hidden="true" className="size-3" />
-										</button>
-									</span>
+										<span className="max-w-40 truncate">{r.label}</span>
+									</button>
 								);
 							})}
 						</div>

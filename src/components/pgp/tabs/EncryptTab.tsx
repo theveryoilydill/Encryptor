@@ -40,7 +40,7 @@ import {
 	InputSizeCounter,
 	OutputBlock,
 } from "@/components/pgp/shared";
-import { MessageEditor, markersToDataUrls } from "@/components/pgp/MessageEditor";
+import { MessageEditor } from "@/components/pgp/MessageEditor";
 import { VaultImportDialog } from "@/components/pgp/VaultImportDialog";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
 import { PROXIES } from "@/components/pgp/contracts";
@@ -296,14 +296,9 @@ function buildTableOfContents(markdown: string): string {
 function TemplateMenu({
 	onApply,
 	currentMessage,
-	files,
 }: {
 	onApply: (body: string) => void;
 	currentMessage: string;
-	/** Attachments referenced by the current message. Saving converts their
-	 *  envelope:// markers to embedded data URLs so IMAGE templates survive
-	 *  outside the composer (human feedback: "image templates don't work"). */
-	files: EnvelopeFile[];
 }) {
 	const [templates, setTemplates] = useState<UserTemplate[]>([]);
 	const [saveOpen, setSaveOpen] = useState(false);
@@ -326,31 +321,13 @@ function TemplateMenu({
 	};
 
 	const handleSave = () => {
-		// Inline attachment images as data URLs BEFORE saving: envelope://
-		// markers only resolve against the composer's live attachment list, so
-		// a template saved with them rendered broken images on apply. Data
-		// URLs are self-contained — applying re-registers them as fresh
-		// attachments through the editor's reconcile step, and the encrypt
-		// pipeline carries them like any inline image.
-		const embedded = markersToDataUrls(currentMessage, files);
-		let body = embedded;
-		let note: string | null = null;
-		if (embedded.length > MAX_TEMPLATE_BODY_CHARS) {
-			// Over the storage cap with images inlined — save the text version
-			// (markers stripped) and say so instead of silently breaking.
-			body = currentMessage.replace(/!\[[^\]]*\]\(envelope:\/\/[^)\s]+\)/g, "");
-			note = "Template saved without its images — they exceed the size cap.";
-		}
-		const result = saveUserTemplate(name, body.slice(0, MAX_TEMPLATE_BODY_CHARS));
+		const result = saveUserTemplate(name, currentMessage.slice(0, MAX_TEMPLATE_BODY_CHARS));
 		if (!result.ok) {
 			setSaveError(result.error);
 			return;
 		}
 		setTemplates(result.templates);
 		setSaveOpen(false);
-		if (note) {
-			toast({ title: note });
-		}
 	};
 
 	const handleDelete = (id: string) => {
@@ -1472,7 +1449,7 @@ export function EncryptTab({
 						<Maximize2 aria-hidden="true" className="size-3.5" />
 					)}
 				</button>
-				<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} files={attachments} />
+				<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
 			</div>
 			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
 			    the viewport; plain block inline. */}

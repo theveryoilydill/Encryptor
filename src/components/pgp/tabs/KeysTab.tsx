@@ -228,7 +228,8 @@ function RegistryHealthChip() {
 		void refresh();
 	}, [refresh]);
 
-	const writesDown = health?.ok === true && health.limiterWrite === false;
+	const saltMissing = health?.ok === true && health.saltConfigured === false;
+	const writesDown = saltMissing || (health?.ok === true && health.limiterWrite === false);
 	const dot =
 		health === null || checking
 			? "bg-muted-foreground/50"
@@ -241,7 +242,9 @@ function RegistryHealthChip() {
 		health === null || checking
 			? "Checking registry…"
 			: writesDown
-				? "Registry reads OK — writes failing (publish will 503)"
+				? saltMissing
+					? "Registry reads OK — RE_SALT secret missing (mutations 503)"
+					: "Registry reads OK — D1 writes failing (publish will 503)"
 				: health.ok
 					? `Registry connected (${health.schema?.applied.length ?? 0} migrations)`
 					: `Registry issue: ${health.error ?? "unhealthy"}`;
@@ -252,7 +255,7 @@ function RegistryHealthChip() {
 				data-testid="registry-health-chip"
 				title={
 					health?.ok
-						? `Schema ${health.schema?.applied.join(", ")} · Turnstile ${health.turnstile ?? "unknown"}${health.limiterWrite === false ? " · D1 writes FAILING" : ""}`
+						? `Schema ${health.schema?.applied.join(", ")} · Turnstile ${health.turnstile ?? "unknown"}${health.saltConfigured === false ? " · RE_SALT MISSING" : ""}${health.limiterWrite === false ? " · D1 writes FAILING" : ""}`
 						: (health?.error ?? "Probing the registry database…")
 				}
 				className={`inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-xs transition-colors ${writesDown ? "border-amber-500/50 bg-amber-500/5" : "border-border"}`}

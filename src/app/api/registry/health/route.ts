@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
-import { RegistryError, getRegistryDBReady, nowSeconds, rateLimitSafe } from "@/lib/registry/db";
+import {
+	RegistryError,
+	getRegistryDBReady,
+	nowSeconds,
+	rateLimitSafe,
+	saltConfigured,
+} from "@/lib/registry/db";
 import { appliedSchemaVersions, pendingSchemaVersions } from "@/lib/registry/migrate";
 import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
 import { turnstileEnforced } from "@/lib/registry/turnstile";
@@ -65,6 +71,7 @@ export async function GET(req: NextRequest) {
 				ok: true,
 				db: true,
 				limiterWrite,
+				saltConfigured: saltConfigured(),
 				schema: {
 					applied,
 					pending: pendingSchemaVersions(applied),

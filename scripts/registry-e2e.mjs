@@ -143,6 +143,11 @@ console.log("== health & self-migration ==");
 		r2.body?.limiterWrite === true,
 		`limiterWrite=${String(r2.body?.limiterWrite)}`,
 	);
+	check(
+		"health reports saltConfigured",
+		r2.body?.saltConfigured === true,
+		`saltConfigured=${String(r2.body?.saltConfigured)}`,
+	);
 }
 
 console.log("== input validation ==");

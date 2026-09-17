@@ -125,6 +125,17 @@ export async function getRegistryDBReady(): Promise<D1DatabaseLike> {
  * brute-forceable from a DB dump, turning it into an IP-disclosure leak.
  * Local development supplies it via .dev.vars.
  */
+/**
+ * True when the deployment has (or does not need) RE_SALT. Health reports
+ * this so a missing secret is diagnosable from one URL: mutations 503 with
+ * a misleading "limiter unavailable" because getSalt() throws INSIDE the
+ * rateLimit try-block — while the write probe (which never touches the
+ * salt) reports limiterWrite:true. Observed live on a worker that lost its
+ * secrets during a redeploy.
+ */
+export function saltConfigured(): boolean {
+	return Boolean(getCloudflareEnv()?.RE_SALT) || process.env.NODE_ENV !== "production";
+}
 function getSalt(): string {
 	const salt = getCloudflareEnv()?.RE_SALT;
 	if (salt) return salt;

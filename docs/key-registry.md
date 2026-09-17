@@ -419,12 +419,23 @@ Repository-side recommendations (GitHub, not Cloudflare):
 
 ## If registry writes fail (503 "Registry is temporarily unavailable")
 
-`GET /api/registry/health` reports `limiterWrite: false` when D1 **reads** work but D1
-**writes** fail. Symptom: lookups return 200, every mutation (`publish`, challenge,
-revoke, escrow) returns 503. Observed live on a public `workers.dev` preview: bot
-scanners found the URL (it appears in PR comments on a public repo) and burned the
-account's **daily D1 write quota** — the fixed-window limiter performs one upsert
-per request to count traffic.
+`GET /api/registry/health` distinguishes the two known "reads work, mutations 503"
+failure modes:
+
+- **`saltConfigured: false`** — the Worker has no `RE_SALT` secret. In production the
+  registry fails closed, and because the salt is resolved INSIDE the rate limiter's
+  try-block, every mutation reports a misleading "Registry is temporarily
+  unavailable" 503 while the write probe still passes. Fix:
+  `npx wrangler secret put RE_SALT` (a long random string) — Worker secrets deploy a
+  new version automatically. **Observed live**: a worker recreated/redeployed without
+  its secrets 503'd on every mutation for a day while lookups stayed healthy.
+- **`limiterWrite: false`** — D1 **writes** fail (daily write quota exhausted, or the
+  database is full) while reads work. The fixed-window limiter performs one upsert
+  per request, so a bot-scanned public `workers.dev` URL can burn the free tier's
+  100k writes/day.
+
+Symptom either way: lookups return 200, every mutation (`publish`, challenge,
+revoke, escrow) returns 503.
 
 Diagnosis checklist for the operator:
 
@@ -432,15 +443,20 @@ Diagnosis checklist for the operator:
 # 1. Confirm the outage shape from anywhere:
 curl -s https://<worker>/api/registry/health | jq   # limiterWrite:false = writes down, reads fine
 
-# 2. In the Cloudflare dashboard → Workers & Pages → D1 → encryptor-registry:
+# 2. If saltConfigured:false — set the secret (this is the usual cause after
+#    recreating or re-linking a Worker; secrets do not survive a new worker):
+npx wrangler secret put RE_SALT          # long random string
+npx wrangler secret put ADMIN_REVOKE_TOKEN   # while you are at it (optional)
+
+# 3. In the Cloudflare dashboard → Workers & Pages → D1 → encryptor-registry:
 #    check "Rows written / day" against the 100k free-tier limit, and storage size.
 
-# 3. From a machine with wrangler auth to the account, free stale rate buckets
+# 4. From a machine with wrangler auth to the account, free stale rate buckets
 #    (they self-expire, but this reclaims space / confirms write access):
 npx wrangler d1 execute encryptor-registry --remote \
   --command "DELETE FROM registry_rate WHERE reset_at < strftime('%s','now')"
 
-# 4. Check Workers logs (observability is enabled) — the limiter logs the exact
+# 5. Check Workers logs (observability is enabled) — the limiter logs the exact
 #    D1 error on every failure, e.g. "exceeded daily limit" vs "database or disk is full".
 ```
 

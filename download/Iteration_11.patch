@@ -1,0 +1,2108 @@
+From f6e98cdb2ae5d9509ec246bb2c77cd823d2fa053 Mon Sep 17 00:00:00 2001
+From: s183173 <s183173@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 05:07:30 +0000
+Subject: [PATCH] AI Commit: registry discoverability (landing banner +
+ quickstart), in-app Public API reference, health limiterWrite probe # Mr. AI
+ Acting on s183173's Behalf
+
+---
+ docs/key-registry.md                          |   49 +
+ scripts/registry-e2e.mjs                      | 1427 +++++++++--------
+ src/app/api/registry/health/route.ts          |   37 +-
+ src/components/pgp/PgpApp.tsx                 |   61 +
+ src/components/pgp/registry/ApiDocsDialog.tsx |  177 ++
+ src/components/pgp/tabs/KeysTab.tsx           |   71 +-
+ src/lib/constants.ts                          |    2 +
+ src/lib/registry/client.ts                    |    3 +
+ 8 files changed, 1102 insertions(+), 725 deletions(-)
+ create mode 100644 src/components/pgp/registry/ApiDocsDialog.tsx
+
+diff --git a/docs/key-registry.md b/docs/key-registry.md
+index 2c1f936..82d34ca 100644
+--- a/docs/key-registry.md
++++ b/docs/key-registry.md
+@@ -401,6 +401,55 @@ it behaves like a preference; the "yours" badge on each row is unaffected.
+ - Monitor D1 metrics (`rows_read`, `rows_written`) and set alerts; the storage guard caps keys at `LIMITS.registryStorageCapKeys`.
+ - Set `RE_SALT` (long random string) and optionally `ADMIN_REVOKE_TOKEN` via `wrangler secret put` — the registry fails closed (503) in production without `RE_SALT`.
+ 
++## Deployment permissions & database writes
++
++Who can touch the registry database — the short version for repository owners:
++
++| Actor                        | Can they write to YOUR D1?        | Why                                                                                                                                                                                                                |
++| ---------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
++| This repo's deployed Worker  | **Yes** (the only writer)         | The D1 binding lives in the owner's Cloudflare account; only deploys from THIS repository's branches build a Worker that holds it.                                                                                 |
++| A fork / outside contributor | **No**                            | Their deploy would create/bind THEIR OWN D1 (or fail — they have neither the database_id nor your account). Pull requests from forks never gain access to your data.                                               |
++| Outside users via the API    | **Only the designed write paths** | `publish` (rate-limited, canonical-parsed, challenge-gated for replacement), escrow store/delete (key-signed challenge), revoke (revocation token / signed challenge / admin token). Everything else is read-only. |
++| Anonymous attackers          | **Destructive paths: no**         | Revocation without the token requires a signature from the key itself; the admin path requires `ADMIN_REVOKE_TOKEN` which lives only in the owner's Worker secrets.                                                |
++
++Repository-side recommendations (GitHub, not Cloudflare):
++
++- **Branch protection** on `main` and `develop` (require PR review + status checks) — since the Worker deploys branch heads, protecting the branches protects what gets deployed. The repo owner merging with admin privileges bypasses review only deliberately.
++- **Outsiders cannot push branches to this repository** unless you add them as collaborators — for a public repo they fork instead. That is the correct default; nothing to fix.
++
++## If registry writes fail (503 "Registry is temporarily unavailable")
++
++`GET /api/registry/health` reports `limiterWrite: false` when D1 **reads** work but D1
++**writes** fail. Symptom: lookups return 200, every mutation (`publish`, challenge,
++revoke, escrow) returns 503. Observed live on a public `workers.dev` preview: bot
++scanners found the URL (it appears in PR comments on a public repo) and burned the
++account's **daily D1 write quota** — the fixed-window limiter performs one upsert
++per request to count traffic.
++
++Diagnosis checklist for the operator:
++
++```bash
++# 1. Confirm the outage shape from anywhere:
++curl -s https://<worker>/api/registry/health | jq   # limiterWrite:false = writes down, reads fine
++
++# 2. In the Cloudflare dashboard → Workers & Pages → D1 → encryptor-registry:
++#    check "Rows written / day" against the 100k free-tier limit, and storage size.
++
++# 3. From a machine with wrangler auth to the account, free stale rate buckets
++#    (they self-expire, but this reclaims space / confirms write access):
++npx wrangler d1 execute encryptor-registry --remote \
++  --command "DELETE FROM registry_rate WHERE reset_at < strftime('%s','now')"
++
++# 4. Check Workers logs (observability is enabled) — the limiter logs the exact
++#    D1 error on every failure, e.g. "exceeded daily limit" vs "database or disk is full".
++```
++
++Quota resets at **00:00 UTC**. If it re-exhausts within hours, reduce bot write burn:
++enable a Cloudflare WAF rate-limiting rule on `/api/*`, provision Turnstile (writes
++then require a human token), or keep the worker on a non-obvious route. The limiter
++already minimizes writes: over-limit requests are rejected from a plain read with
++zero writes, and public reads fail open without blocking when the limiter is down.
++
+ ## Deployment (free tier, ~5 minutes)
+ 
+ ```bash
+diff --git a/scripts/registry-e2e.mjs b/scripts/registry-e2e.mjs
+index 298af4e..b6b3e27 100644
+--- a/scripts/registry-e2e.mjs
++++ b/scripts/registry-e2e.mjs
+@@ -18,61 +18,61 @@ let passed = 0;
+ let failed = 0;
+ 
+ function check(name, cond, detail = "") {
+-	if (cond) {
+-		passed++;
+-		console.log(`  PASS ${name}`);
+-	} else {
+-		failed++;
+-		const redacted = detail ? " [details redacted]" : "";
+-		console.log(`  FAIL ${name}${redacted}`);
+-	}
++        if (cond) {
++                passed++;
++                console.log(`  PASS ${name}`);
++        } else {
++                failed++;
++                const redacted = detail ? " [details redacted]" : "";
++                console.log(`  FAIL ${name}${redacted}`);
++        }
+ }
+ 
+ async function api(path, opts = {}) {
+-	// Default IP bucket for header-less calls (lookups, escrow GETs): rate
+-	// limits are per-IP, so re-runs from the same host would otherwise share
+-	// and exhaust the anonymous bucket. The rotating RUN_OCTET keeps every
+-	// run independent; explicit IP(n) headers override this default.
+-	const { headers: extra, ...rest } = opts;
+-	const res = await fetch(`${BASE}${path}`, {
+-		...rest,
+-		headers: { "cf-connecting-ip": `10.7.${RUN_OCTET}.99`, ...extra },
+-	});
+-	let body = null;
+-	try {
+-		body = await res.json();
+-	} catch {}
+-	return { status: res.status, body, headers: res.headers };
++        // Default IP bucket for header-less calls (lookups, escrow GETs): rate
++        // limits are per-IP, so re-runs from the same host would otherwise share
++        // and exhaust the anonymous bucket. The rotating RUN_OCTET keeps every
++        // run independent; explicit IP(n) headers override this default.
++        const { headers: extra, ...rest } = opts;
++        const res = await fetch(`${BASE}${path}`, {
++                ...rest,
++                headers: { "cf-connecting-ip": `10.7.${RUN_OCTET}.99`, ...extra },
++        });
++        let body = null;
++        try {
++                body = await res.json();
++        } catch {}
++        return { status: res.status, body, headers: res.headers };
+ }
+ 
+ function jsonPost(path, payload, extra = {}) {
+-	return api(path, {
+-		method: "POST",
+-		headers: { "Content-Type": "application/json", ...extra },
+-		body: JSON.stringify(payload),
+-	});
++        return api(path, {
++                method: "POST",
++                headers: { "Content-Type": "application/json", ...extra },
++                body: JSON.stringify(payload),
++        });
+ }
+ 
+ async function makeKey(name, email) {
+-	const { privateKey, publicKey } = await openpgp.generateKey({
+-		type: "ecc",
+-		curve: "curve25519",
+-		userIDs: [{ name, email }],
+-		format: "object",
+-	});
+-	return { privateKey, publicKey };
++        const { privateKey, publicKey } = await openpgp.generateKey({
++                type: "ecc",
++                curve: "curve25519",
++                userIDs: [{ name, email }],
++                format: "object",
++        });
++        return { privateKey, publicKey };
+ }
+ 
+ async function signChallenge(privateKey, fingerprint, nonce) {
+-	const message = `encryptor key registry\naction: prove-key-possession\nfingerprint: ${fingerprint}\nnonce: ${nonce}\n`;
+-	const cleartext = await openpgp.createCleartextMessage({ text: message });
+-	return openpgp.sign({ message: cleartext, signingKeys: privateKey, format: "armored" });
++        const message = `encryptor key registry\naction: prove-key-possession\nfingerprint: ${fingerprint}\nnonce: ${nonce}\n`;
++        const cleartext = await openpgp.createCleartextMessage({ text: message });
++        return openpgp.sign({ message: cleartext, signingKeys: privateKey, format: "armored" });
+ }
+ 
+ /** Same, for a PASSPHRASE-ENCRYPTED private key object. */
+ async function signChallengeEncrypted(privateKey, passphrase, fingerprint, nonce) {
+-	const unlocked = await openpgp.decryptKey({ privateKey, passphrase });
+-	return signChallenge(unlocked, fingerprint, nonce);
++        const unlocked = await openpgp.decryptKey({ privateKey, passphrase });
++        return signChallenge(unlocked, fingerprint, nonce);
+ }
+ 
+ // Per-run unique IP buckets: the second octet rotates with wall-clock
+@@ -85,7 +85,7 @@ const IP = (n) => ({ "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
+  *  client IP (10/h), so the suite would exhaust the shared anon bucket once
+  *  it grew past 10 challenges. Distinct IPs keep runs deterministic. */
+ const challengeFor = (fingerprint, ipNum) =>
+-	api(`/api/registry/challenge?fingerprint=${fingerprint}`, { headers: IP(ipNum) });
++        api(`/api/registry/challenge?fingerprint=${fingerprint}`, { headers: IP(ipNum) });
+ 
+ // ---- main ----
+ const t0 = Date.now();
+@@ -93,77 +93,82 @@ const t0 = Date.now();
+ // Warmup: first hits compile routes on demand in next dev — retry until the
+ // server responds (up to ~4 min), then fail fast.
+ async function warmup() {
+-	for (let i = 0; i < 48; i++) {
+-		try {
+-			const res = await fetch(`${BASE}/api/registry/lookup`, {
+-				signal: AbortSignal.timeout(15000),
+-			});
+-			if (res.status > 0) {
+-				console.log(`warmup ok after ${i + 1} attempt(s) (status ${res.status})`);
+-				return;
+-			}
+-		} catch {
+-			await new Promise((r) => setTimeout(r, 5000));
+-		}
+-	}
+-	console.error("server did not warm up within 4 minutes");
+-	process.exit(2);
++        for (let i = 0; i < 48; i++) {
++                try {
++                        const res = await fetch(`${BASE}/api/registry/lookup`, {
++                                signal: AbortSignal.timeout(15000),
++                        });
++                        if (res.status > 0) {
++                                console.log(`warmup ok after ${i + 1} attempt(s) (status ${res.status})`);
++                                return;
++                        }
++                } catch {
++                        await new Promise((r) => setTimeout(r, 5000));
++                }
++        }
++        console.error("server did not warm up within 4 minutes");
++        process.exit(2);
+ }
+ await warmup();
+ 
+ console.log("== health & self-migration ==");
+ {
+-	const r = await api("/api/registry/health");
+-	check(
+-		"health -> 200 ok",
+-		r.status === 200 && r.body.ok === true && r.body.db === true,
+-		`got ${r.status}`,
+-	);
+-	const applied = Array.isArray(r.body?.schema?.applied) ? r.body.schema.applied : [];
+-	check(
+-		"health reports all migrations applied",
+-		["0001_registry", "0002_registry_indexes", "0003_encrypted_private"].every((v) =>
+-			applied.includes(v),
+-		),
+-		applied.join(","),
+-	);
+-	check(
+-		"health reports no pending migrations",
+-		Array.isArray(r.body?.schema?.pending) && r.body.schema.pending.length === 0,
+-	);
+-	check(
+-		"health reports turnstile mode",
+-		r.body?.turnstile === "enforced" || r.body?.turnstile === "disabled",
+-		String(r.body?.turnstile),
+-	);
+-	const r2 = await api("/api/registry/health");
+-	check("health is idempotent (repeat call)", r2.status === 200 && r2.body.ok === true);
++        const r = await api("/api/registry/health");
++        check(
++                "health -> 200 ok",
++                r.status === 200 && r.body.ok === true && r.body.db === true,
++                `got ${r.status}`,
++        );
++        const applied = Array.isArray(r.body?.schema?.applied) ? r.body.schema.applied : [];
++        check(
++                "health reports all migrations applied",
++                ["0001_registry", "0002_registry_indexes", "0003_encrypted_private"].every((v) =>
++                        applied.includes(v),
++                ),
++                applied.join(","),
++        );
++        check(
++                "health reports no pending migrations",
++                Array.isArray(r.body?.schema?.pending) && r.body.schema.pending.length === 0,
++        );
++        check(
++                "health reports turnstile mode",
++                r.body?.turnstile === "enforced" || r.body?.turnstile === "disabled",
++                String(r.body?.turnstile),
++        );
++        const r2 = await api("/api/registry/health");
++        check("health is idempotent (repeat call)", r2.status === 200 && r2.body.ok === true);
++        check(
++            "health reports limiterWrite (D1 write probe)",
++            r2.body?.limiterWrite === true,
++            `limiterWrite=${String(r2.body?.limiterWrite)}`,
++        );
+ }
+ 
+ console.log("== input validation ==");
+ {
+-	const r = await api("/api/registry/lookup");
+-	check("lookup without params -> 400", r.status === 400, `got ${r.status}`);
+-	const r2 = await api("/api/registry/lookup?fingerprint=ZZZZ");
+-	check("malformed fingerprint -> 400", r2.status === 400, `got ${r2.status}`);
+-	const r3 = await api("/api/registry/lookup?fingerprint=" + encodeURIComponent("' OR 1=1 --"));
+-	check("SQLi fingerprint -> 400", r3.status === 400, `got ${r3.status}`);
+-	const r4 = await api("/api/registry/lookup?key_id=" + encodeURIComponent("x' UNION SELECT"));
+-	check("SQLi key_id -> 400", r4.status === 400, `got ${r4.status}`);
+-	const r5 = await api("/api/registry/lookup?email=nobody@x");
+-	check("invalid email -> 400", r5.status === 400, `got ${r5.status}`);
+-	const r6 = await api("/api/registry/lookup?fingerprint=" + "A".repeat(40));
+-	check("unknown fingerprint -> 200 empty", r6.status === 200 && r6.body.keys.length === 0);
+-	const r7 = await api("/api/registry/lookup", {
+-		headers: { Origin: "https://evil.example" },
+-	});
+-	check(
+-		"lookup sends CORS *",
+-		r7.headers.get("access-control-allow-origin") === "*",
+-		r7.headers.get("access-control-allow-origin"),
+-	);
+-	const pre = await api("/api/registry/lookup", { method: "OPTIONS" });
+-	check("OPTIONS preflight 204", pre.status === 204, `got ${pre.status}`);
++        const r = await api("/api/registry/lookup");
++        check("lookup without params -> 400", r.status === 400, `got ${r.status}`);
++        const r2 = await api("/api/registry/lookup?fingerprint=ZZZZ");
++        check("malformed fingerprint -> 400", r2.status === 400, `got ${r2.status}`);
++        const r3 = await api("/api/registry/lookup?fingerprint=" + encodeURIComponent("' OR 1=1 --"));
++        check("SQLi fingerprint -> 400", r3.status === 400, `got ${r3.status}`);
++        const r4 = await api("/api/registry/lookup?key_id=" + encodeURIComponent("x' UNION SELECT"));
++        check("SQLi key_id -> 400", r4.status === 400, `got ${r4.status}`);
++        const r5 = await api("/api/registry/lookup?email=nobody@x");
++        check("invalid email -> 400", r5.status === 400, `got ${r5.status}`);
++        const r6 = await api("/api/registry/lookup?fingerprint=" + "A".repeat(40));
++        check("unknown fingerprint -> 200 empty", r6.status === 200 && r6.body.keys.length === 0);
++        const r7 = await api("/api/registry/lookup", {
++                headers: { Origin: "https://evil.example" },
++        });
++        check(
++                "lookup sends CORS *",
++                r7.headers.get("access-control-allow-origin") === "*",
++                r7.headers.get("access-control-allow-origin"),
++        );
++        const pre = await api("/api/registry/lookup", { method: "OPTIONS" });
++        check("OPTIONS preflight 204", pre.status === 204, `got ${pre.status}`);
+ }
+ 
+ console.log("== publish happy path (alice) ==");
+@@ -171,656 +176,656 @@ const alice = await makeKey("Alice", `alice.${RUN}@example.com`);
+ const aliceArmor = alice.publicKey.armor();
+ const aliceFpr = alice.publicKey.getFingerprint().toUpperCase();
+ const aliceSubkeyIds = alice.publicKey
+-	.getKeyIDs()
+-	.slice(1)
+-	.map((id) => id.toHex().toUpperCase());
++        .getKeyIDs()
++        .slice(1)
++        .map((id) => id.toHex().toUpperCase());
+ let _aliceToken; // captured for symmetry; re-read via lookup below
+ let _aliceUpdatedAt; // registry-watch contract: updated_at at first sight
+ {
+-	const r = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(1));
+-	check("publish -> 201", r.status === 201, JSON.stringify(r.body));
+-	check("publish returns token", typeof r.body?.revocationToken === "string");
+-	check("publish fingerprint matches", r.body?.fingerprint === aliceFpr);
+-	_aliceToken = r.body?.revocationToken;
+-
+-	const wrongCT = await api("/api/registry/publish", {
+-		method: "POST",
+-		headers: { "Content-Type": "text/plain", ...IP(1) },
+-		body: JSON.stringify({ armored: aliceArmor }),
+-	});
+-	check("wrong content-type -> 415", wrongCT.status === 415, `got ${wrongCT.status}`);
+-
+-	const priv = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: alice.privateKey.armor() },
+-		IP(2),
+-	);
+-	check(
+-		"private key publish -> 400",
+-		priv.status === 400,
+-		`got ${priv.status}: ${priv.body?.error}`,
+-	);
+-
+-	const dup = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(3));
+-	check("duplicate publish -> 409", dup.status === 409, `got ${dup.status}`);
++        const r = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(1));
++        check("publish -> 201", r.status === 201, JSON.stringify(r.body));
++        check("publish returns token", typeof r.body?.revocationToken === "string");
++        check("publish fingerprint matches", r.body?.fingerprint === aliceFpr);
++        _aliceToken = r.body?.revocationToken;
++
++        const wrongCT = await api("/api/registry/publish", {
++                method: "POST",
++                headers: { "Content-Type": "text/plain", ...IP(1) },
++                body: JSON.stringify({ armored: aliceArmor }),
++        });
++        check("wrong content-type -> 415", wrongCT.status === 415, `got ${wrongCT.status}`);
++
++        const priv = await jsonPost(
++                "/api/registry/publish",
++                { armored: alice.privateKey.armor() },
++                IP(2),
++        );
++        check(
++                "private key publish -> 400",
++                priv.status === 400,
++                `got ${priv.status}: ${priv.body?.error}`,
++        );
++
++        const dup = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(3));
++        check("duplicate publish -> 409", dup.status === 409, `got ${dup.status}`);
+ }
+ 
+ console.log("== lookup paths (alice) ==");
+ {
+-	const byFpr = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
+-	check(
+-		"lookup by fingerprint",
+-		byFpr.body?.keys?.[0]?.fingerprint === aliceFpr &&
+-			byFpr.body.keys[0].armored.includes("BEGIN PGP PUBLIC KEY"),
+-	);
+-	check("lookup shows not revoked", byFpr.body?.keys?.[0]?.revoked === false);
+-	_aliceUpdatedAt = byFpr.body?.keys?.[0]?.updatedAt;
+-	const byId = await api(`/api/registry/lookup?key_id=${aliceFpr.slice(-16)}`);
+-	check(
+-		"lookup by primary key_id",
+-		byId.body?.keys?.length === 1,
+-		JSON.stringify(byId.body?.keys?.length),
+-	);
+-	if (aliceSubkeyIds.length > 0) {
+-		const bySub = await api(`/api/registry/lookup?key_id=${aliceSubkeyIds[0]}`);
+-		check("lookup by subkey key_id", bySub.body?.keys?.length === 1);
+-	}
+-	const byEmail = await api(`/api/registry/lookup?email=alice.${RUN}@example.com`);
+-	check("lookup by email", byEmail.body?.keys?.length === 1);
+-	const caseFold = await api(`/api/registry/lookup?email=ALICE.${RUN}@EXAMPLE.COM`);
+-	check("email lookup case-insensitive", caseFold.body?.keys?.length === 1);
+-
+-	// ?words=1 — PGP word-list (biometric) fingerprints, opt-in per call.
+-	const withWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}&words=1`);
+-	const words = withWords.body?.keys?.[0]?.words;
+-	check(
+-		"lookup ?words=1 returns 20 PGP words",
+-		Array.isArray(words) && words.length === 20,
+-		JSON.stringify(words?.length),
+-	);
+-	check(
+-		"PGP words are space-free single tokens",
+-		Array.isArray(words) && words.every((w) => typeof w === "string" && /^[A-Za-z]+$/.test(w)),
+-	);
+-	const noWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
+-	check(
+-		"lookup without ?words omits words field",
+-		noWords.body?.keys?.[0] && !("words" in noWords.body.keys[0]),
+-	);
++        const byFpr = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
++        check(
++                "lookup by fingerprint",
++                byFpr.body?.keys?.[0]?.fingerprint === aliceFpr &&
++                        byFpr.body.keys[0].armored.includes("BEGIN PGP PUBLIC KEY"),
++        );
++        check("lookup shows not revoked", byFpr.body?.keys?.[0]?.revoked === false);
++        _aliceUpdatedAt = byFpr.body?.keys?.[0]?.updatedAt;
++        const byId = await api(`/api/registry/lookup?key_id=${aliceFpr.slice(-16)}`);
++        check(
++                "lookup by primary key_id",
++                byId.body?.keys?.length === 1,
++                JSON.stringify(byId.body?.keys?.length),
++        );
++        if (aliceSubkeyIds.length > 0) {
++                const bySub = await api(`/api/registry/lookup?key_id=${aliceSubkeyIds[0]}`);
++                check("lookup by subkey key_id", bySub.body?.keys?.length === 1);
++        }
++        const byEmail = await api(`/api/registry/lookup?email=alice.${RUN}@example.com`);
++        check("lookup by email", byEmail.body?.keys?.length === 1);
++        const caseFold = await api(`/api/registry/lookup?email=ALICE.${RUN}@EXAMPLE.COM`);
++        check("email lookup case-insensitive", caseFold.body?.keys?.length === 1);
++
++        // ?words=1 — PGP word-list (biometric) fingerprints, opt-in per call.
++        const withWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}&words=1`);
++        const words = withWords.body?.keys?.[0]?.words;
++        check(
++                "lookup ?words=1 returns 20 PGP words",
++                Array.isArray(words) && words.length === 20,
++                JSON.stringify(words?.length),
++        );
++        check(
++                "PGP words are space-free single tokens",
++                Array.isArray(words) && words.every((w) => typeof w === "string" && /^[A-Za-z]+$/.test(w)),
++        );
++        const noWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
++        check(
++                "lookup without ?words omits words field",
++                noWords.body?.keys?.[0] && !("words" in noWords.body.keys[0]),
++        );
+ }
+ 
+ console.log("== authorized replacement (alice) ==");
+ {
+-	const noAuth = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(4));
+-	check("replace without signature -> 409", noAuth.status === 409, `got ${noAuth.status}`);
+-
+-	const ch = await challengeFor(aliceFpr, 50);
+-	check(
+-		"challenge returns nonce",
+-		ch.status === 200 && typeof ch.body?.nonce === "string",
+-		JSON.stringify(ch.body),
+-	);
+-	const badSig = await jsonPost(
+-		"/api/registry/publish",
+-		{
+-			armored: aliceArmor,
+-			nonce: ch.body.nonce,
+-			signature: "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\ngarbage\n",
+-		},
+-		IP(5),
+-	);
+-	check("replace with garbage signature -> 403", badSig.status === 403, `got ${badSig.status}`);
+-
+-	// Cross-fingerprint nonce attack: bob steals a challenge issued for
+-	// ALICE's fingerprint and tries to use it to replace BOB's own record.
+-	const bob = await makeKey("Bob", `bob.${RUN}@example.com`);
+-	const bobArmor = bob.publicKey.armor();
+-	const bobPub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(40));
+-	check("bob fresh publish -> 201 (setup)", bobPub.status === 201, JSON.stringify(bobPub.body));
+-	const stolen = await challengeFor(aliceFpr, 51);
+-	const forged = await signChallenge(bob.privateKey, aliceFpr, stolen.body.nonce);
+-	const forgedRes = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: bobArmor, nonce: stolen.body.nonce, signature: forged },
+-		IP(6),
+-	);
+-	check(
+-		"cross-fingerprint nonce -> 403",
+-		forgedRes.status === 403,
+-		`got ${forgedRes.status}: ${JSON.stringify(forgedRes.body)}`,
+-	);
+-
+-	// Same-nonce-for-wrong-signer: fresh challenge for alice signed by bob.
+-	const chF = await challengeFor(aliceFpr, 52);
+-	const wrongSigner = await signChallenge(bob.privateKey, aliceFpr, chF.body.nonce);
+-	const wrongSignerRes = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: aliceArmor, nonce: chF.body.nonce, signature: wrongSigner },
+-		IP(41),
+-	);
+-	check(
+-		"wrong signer on own challenge -> 403",
+-		wrongSignerRes.status === 403,
+-		`got ${wrongSignerRes.status}`,
+-	);
+-
+-	const ch3 = await challengeFor(aliceFpr, 53);
+-	const goodSig = await signChallenge(alice.privateKey, aliceFpr, ch3.body.nonce);
+-	const spentNonce = ch3.body.nonce;
+-	const ok = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: aliceArmor, nonce: spentNonce, signature: goodSig },
+-		IP(7),
+-	);
+-	check(
+-		"authorized replace -> 200 replaced",
+-		ok.status === 200 && ok.body?.replaced === true,
+-		JSON.stringify(ok.body),
+-	);
+-
+-	// Registry-watch server contract: a replace must BUMP updated_at so
+-	// clients comparing sightings can detect the change (src/lib/registry/watch.ts).
+-	const afterReplace = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
+-	const afterUpdated = afterReplace.body?.keys?.[0]?.updatedAt;
+-	check(
+-		"lookup updatedAt bumps after authorized replace",
+-		typeof afterUpdated === "number" &&
+-			typeof _aliceUpdatedAt === "number" &&
+-			afterUpdated >= _aliceUpdatedAt,
+-		`before=${_aliceUpdatedAt} after=${afterUpdated}`,
+-	);
+-
+-	// Nonce was consumed — it must never be re-issued as-is.
+-	const dupChallenge = await challengeFor(aliceFpr, 54);
+-	check("new challenge differs from spent nonce", dupChallenge.body?.nonce !== spentNonce);
++        const noAuth = await jsonPost("/api/registry/publish", { armored: aliceArmor }, IP(4));
++        check("replace without signature -> 409", noAuth.status === 409, `got ${noAuth.status}`);
++
++        const ch = await challengeFor(aliceFpr, 50);
++        check(
++                "challenge returns nonce",
++                ch.status === 200 && typeof ch.body?.nonce === "string",
++                JSON.stringify(ch.body),
++        );
++        const badSig = await jsonPost(
++                "/api/registry/publish",
++                {
++                        armored: aliceArmor,
++                        nonce: ch.body.nonce,
++                        signature: "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\ngarbage\n",
++                },
++                IP(5),
++        );
++        check("replace with garbage signature -> 403", badSig.status === 403, `got ${badSig.status}`);
++
++        // Cross-fingerprint nonce attack: bob steals a challenge issued for
++        // ALICE's fingerprint and tries to use it to replace BOB's own record.
++        const bob = await makeKey("Bob", `bob.${RUN}@example.com`);
++        const bobArmor = bob.publicKey.armor();
++        const bobPub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(40));
++        check("bob fresh publish -> 201 (setup)", bobPub.status === 201, JSON.stringify(bobPub.body));
++        const stolen = await challengeFor(aliceFpr, 51);
++        const forged = await signChallenge(bob.privateKey, aliceFpr, stolen.body.nonce);
++        const forgedRes = await jsonPost(
++                "/api/registry/publish",
++                { armored: bobArmor, nonce: stolen.body.nonce, signature: forged },
++                IP(6),
++        );
++        check(
++                "cross-fingerprint nonce -> 403",
++                forgedRes.status === 403,
++                `got ${forgedRes.status}: ${JSON.stringify(forgedRes.body)}`,
++        );
++
++        // Same-nonce-for-wrong-signer: fresh challenge for alice signed by bob.
++        const chF = await challengeFor(aliceFpr, 52);
++        const wrongSigner = await signChallenge(bob.privateKey, aliceFpr, chF.body.nonce);
++        const wrongSignerRes = await jsonPost(
++                "/api/registry/publish",
++                { armored: aliceArmor, nonce: chF.body.nonce, signature: wrongSigner },
++                IP(41),
++        );
++        check(
++                "wrong signer on own challenge -> 403",
++                wrongSignerRes.status === 403,
++                `got ${wrongSignerRes.status}`,
++        );
++
++        const ch3 = await challengeFor(aliceFpr, 53);
++        const goodSig = await signChallenge(alice.privateKey, aliceFpr, ch3.body.nonce);
++        const spentNonce = ch3.body.nonce;
++        const ok = await jsonPost(
++                "/api/registry/publish",
++                { armored: aliceArmor, nonce: spentNonce, signature: goodSig },
++                IP(7),
++        );
++        check(
++                "authorized replace -> 200 replaced",
++                ok.status === 200 && ok.body?.replaced === true,
++                JSON.stringify(ok.body),
++        );
++
++        // Registry-watch server contract: a replace must BUMP updated_at so
++        // clients comparing sightings can detect the change (src/lib/registry/watch.ts).
++        const afterReplace = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
++        const afterUpdated = afterReplace.body?.keys?.[0]?.updatedAt;
++        check(
++                "lookup updatedAt bumps after authorized replace",
++                typeof afterUpdated === "number" &&
++                        typeof _aliceUpdatedAt === "number" &&
++                        afterUpdated >= _aliceUpdatedAt,
++                `before=${_aliceUpdatedAt} after=${afterUpdated}`,
++        );
++
++        // Nonce was consumed — it must never be re-issued as-is.
++        const dupChallenge = await challengeFor(aliceFpr, 54);
++        check("new challenge differs from spent nonce", dupChallenge.body?.nonce !== spentNonce);
+ }
+ 
+ console.log("== token revocation (bob) ==");
+ {
+-	const bob = await makeKey("Bob", `bob.${RUN}@example.com`);
+-	const bobArmor = bob.publicKey.armor();
+-	const bobFpr = bob.publicKey.getFingerprint().toUpperCase();
+-	const pub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(8));
+-	check("bob publish -> 201", pub.status === 201);
+-	const token = pub.body?.revocationToken;
+-
+-	const badToken = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: bobFpr, token: "f".repeat(64) },
+-		IP(9),
+-	);
+-	check("revoke with wrong token -> 403", badToken.status === 403, `got ${badToken.status}`);
+-
+-	const noAuth = await jsonPost("/api/registry/revoke", { fingerprint: bobFpr }, IP(10));
+-	check("revoke without auth -> 403", noAuth.status === 403, `got ${noAuth.status}`);
+-
+-	const wrongFpr = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: "B".repeat(40), token },
+-		IP(11),
+-	);
+-	check("revoke unknown fingerprint -> 404", wrongFpr.status === 404, `got ${wrongFpr.status}`);
+-
+-	const ok = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: bobFpr, token, reason: "lost key" },
+-		IP(12),
+-	);
+-	check(
+-		"revoke with token -> ok via token",
+-		ok.status === 200 && ok.body?.via === "token",
+-		JSON.stringify(ok.body),
+-	);
+-
+-	const after = await api(`/api/registry/lookup?fingerprint=${bobFpr}`);
+-	check(
+-		"lookup shows revoked + reason",
+-		after.body?.keys?.[0]?.revoked === true && after.body.keys[0].revokeReason === "lost key",
+-	);
+-
+-	const repub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(13));
+-	check("re-publish revoked fingerprint -> 409", repub.status === 409, `got ${repub.status}`);
+-
+-	const again = await jsonPost("/api/registry/revoke", { fingerprint: bobFpr, token }, IP(14));
+-	check(
+-		"second revoke idempotent alreadyRevoked",
+-		again.status === 200 && again.body?.alreadyRevoked === true,
+-	);
++        const bob = await makeKey("Bob", `bob.${RUN}@example.com`);
++        const bobArmor = bob.publicKey.armor();
++        const bobFpr = bob.publicKey.getFingerprint().toUpperCase();
++        const pub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(8));
++        check("bob publish -> 201", pub.status === 201);
++        const token = pub.body?.revocationToken;
++
++        const badToken = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: bobFpr, token: "f".repeat(64) },
++                IP(9),
++        );
++        check("revoke with wrong token -> 403", badToken.status === 403, `got ${badToken.status}`);
++
++        const noAuth = await jsonPost("/api/registry/revoke", { fingerprint: bobFpr }, IP(10));
++        check("revoke without auth -> 403", noAuth.status === 403, `got ${noAuth.status}`);
++
++        const wrongFpr = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: "B".repeat(40), token },
++                IP(11),
++        );
++        check("revoke unknown fingerprint -> 404", wrongFpr.status === 404, `got ${wrongFpr.status}`);
++
++        const ok = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: bobFpr, token, reason: "lost key" },
++                IP(12),
++        );
++        check(
++                "revoke with token -> ok via token",
++                ok.status === 200 && ok.body?.via === "token",
++                JSON.stringify(ok.body),
++        );
++
++        const after = await api(`/api/registry/lookup?fingerprint=${bobFpr}`);
++        check(
++                "lookup shows revoked + reason",
++                after.body?.keys?.[0]?.revoked === true && after.body.keys[0].revokeReason === "lost key",
++        );
++
++        const repub = await jsonPost("/api/registry/publish", { armored: bobArmor }, IP(13));
++        check("re-publish revoked fingerprint -> 409", repub.status === 409, `got ${repub.status}`);
++
++        const again = await jsonPost("/api/registry/revoke", { fingerprint: bobFpr, token }, IP(14));
++        check(
++                "second revoke idempotent alreadyRevoked",
++                again.status === 200 && again.body?.alreadyRevoked === true,
++        );
+ }
+ 
+ console.log("== signed-challenge revocation (carol) + replay protection ==");
+ {
+-	const carol = await makeKey("Carol", `carol.${RUN}@example.com`);
+-	const carolFpr = carol.publicKey.getFingerprint().toUpperCase();
+-	await jsonPost("/api/registry/publish", { armored: carol.publicKey.armor() }, IP(15));
+-
+-	const ch = await challengeFor(carolFpr, 55);
+-	const sig = await signChallenge(carol.privateKey, carolFpr, ch.body.nonce);
+-	// Wrong-key first: nonce is consumed, verification fails.
+-	const bob = await makeKey("Bob2", `bob2.${RUN}@example.com`);
+-	const wrongSig = await signChallenge(bob.privateKey, carolFpr, ch.body.nonce);
+-	const wrong = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: carolFpr, nonce: ch.body.nonce, signature: wrongSig },
+-		IP(16),
+-	);
+-	check("wrong-key signed revoke -> 403", wrong.status === 403, `got ${wrong.status}`);
+-
+-	// Same nonce, now signed correctly — must FAIL because nonce was consumed.
+-	const replay = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: carolFpr, nonce: ch.body.nonce, signature: sig },
+-		IP(17),
+-	);
+-	check("consumed nonce replay -> 403", replay.status === 403, `got ${replay.status}`);
+-
+-	const ch2 = await challengeFor(carolFpr, 56);
+-	const sig2 = await signChallenge(carol.privateKey, carolFpr, ch2.body.nonce);
+-	const ok = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: carolFpr, nonce: ch2.body.nonce, signature: sig2 },
+-		IP(18),
+-	);
+-	check(
+-		"correct signed revoke -> ok via signature",
+-		ok.status === 200 && ok.body?.via === "signature",
+-		JSON.stringify(ok.body),
+-	);
+-
+-	const revokedChallenge = await challengeFor(carolFpr, 57);
+-	check(
+-		"challenge on revoked key -> 409",
+-		revokedChallenge.status === 409,
+-		`got ${revokedChallenge.status}`,
+-	);
++        const carol = await makeKey("Carol", `carol.${RUN}@example.com`);
++        const carolFpr = carol.publicKey.getFingerprint().toUpperCase();
++        await jsonPost("/api/registry/publish", { armored: carol.publicKey.armor() }, IP(15));
++
++        const ch = await challengeFor(carolFpr, 55);
++        const sig = await signChallenge(carol.privateKey, carolFpr, ch.body.nonce);
++        // Wrong-key first: nonce is consumed, verification fails.
++        const bob = await makeKey("Bob2", `bob2.${RUN}@example.com`);
++        const wrongSig = await signChallenge(bob.privateKey, carolFpr, ch.body.nonce);
++        const wrong = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: carolFpr, nonce: ch.body.nonce, signature: wrongSig },
++                IP(16),
++        );
++        check("wrong-key signed revoke -> 403", wrong.status === 403, `got ${wrong.status}`);
++
++        // Same nonce, now signed correctly — must FAIL because nonce was consumed.
++        const replay = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: carolFpr, nonce: ch.body.nonce, signature: sig },
++                IP(17),
++        );
++        check("consumed nonce replay -> 403", replay.status === 403, `got ${replay.status}`);
++
++        const ch2 = await challengeFor(carolFpr, 56);
++        const sig2 = await signChallenge(carol.privateKey, carolFpr, ch2.body.nonce);
++        const ok = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: carolFpr, nonce: ch2.body.nonce, signature: sig2 },
++                IP(18),
++        );
++        check(
++                "correct signed revoke -> ok via signature",
++                ok.status === 200 && ok.body?.via === "signature",
++                JSON.stringify(ok.body),
++        );
++
++        const revokedChallenge = await challengeFor(carolFpr, 57);
++        check(
++                "challenge on revoked key -> 409",
++                revokedChallenge.status === 409,
++                `got ${revokedChallenge.status}`,
++        );
+ }
+ 
+ console.log("== admin override (dave) ==");
+ {
+-	const dave = await makeKey("Dave", `dave.${RUN}@example.com`);
+-	const daveFpr = dave.publicKey.getFingerprint().toUpperCase();
+-	await jsonPost("/api/registry/publish", { armored: dave.publicKey.armor() }, IP(19));
+-
+-	const badAdmin = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: daveFpr, adminToken: "nope" },
+-		IP(20),
+-	);
+-	check("bad admin token -> 403", badAdmin.status === 403, `got ${badAdmin.status}`);
+-
+-	const ok = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: daveFpr, adminToken: "local-admin-token-4f8a2b", reason: "abuse" },
+-		IP(21),
+-	);
+-	check(
+-		"admin revoke -> ok via admin",
+-		ok.status === 200 && ok.body?.via === "admin",
+-		JSON.stringify(ok.body),
+-	);
++        const dave = await makeKey("Dave", `dave.${RUN}@example.com`);
++        const daveFpr = dave.publicKey.getFingerprint().toUpperCase();
++        await jsonPost("/api/registry/publish", { armored: dave.publicKey.armor() }, IP(19));
++
++        const badAdmin = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: daveFpr, adminToken: "nope" },
++                IP(20),
++        );
++        check("bad admin token -> 403", badAdmin.status === 403, `got ${badAdmin.status}`);
++
++        const ok = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: daveFpr, adminToken: "local-admin-token-4f8a2b", reason: "abuse" },
++                IP(21),
++        );
++        check(
++                "admin revoke -> ok via admin",
++                ok.status === 200 && ok.body?.via === "admin",
++                JSON.stringify(ok.body),
++        );
+ }
+ 
+ console.log("== payload guards ==");
+ {
+-	const big = await jsonPost("/api/registry/publish", { armored: "x".repeat(200 * 1024) }, IP(22));
+-	check("oversized body -> 413", big.status === 413, `got ${big.status}`);
+-	const notJson = await jsonPost("/api/registry/publish", { armored: "{{{" }, IP(23));
+-	check("invalid JSON -> 400", notJson.status === 400, `got ${notJson.status}`);
++        const big = await jsonPost("/api/registry/publish", { armored: "x".repeat(200 * 1024) }, IP(22));
++        check("oversized body -> 413", big.status === 413, `got ${big.status}`);
++        const notJson = await jsonPost("/api/registry/publish", { armored: "{{{" }, IP(23));
++        check("invalid JSON -> 400", notJson.status === 400, `got ${notJson.status}`);
+ }
+ 
+ console.log("== rate limiting (separate IP bucket) ==");
+ {
+-	const codes = [];
+-	for (let i = 0; i < 8; i++) {
+-		const r = await jsonPost("/api/registry/publish", { armored: `garbage-${i}` }, IP(250));
+-		codes.push(r.status);
+-	}
+-	check("8th publish attempt rate-limited 429", codes.includes(429), codes.join(","));
+-	const limitedCodes = codes.filter((c) => c === 429).length;
+-	check("at least 3 requests hit 429", limitedCodes >= 3, codes.join(","));
+-
+-	// Retry-After: a denied request must carry the retry horizon both as the
+-	// standard header and as a body field, so clients can back off precisely.
+-	const limited = await jsonPost("/api/registry/publish", { armored: "garbage-x" }, IP(250));
+-	check(
+-		"429 body carries numeric retryAfter",
+-		limited.status === 429 &&
+-			Number.isInteger(limited.body?.retryAfter) &&
+-			limited.body.retryAfter >= 1,
+-		JSON.stringify(limited.body),
+-	);
+-	const retryHeader = limited.headers?.get("retry-after");
+-	check(
+-		"429 sets Retry-After header",
+-		retryHeader != null && /^\d+$/.test(retryHeader) && Number(retryHeader) >= 1,
+-		`got ${retryHeader}`,
+-	);
+-	const headerFromBody =
+-		limited.body?.retryAfter != null &&
+-		retryHeader != null &&
+-		Math.abs(Number(retryHeader) - limited.body.retryAfter) <= 2;
+-	check(
+-		"Retry-After header ~ body retryAfter",
+-		headerFromBody,
+-		`header=${retryHeader} body=${limited.body?.retryAfter}`,
+-	);
+-
+-	// Lookup limiter (fail-open, 120/h) — denial shape check with its own bucket.
+-	let lookupRetry = null;
+-	for (let i = 0; i < 121 && lookupRetry === null; i++) {
+-		const r = await api(`/api/registry/lookup?email=probe.${RUN}@example.com`, {
+-			headers: IP(251),
+-		});
+-		if (r.status === 429) lookupRetry = r;
+-	}
+-	check(
+-		"lookup 429 (if reached) carries Retry-After too",
+-		lookupRetry === null ||
+-			(Number.isInteger(lookupRetry.body?.retryAfter) &&
+-				/^\d+$/.test(lookupRetry.headers?.get("retry-after") ?? "")),
+-		lookupRetry ? JSON.stringify(lookupRetry.body) : "not reached (fail-open limiter)",
+-	);
++        const codes = [];
++        for (let i = 0; i < 8; i++) {
++                const r = await jsonPost("/api/registry/publish", { armored: `garbage-${i}` }, IP(250));
++                codes.push(r.status);
++        }
++        check("8th publish attempt rate-limited 429", codes.includes(429), codes.join(","));
++        const limitedCodes = codes.filter((c) => c === 429).length;
++        check("at least 3 requests hit 429", limitedCodes >= 3, codes.join(","));
++
++        // Retry-After: a denied request must carry the retry horizon both as the
++        // standard header and as a body field, so clients can back off precisely.
++        const limited = await jsonPost("/api/registry/publish", { armored: "garbage-x" }, IP(250));
++        check(
++                "429 body carries numeric retryAfter",
++                limited.status === 429 &&
++                        Number.isInteger(limited.body?.retryAfter) &&
++                        limited.body.retryAfter >= 1,
++                JSON.stringify(limited.body),
++        );
++        const retryHeader = limited.headers?.get("retry-after");
++        check(
++                "429 sets Retry-After header",
++                retryHeader != null && /^\d+$/.test(retryHeader) && Number(retryHeader) >= 1,
++                `got ${retryHeader}`,
++        );
++        const headerFromBody =
++                limited.body?.retryAfter != null &&
++                retryHeader != null &&
++                Math.abs(Number(retryHeader) - limited.body.retryAfter) <= 2;
++        check(
++                "Retry-After header ~ body retryAfter",
++                headerFromBody,
++                `header=${retryHeader} body=${limited.body?.retryAfter}`,
++        );
++
++        // Lookup limiter (fail-open, 120/h) — denial shape check with its own bucket.
++        let lookupRetry = null;
++        for (let i = 0; i < 121 && lookupRetry === null; i++) {
++                const r = await api(`/api/registry/lookup?email=probe.${RUN}@example.com`, {
++                        headers: IP(251),
++                });
++                if (r.status === 429) lookupRetry = r;
++        }
++        check(
++                "lookup 429 (if reached) carries Retry-After too",
++                lookupRetry === null ||
++                        (Number.isInteger(lookupRetry.body?.retryAfter) &&
++                                /^\d+$/.test(lookupRetry.headers?.get("retry-after") ?? "")),
++                lookupRetry ? JSON.stringify(lookupRetry.body) : "not reached (fail-open limiter)",
++        );
+ }
+ 
+ console.log("== subkey squatting + structural validation (review regressions) ==");
+ {
+-	// Build an attacker key carrying a VICTIM's subkey packet (armored
+-	// round-trip — the realistic attack path).
+-	const owner = await makeKey("Owner", `owner.${RUN}@example.com`);
+-	const attacker = await makeKey("Attacker", `attacker.${RUN}@example.com`);
+-	const victimPub = await openpgp.readKey({ armoredKey: owner.publicKey.armor() });
+-	const forged = await openpgp.readKey({ armoredKey: attacker.publicKey.armor() });
+-	forged.subkeys.push(victimPub.subkeys[0]);
+-	const squatArmor = forged.armor();
+-
+-	const squat = await jsonPost("/api/registry/publish", { armored: squatArmor }, IP(30));
+-	check(
+-		"foreign-subkey key rejected -> 400",
+-		squat.status === 400,
+-		`got ${squat.status}: ${JSON.stringify(squat.body)}`,
+-	);
+-
+-	// Sanity: the same attack against the OWNER's primary works only with a
+-	// valid binding — owner's own key must still publish fine.
+-	const own = await jsonPost("/api/registry/publish", { armored: owner.publicKey.armor() }, IP(31));
+-	check(
+-		"clean key with valid subkey binding -> 201",
+-		own.status === 201,
+-		`got ${own.status}: ${JSON.stringify(own.body)}`,
+-	);
+-
+-	// Over-subkey-count key: glue 17 of owner's OWN subkey packets? Not
+-	// constructible with openpgp's API; instead publish a key whose
+-	// primary self-signature is destroyed (tampered armor) -> 400.
+-	const tampered = attacker.publicKey
+-		.armor()
+-		.replace(/^[A-Za-z0-9+/].*$/m, (m) => m.slice(0, -2) + "xx");
+-	const tamperedRes = await jsonPost("/api/registry/publish", { armored: tampered }, IP(32));
+-	check("tampered armor rejected -> 400", tamperedRes.status === 400, `got ${tamperedRes.status}`);
++        // Build an attacker key carrying a VICTIM's subkey packet (armored
++        // round-trip — the realistic attack path).
++        const owner = await makeKey("Owner", `owner.${RUN}@example.com`);
++        const attacker = await makeKey("Attacker", `attacker.${RUN}@example.com`);
++        const victimPub = await openpgp.readKey({ armoredKey: owner.publicKey.armor() });
++        const forged = await openpgp.readKey({ armoredKey: attacker.publicKey.armor() });
++        forged.subkeys.push(victimPub.subkeys[0]);
++        const squatArmor = forged.armor();
++
++        const squat = await jsonPost("/api/registry/publish", { armored: squatArmor }, IP(30));
++        check(
++                "foreign-subkey key rejected -> 400",
++                squat.status === 400,
++                `got ${squat.status}: ${JSON.stringify(squat.body)}`,
++        );
++
++        // Sanity: the same attack against the OWNER's primary works only with a
++        // valid binding — owner's own key must still publish fine.
++        const own = await jsonPost("/api/registry/publish", { armored: owner.publicKey.armor() }, IP(31));
++        check(
++                "clean key with valid subkey binding -> 201",
++                own.status === 201,
++                `got ${own.status}: ${JSON.stringify(own.body)}`,
++        );
++
++        // Over-subkey-count key: glue 17 of owner's OWN subkey packets? Not
++        // constructible with openpgp's API; instead publish a key whose
++        // primary self-signature is destroyed (tampered armor) -> 400.
++        const tampered = attacker.publicKey
++                .armor()
++                .replace(/^[A-Za-z0-9+/].*$/m, (m) => m.slice(0, -2) + "xx");
++        const tamperedRes = await jsonPost("/api/registry/publish", { armored: tampered }, IP(32));
++        check("tampered armor rejected -> 400", tamperedRes.status === 400, `got ${tamperedRes.status}`);
+ }
+ 
+ console.log("== encrypted private key escrow ==");
+ {
+-	// escrowUser publishes WITH a passphrase-encrypted private key.
+-	const escrowPass = "escrow-test-passphrase-42";
+-	const escrowUser = await openpgp.generateKey({
+-		type: "ecc",
+-		curve: "curve25519",
+-		userIDs: [{ name: "Escrow User", email: `escrow.${RUN}@example.com` }],
+-		passphrase: escrowPass,
+-		format: "object",
+-	});
+-	const escrowFpr = escrowUser.publicKey.getFingerprint().toUpperCase();
+-	const escrowPrivate = escrowUser.privateKey.armor();
+-
+-	const pub = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: escrowUser.publicKey.armor(), encryptedPrivate: escrowPrivate },
+-		IP(60),
+-	);
+-	check("publish with escrow -> 201", pub.status === 201, JSON.stringify(pub.body));
+-	const escrowToken = pub.body?.revocationToken;
+-
+-	const got = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, { headers: IP(60) });
+-	check(
+-		"escrow GET returns encrypted private",
+-		got.status === 200 &&
+-			typeof got.body?.encryptedPrivate === "string" &&
+-			got.body.encryptedPrivate.includes("BEGIN PGP PRIVATE KEY"),
+-		`got ${got.status}`,
+-	);
+-	check("escrow GET has no CORS header", got.headers.get("access-control-allow-origin") === null);
+-
+-	// No-CORS-private guarantee also holds on error paths.
+-	const missing = await api(`/api/registry/private-key?fingerprint=${"D".repeat(40)}`, {
+-		headers: IP(61),
+-	});
+-	check("escrow GET unknown fingerprint -> 404", missing.status === 404, `got ${missing.status}`);
+-
+-	const noEscrow = await api(`/api/registry/private-key?fingerprint=${aliceFpr}`, {
+-		headers: IP(62),
+-	});
+-	check(
+-		"escrow GET for key without escrow -> null blob",
+-		noEscrow.status === 200 && noEscrow.body?.encryptedPrivate === null,
+-		JSON.stringify(noEscrow.body?.encryptedPrivate)?.slice(0, 60),
+-	);
+-
+-	// Rejection 1: a DECRYPTED private key (no passphrase) must never be stored.
+-	const naked = await makeKey("Naked", `naked.${RUN}@example.com`);
+-	const nakedRes = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: naked.publicKey.armor(), encryptedPrivate: naked.privateKey.armor() },
+-		IP(61),
+-	);
+-	check(
+-		"decrypted private key escrow -> 400",
+-		nakedRes.status === 400 && /decrypted/i.test(nakedRes.body?.error ?? ""),
+-		`got ${nakedRes.status}: ${nakedRes.body?.error}`,
+-	);
+-
+-	// Rejection 2: fingerprint mismatch (escrow of a DIFFERENT key).
+-	const other = await openpgp.generateKey({
+-		type: "ecc",
+-		curve: "curve25519",
+-		userIDs: [{ name: "Other", email: `other.${RUN}@example.com` }],
+-		passphrase: "another-passphrase",
+-		format: "object",
+-	});
+-	const mismatch = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: escrowUser.publicKey.armor(), encryptedPrivate: other.privateKey.armor() },
+-		IP(62),
+-	);
+-	check(
+-		"escrow fingerprint mismatch -> 400",
+-		mismatch.status === 400 && /match/i.test(mismatch.body?.error ?? ""),
+-		`got ${mismatch.status}: ${mismatch.body?.error}`,
+-	);
+-
+-	// Rejection 3: a PUBLIC key offered as escrow.
+-	const asPublic = await jsonPost(
+-		"/api/registry/publish",
+-		{ armored: aliceArmor, encryptedPrivate: aliceArmor },
+-		IP(63),
+-	);
+-	check(
+-		"public key offered as escrow -> 400",
+-		asPublic.status === 400 && /private/i.test(asPublic.body?.error ?? ""),
+-		`got ${asPublic.status}: ${asPublic.body?.error}`,
+-	);
+-
+-	// Authorized escrow management: challenge-signed store + delete.
+-	const ch = await challengeFor(escrowFpr, 58);
+-	const delBody = { fingerprint: escrowFpr, nonce: ch.body.nonce };
+-	delBody.signature = await signChallengeEncrypted(
+-		escrowUser.privateKey,
+-		escrowPass,
+-		escrowFpr,
+-		ch.body.nonce,
+-	);
+-	const wrongSignerKey = await makeKey("Sneak", `sneak.${RUN}@example.com`);
+-	const sneak = await challengeFor(escrowFpr, 59);
+-	const sneakBody = {
+-		fingerprint: escrowFpr,
+-		nonce: sneak.body.nonce,
+-		signature: await signChallenge(wrongSignerKey.privateKey, escrowFpr, sneak.body.nonce),
+-	};
+-	const sneakRes = await jsonPost("/api/registry/private-key", sneakBody, IP(64));
+-	check(
+-		"escrow delete with wrong signer -> 403",
+-		sneakRes.status === 403,
+-		`got ${sneakRes.status}`,
+-	);
+-
+-	const delRes = await jsonPost("/api/registry/private-key", delBody, IP(65));
+-	check(
+-		"escrow delete authorized -> ok",
+-		delRes.status === 200 && delRes.body?.escrowed === false,
+-		`got ${delRes.status}: ${delRes.body?.error}`,
+-	);
+-	const afterDel = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+-		headers: IP(63),
+-	});
+-	check(
+-		"escrow deleted -> GET null",
+-		afterDel.status === 200 && afterDel.body?.encryptedPrivate === null,
+-	);
+-
+-	const ch2 = await challengeFor(escrowFpr, 80);
+-	const storeRes = await jsonPost(
+-		"/api/registry/private-key",
+-		{
+-			fingerprint: escrowFpr,
+-			nonce: ch2.body.nonce,
+-			signature: await signChallengeEncrypted(
+-				escrowUser.privateKey,
+-				escrowPass,
+-				escrowFpr,
+-				ch2.body.nonce,
+-			),
+-			encryptedPrivate: escrowPrivate,
+-		},
+-		IP(66),
+-	);
+-	check(
+-		"escrow store authorized -> ok",
+-		storeRes.status === 200 && storeRes.body?.escrowed === true,
+-		JSON.stringify(storeRes.body),
+-	);
+-	const noAuth = await jsonPost(
+-		"/api/registry/private-key",
+-		{ fingerprint: escrowFpr, encryptedPrivate: escrowPrivate },
+-		IP(67),
+-	);
+-	check("escrow store without challenge -> 403", noAuth.status === 403, `got ${noAuth.status}`);
+-
+-	// Replacement semantics: authorized replace WITHOUT escrow fields keeps
+-	// the stored escrow (same-fingerprint update must not destroy backups).
+-	// The 1.1s gap guarantees updated_at (whole seconds) moves past
+-	// private_updated_at, creating a measurable escrow-drift signal.
+-	await new Promise((r) => setTimeout(r, 1100));
+-	const chR = await challengeFor(escrowFpr, 81);
+-	const keep = await jsonPost(
+-		"/api/registry/publish",
+-		{
+-			armored: escrowUser.publicKey.armor(),
+-			nonce: chR.body.nonce,
+-			signature: await signChallengeEncrypted(
+-				escrowUser.privateKey,
+-				escrowPass,
+-				escrowFpr,
+-				chR.body.nonce,
+-			),
+-		},
+-		IP(68),
+-	);
+-	check(
+-		"authorized replace -> 200",
+-		keep.status === 200 && keep.body?.replaced === true,
+-		`got ${keep.status}`,
+-	);
+-	const afterKeep = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+-		headers: IP(64),
+-	});
+-	check(
+-		"replace without escrow fields KEEPS escrow",
+-		afterKeep.status === 200 && typeof afterKeep.body?.encryptedPrivate === "string",
+-	);
+-	// Escrow-drift contract: the KEPT backup's private_updated_at now lags
+-	// the key's updated_at — the exact drift the client audit flags as
+-	// "escrow outdated" (a restore would return pre-replace key material).
+-	const lookAfterKeep = await api(`/api/registry/lookup?fingerprint=${escrowFpr}`, {
+-		headers: IP(64),
+-	});
+-	const keyUpd = lookAfterKeep.body?.keys?.[0]?.updatedAt;
+-	const escUpd = afterKeep.body?.updatedAt;
+-	check(
+-		"kept escrow updatedAt lags key updatedAt (drift detectable)",
+-		typeof keyUpd === "number" && typeof escUpd === "number" && escUpd < keyUpd,
+-		`escrow=${escUpd} key=${keyUpd}`,
+-	);
+-
+-	// Replacement with dropEncryptedPrivate clears it.
+-	const chD = await challengeFor(escrowFpr, 82);
+-	const drop = await jsonPost(
+-		"/api/registry/publish",
+-		{
+-			armored: escrowUser.publicKey.armor(),
+-			nonce: chD.body.nonce,
+-			signature: await signChallengeEncrypted(
+-				escrowUser.privateKey,
+-				escrowPass,
+-				escrowFpr,
+-				chD.body.nonce,
+-			),
+-			dropEncryptedPrivate: true,
+-		},
+-		IP(69),
+-	);
+-	check("replace with dropEncryptedPrivate -> 200", drop.status === 200, `got ${drop.status}`);
+-	const afterDrop = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+-		headers: IP(65),
+-	});
+-	check(
+-		"escrow dropped -> GET null",
+-		afterDrop.status === 200 && afterDrop.body?.encryptedPrivate === null,
+-	);
+-
+-	// Revocation purges any escrow.
+-	const chS = await challengeFor(escrowFpr, 83);
+-	await jsonPost(
+-		"/api/registry/private-key",
+-		{
+-			fingerprint: escrowFpr,
+-			nonce: chS.body.nonce,
+-			signature: await signChallengeEncrypted(
+-				escrowUser.privateKey,
+-				escrowPass,
+-				escrowFpr,
+-				chS.body.nonce,
+-			),
+-			encryptedPrivate: escrowPrivate,
+-		},
+-		IP(70),
+-	);
+-	const revokeRes = await jsonPost(
+-		"/api/registry/revoke",
+-		{ fingerprint: escrowFpr, token: escrowToken, reason: "escrow purge test" },
+-		IP(71),
+-	);
+-	check("revoke escrowed key -> ok", revokeRes.status === 200, `got ${revokeRes.status}`);
+-	const afterRevoke = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
+-		headers: IP(66),
+-	});
+-	check(
+-		"revocation purges escrow",
+-		afterRevoke.status === 200 && afterRevoke.body?.encryptedPrivate === null,
+-		JSON.stringify(afterRevoke.body?.encryptedPrivate)?.slice(0, 60),
+-	);
++        // escrowUser publishes WITH a passphrase-encrypted private key.
++        const escrowPass = "escrow-test-passphrase-42";
++        const escrowUser = await openpgp.generateKey({
++                type: "ecc",
++                curve: "curve25519",
++                userIDs: [{ name: "Escrow User", email: `escrow.${RUN}@example.com` }],
++                passphrase: escrowPass,
++                format: "object",
++        });
++        const escrowFpr = escrowUser.publicKey.getFingerprint().toUpperCase();
++        const escrowPrivate = escrowUser.privateKey.armor();
++
++        const pub = await jsonPost(
++                "/api/registry/publish",
++                { armored: escrowUser.publicKey.armor(), encryptedPrivate: escrowPrivate },
++                IP(60),
++        );
++        check("publish with escrow -> 201", pub.status === 201, JSON.stringify(pub.body));
++        const escrowToken = pub.body?.revocationToken;
++
++        const got = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, { headers: IP(60) });
++        check(
++                "escrow GET returns encrypted private",
++                got.status === 200 &&
++                        typeof got.body?.encryptedPrivate === "string" &&
++                        got.body.encryptedPrivate.includes("BEGIN PGP PRIVATE KEY"),
++                `got ${got.status}`,
++        );
++        check("escrow GET has no CORS header", got.headers.get("access-control-allow-origin") === null);
++
++        // No-CORS-private guarantee also holds on error paths.
++        const missing = await api(`/api/registry/private-key?fingerprint=${"D".repeat(40)}`, {
++                headers: IP(61),
++        });
++        check("escrow GET unknown fingerprint -> 404", missing.status === 404, `got ${missing.status}`);
++
++        const noEscrow = await api(`/api/registry/private-key?fingerprint=${aliceFpr}`, {
++                headers: IP(62),
++        });
++        check(
++                "escrow GET for key without escrow -> null blob",
++                noEscrow.status === 200 && noEscrow.body?.encryptedPrivate === null,
++                JSON.stringify(noEscrow.body?.encryptedPrivate)?.slice(0, 60),
++        );
++
++        // Rejection 1: a DECRYPTED private key (no passphrase) must never be stored.
++        const naked = await makeKey("Naked", `naked.${RUN}@example.com`);
++        const nakedRes = await jsonPost(
++                "/api/registry/publish",
++                { armored: naked.publicKey.armor(), encryptedPrivate: naked.privateKey.armor() },
++                IP(61),
++        );
++        check(
++                "decrypted private key escrow -> 400",
++                nakedRes.status === 400 && /decrypted/i.test(nakedRes.body?.error ?? ""),
++                `got ${nakedRes.status}: ${nakedRes.body?.error}`,
++        );
++
++        // Rejection 2: fingerprint mismatch (escrow of a DIFFERENT key).
++        const other = await openpgp.generateKey({
++                type: "ecc",
++                curve: "curve25519",
++                userIDs: [{ name: "Other", email: `other.${RUN}@example.com` }],
++                passphrase: "another-passphrase",
++                format: "object",
++        });
++        const mismatch = await jsonPost(
++                "/api/registry/publish",
++                { armored: escrowUser.publicKey.armor(), encryptedPrivate: other.privateKey.armor() },
++                IP(62),
++        );
++        check(
++                "escrow fingerprint mismatch -> 400",
++                mismatch.status === 400 && /match/i.test(mismatch.body?.error ?? ""),
++                `got ${mismatch.status}: ${mismatch.body?.error}`,
++        );
++
++        // Rejection 3: a PUBLIC key offered as escrow.
++        const asPublic = await jsonPost(
++                "/api/registry/publish",
++                { armored: aliceArmor, encryptedPrivate: aliceArmor },
++                IP(63),
++        );
++        check(
++                "public key offered as escrow -> 400",
++                asPublic.status === 400 && /private/i.test(asPublic.body?.error ?? ""),
++                `got ${asPublic.status}: ${asPublic.body?.error}`,
++        );
++
++        // Authorized escrow management: challenge-signed store + delete.
++        const ch = await challengeFor(escrowFpr, 58);
++        const delBody = { fingerprint: escrowFpr, nonce: ch.body.nonce };
++        delBody.signature = await signChallengeEncrypted(
++                escrowUser.privateKey,
++                escrowPass,
++                escrowFpr,
++                ch.body.nonce,
++        );
++        const wrongSignerKey = await makeKey("Sneak", `sneak.${RUN}@example.com`);
++        const sneak = await challengeFor(escrowFpr, 59);
++        const sneakBody = {
++                fingerprint: escrowFpr,
++                nonce: sneak.body.nonce,
++                signature: await signChallenge(wrongSignerKey.privateKey, escrowFpr, sneak.body.nonce),
++        };
++        const sneakRes = await jsonPost("/api/registry/private-key", sneakBody, IP(64));
++        check(
++                "escrow delete with wrong signer -> 403",
++                sneakRes.status === 403,
++                `got ${sneakRes.status}`,
++        );
++
++        const delRes = await jsonPost("/api/registry/private-key", delBody, IP(65));
++        check(
++                "escrow delete authorized -> ok",
++                delRes.status === 200 && delRes.body?.escrowed === false,
++                `got ${delRes.status}: ${delRes.body?.error}`,
++        );
++        const afterDel = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
++                headers: IP(63),
++        });
++        check(
++                "escrow deleted -> GET null",
++                afterDel.status === 200 && afterDel.body?.encryptedPrivate === null,
++        );
++
++        const ch2 = await challengeFor(escrowFpr, 80);
++        const storeRes = await jsonPost(
++                "/api/registry/private-key",
++                {
++                        fingerprint: escrowFpr,
++                        nonce: ch2.body.nonce,
++                        signature: await signChallengeEncrypted(
++                                escrowUser.privateKey,
++                                escrowPass,
++                                escrowFpr,
++                                ch2.body.nonce,
++                        ),
++                        encryptedPrivate: escrowPrivate,
++                },
++                IP(66),
++        );
++        check(
++                "escrow store authorized -> ok",
++                storeRes.status === 200 && storeRes.body?.escrowed === true,
++                JSON.stringify(storeRes.body),
++        );
++        const noAuth = await jsonPost(
++                "/api/registry/private-key",
++                { fingerprint: escrowFpr, encryptedPrivate: escrowPrivate },
++                IP(67),
++        );
++        check("escrow store without challenge -> 403", noAuth.status === 403, `got ${noAuth.status}`);
++
++        // Replacement semantics: authorized replace WITHOUT escrow fields keeps
++        // the stored escrow (same-fingerprint update must not destroy backups).
++        // The 1.1s gap guarantees updated_at (whole seconds) moves past
++        // private_updated_at, creating a measurable escrow-drift signal.
++        await new Promise((r) => setTimeout(r, 1100));
++        const chR = await challengeFor(escrowFpr, 81);
++        const keep = await jsonPost(
++                "/api/registry/publish",
++                {
++                        armored: escrowUser.publicKey.armor(),
++                        nonce: chR.body.nonce,
++                        signature: await signChallengeEncrypted(
++                                escrowUser.privateKey,
++                                escrowPass,
++                                escrowFpr,
++                                chR.body.nonce,
++                        ),
++                },
++                IP(68),
++        );
++        check(
++                "authorized replace -> 200",
++                keep.status === 200 && keep.body?.replaced === true,
++                `got ${keep.status}`,
++        );
++        const afterKeep = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
++                headers: IP(64),
++        });
++        check(
++                "replace without escrow fields KEEPS escrow",
++                afterKeep.status === 200 && typeof afterKeep.body?.encryptedPrivate === "string",
++        );
++        // Escrow-drift contract: the KEPT backup's private_updated_at now lags
++        // the key's updated_at — the exact drift the client audit flags as
++        // "escrow outdated" (a restore would return pre-replace key material).
++        const lookAfterKeep = await api(`/api/registry/lookup?fingerprint=${escrowFpr}`, {
++                headers: IP(64),
++        });
++        const keyUpd = lookAfterKeep.body?.keys?.[0]?.updatedAt;
++        const escUpd = afterKeep.body?.updatedAt;
++        check(
++                "kept escrow updatedAt lags key updatedAt (drift detectable)",
++                typeof keyUpd === "number" && typeof escUpd === "number" && escUpd < keyUpd,
++                `escrow=${escUpd} key=${keyUpd}`,
++        );
++
++        // Replacement with dropEncryptedPrivate clears it.
++        const chD = await challengeFor(escrowFpr, 82);
++        const drop = await jsonPost(
++                "/api/registry/publish",
++                {
++                        armored: escrowUser.publicKey.armor(),
++                        nonce: chD.body.nonce,
++                        signature: await signChallengeEncrypted(
++                                escrowUser.privateKey,
++                                escrowPass,
++                                escrowFpr,
++                                chD.body.nonce,
++                        ),
++                        dropEncryptedPrivate: true,
++                },
++                IP(69),
++        );
++        check("replace with dropEncryptedPrivate -> 200", drop.status === 200, `got ${drop.status}`);
++        const afterDrop = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
++                headers: IP(65),
++        });
++        check(
++                "escrow dropped -> GET null",
++                afterDrop.status === 200 && afterDrop.body?.encryptedPrivate === null,
++        );
++
++        // Revocation purges any escrow.
++        const chS = await challengeFor(escrowFpr, 83);
++        await jsonPost(
++                "/api/registry/private-key",
++                {
++                        fingerprint: escrowFpr,
++                        nonce: chS.body.nonce,
++                        signature: await signChallengeEncrypted(
++                                escrowUser.privateKey,
++                                escrowPass,
++                                escrowFpr,
++                                chS.body.nonce,
++                        ),
++                        encryptedPrivate: escrowPrivate,
++                },
++                IP(70),
++        );
++        const revokeRes = await jsonPost(
++                "/api/registry/revoke",
++                { fingerprint: escrowFpr, token: escrowToken, reason: "escrow purge test" },
++                IP(71),
++        );
++        check("revoke escrowed key -> ok", revokeRes.status === 200, `got ${revokeRes.status}`);
++        const afterRevoke = await api(`/api/registry/private-key?fingerprint=${escrowFpr}`, {
++                headers: IP(66),
++        });
++        check(
++                "revocation purges escrow",
++                afterRevoke.status === 200 && afterRevoke.body?.encryptedPrivate === null,
++                JSON.stringify(afterRevoke.body?.encryptedPrivate)?.slice(0, 60),
++        );
+ }
+ 
+ console.log(
+-	`\n== RESULT: ${passed} passed, ${failed} failed in ${((Date.now() - t0) / 1000).toFixed(1)}s ==`,
++        `\n== RESULT: ${passed} passed, ${failed} failed in ${((Date.now() - t0) / 1000).toFixed(1)}s ==`,
+ );
+ process.exit(failed > 0 ? 1 : 0);
+diff --git a/src/app/api/registry/health/route.ts b/src/app/api/registry/health/route.ts
+index ce82dbd..d781101 100644
+--- a/src/app/api/registry/health/route.ts
++++ b/src/app/api/registry/health/route.ts
+@@ -1,7 +1,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ 
+ import { LIMITS } from "@/lib/constants";
+-import { RegistryError, getRegistryDBReady, rateLimitSafe } from "@/lib/registry/db";
++import { RegistryError, getRegistryDBReady, nowSeconds, rateLimitSafe } from "@/lib/registry/db";
+ import { appliedSchemaVersions, pendingSchemaVersions } from "@/lib/registry/migrate";
+ import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
+ import { turnstileEnforced } from "@/lib/registry/turnstile";
+@@ -14,11 +14,18 @@ export const dynamic = "force-dynamic";
+  *
+  * Runs the self-migration FIRST (so a fresh database heals just by opening
+  * this URL) and then reports the applied/pending schema versions, database
+- * reachability, and whether Turnstile write-gating is enforced. No secrets,
+- * no user data — safe to expose; rate limited generously (fail-open so a
+- * limiter outage can never make a healthy database look unhealthy).
++ * reachability, whether Turnstile write-gating is enforced, and whether D1
++ * WRITES currently succeed (limiterWrite). No secrets, no user data — safe
++ * to expose; rate limited generously (fail-open so a limiter outage can
++ * never make a healthy database look unhealthy).
+  *
+- * # Mr. AI Acting on s183173's Behalf
++ * limiterWrite exists because reads and writes fail differently: the daily
++ * D1 write quota (or a full database) leaves every read working while ALL
++ * mutations 503 — observed live on a bot-hammered preview. Probing writes
++ * from health turns that outage into a one-URL diagnosis. The probe writes
++ * and immediately deletes a dedicated bucket row (self-cleaning even if
++ * the DELETE fails: the opportunistic registry_rate sweep eventually
++ * removes it). # Mr. AI Acting on s183173's Behalf
+  */
+ export async function GET(req: NextRequest) {
+ 	try {
+@@ -34,10 +41,30 @@ export async function GET(req: NextRequest) {
+ 			true,
+ 		);
+ 		const applied = await appliedSchemaVersions(db);
++		let limiterWrite = true;
++		try {
++			// Write probe: reads and writes fail differently — the daily
++			// D1 write quota (or a full database) leaves every read healthy
++			// while ALL mutations 503. Write + delete a dedicated bucket row
++			// so operators get a one-URL diagnosis (self-cleaning even if
++			// the DELETE fails: the opportunistic rate sweep removes it).
++			const probeBucket = "registry-health-write-probe";
++			await db
++				.prepare(
++					`INSERT INTO registry_rate (bucket, count, reset_at) VALUES (?1, 1, ?2)
++                                         ON CONFLICT (bucket) DO UPDATE SET count = count + 1, reset_at = ?2`,
++				)
++				.bind(probeBucket, nowSeconds() + 300)
++				.run();
++			await db.prepare("DELETE FROM registry_rate WHERE bucket = ?1").bind(probeBucket).run();
++		} catch {
++			limiterWrite = false;
++		}
+ 		return NextResponse.json(
+ 			{
+ 				ok: true,
+ 				db: true,
++				limiterWrite,
+ 				schema: {
+ 					applied,
+ 					pending: pendingSchemaVersions(applied),
+diff --git a/src/components/pgp/PgpApp.tsx b/src/components/pgp/PgpApp.tsx
+index a296eed..abf42cc 100755
+--- a/src/components/pgp/PgpApp.tsx
++++ b/src/components/pgp/PgpApp.tsx
+@@ -3,6 +3,7 @@
+ import { useCallback, useEffect, useState, type ComponentProps } from "react";
+ import { useTheme } from "next-themes";
+ import {
++	KeyRound,
+ 	Loader2,
+ 	Monitor,
+ 	Moon,
+@@ -161,6 +162,26 @@ export default function PgpApp() {
+ 	// Lazy initializers are safe here: page.tsx renders this component with
+ 	// ssr:false, so localStorage is always available on first render.
+ 	const [tab, setTab] = useState<Tab>(loadLastTab);
++
++	// Registry discoverability banner (Task 24 feedback: the registry was
++	// invisible from the landing view — the owner literally could not find
++	// it). Dismissal is persisted best-effort so it stays gone for the user,
++	// but reappears for fresh visitors on every device.
++	const [registryBannerGone, setRegistryBannerGone] = useState<boolean>(() => {
++		try {
++			return localStorage.getItem(STORAGE_KEYS.registryBannerDismissed) === "1";
++		} catch {
++			return false;
++		}
++	});
++	const dismissRegistryBanner = useCallback(() => {
++		setRegistryBannerGone(true);
++		try {
++			localStorage.setItem(STORAGE_KEYS.registryBannerDismissed, "1");
++		} catch {
++			/* private mode — session-only dismissal is fine */
++		}
++	}, []);
+ 	const { toast } = useToast();
+ 	const [recipients, setRecipients] = useState<Recipient[]>([]);
+ 	// Lazy initializers are safe here: page.tsx renders this component with
+@@ -503,6 +524,46 @@ export default function PgpApp() {
+ 						/>
+ 					</div>
+ 				)}
++				{tab !== "keys" && !registryBannerGone && (
++					<div
++						data-testid="registry-banner"
++						className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-violet-500/30 bg-violet-500/5 px-4 py-3 shadow-xs"
++					>
++						<span
++							aria-hidden="true"
++							className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-violet-500/15"
++						>
++							<KeyRound className="size-4.5 text-violet-500" />
++						</span>
++						<div className="min-w-0 flex-1">
++							<p className="text-sm font-medium leading-tight">Public key registry is live</p>
++							<p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
++								Publish your key so anyone can find it by email or fingerprint — then verify aloud
++								with PGP words or swap fingerprints via QR.
++							</p>
++						</div>
++						<Button
++							type="button"
++							size="sm"
++							onClick={() => setTab("keys")}
++							data-testid="registry-banner-open"
++						>
++							<KeyRound aria-hidden="true" className="size-4" />
++							Open Keys
++						</Button>
++						<Button
++							type="button"
++							size="icon"
++							variant="ghost"
++							aria-label="Dismiss the registry banner"
++							data-testid="registry-banner-dismiss"
++							onClick={dismissRegistryBanner}
++							className="size-8 shrink-0 text-muted-foreground hover:text-foreground"
++						>
++							<X aria-hidden="true" className="size-4" />
++						</Button>
++					</div>
++				)}
+ 				<Tabs value={tab} onChange={setTab} />
+ 
+ 				{/* All four panels stay MOUNTED for the whole session; inactive ones
+diff --git a/src/components/pgp/registry/ApiDocsDialog.tsx b/src/components/pgp/registry/ApiDocsDialog.tsx
+new file mode 100644
+index 0000000..9ed707a
+--- /dev/null
++++ b/src/components/pgp/registry/ApiDocsDialog.tsx
+@@ -0,0 +1,177 @@
++"use client";
++
++/**
++ * In-app public API reference (Task 24 owner feedback: "make some little
++ * docs somewhere about how to use the public api" — the repo has
++ * docs/key-registry.md, but a visitor of the deployed app never sees the
++ * repository). This dialog renders the stable public endpoints with
++ * copy-paste curl examples so the registry is consumable without reading
++ * source. Content mirrors the docs; when you change an endpoint contract,
++ * update BOTH. # Mr. AI Acting on s183173's Behalf
++ */
++import { Code2, ExternalLink } from "lucide-react";
++
++import { Button } from "@/components/ui/button";
++import {
++	Dialog,
++	DialogContent,
++	DialogDescription,
++	DialogHeader,
++	DialogTitle,
++} from "@/components/ui/dialog";
++
++type ApiEndpoint = {
++	method: "GET" | "POST";
++	path: string;
++	auth: string;
++	notes: string;
++};
++
++const ENDPOINTS: ApiEndpoint[] = [
++	{
++		method: "GET",
++		path: "/api/registry/lookup?fingerprint=|key_id=|email=",
++		auth: "none",
++		notes:
++			"Public search (CORS *). Params take priority fingerprint > key_id > email. Add &words=1 to get the 20 PGP-word verification tokens per key. 120/h/IP.",
++	},
++	{
++		method: "GET",
++		path: "/api/registry/health",
++		auth: "none",
++		notes:
++			"Schema + capability probe. Self-migrates a fresh database just by being hit. Reports limiterWrite:false when D1 writes are failing while reads still work.",
++	},
++	{
++		method: "POST",
++		path: "/api/registry/publish",
++		auth: "rate-limited (5/h/IP)",
++		notes:
++			"JSON body { armored, encryptedPrivate?, dropEncryptedPrivate? }. The server parses and canonicalizes; private material in `armored` is rejected, escrow blobs must be passphrase-encrypted. Returns a one-time revocationToken — losing it means losing the token-based revoke path. Replacing an existing fingerprint requires a signed challenge.",
++	},
++	{
++		method: "GET",
++		path: "/api/registry/challenge?fingerprint=",
++		auth: "rate-limited",
++		notes:
++			"One-time nonce plus the exact canonical message to sign with the private key (possession proof for replace / escrow writes / revoke-by-key). 10-minute TTL, single use.",
++	},
++	{
++		method: "GET",
++		path: "/api/registry/private-key?fingerprint=",
++		auth: "rate-limited (30/h/IP)",
++		notes:
++			"Returns the escrowed ENCRYPTED private key blob (null when none). No CORS header, no caching. Revoked or unknown records only ever yield null.",
++	},
++	{
++		method: "POST",
++		path: "/api/registry/private-key",
++		auth: "key-signed challenge",
++		notes:
++			"Store ({ encryptedPrivate }) or delete the escrow for a fingerprint. The nonce is consumed atomically; revoked records refuse escrow writes.",
++	},
++	{
++		method: "POST",
++		path: "/api/registry/revoke",
++		auth: "revocation token OR signed challenge OR admin token",
++		notes:
++			"Permanent and irreversible. The token path works even without the private key. Purges any escrowed backup.",
++	},
++];
++
++const METHOD_TINT: Record<ApiEndpoint["method"], string> = {
++	GET: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
++	POST: "bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30",
++};
++
++const CURL_EXAMPLES = `# Find a key by email (add &words=1 for PGP-word verification)
++curl -s "$BASE/api/registry/lookup?email=alice@example.org" | jq
++
++# Same lookup, results include the 20 PGP words per key
++curl -s "$BASE/api/registry/lookup?fingerprint=<40-hex>&words=1" | jq
++
++# Deployment health: schema, Turnstile, and whether D1 WRITES work
++curl -s "$BASE/api/registry/health" | jq
++
++# Publish (rate limited 5/h/IP — see docs/key-registry.md for the
++# canonical-armor rules and the challenge-signed replace flow)
++curl -s -X POST "$BASE/api/registry/publish" \\
++  -H 'Content-Type: application/json' \\
++  -d '{"armored":"-----BEGIN PGP PUBLIC KEY BLOCK-..."}' | jq`;
++
++export function ApiDocsDialog({
++	open,
++	onOpenChange,
++}: {
++	open: boolean;
++	onOpenChange: (open: boolean) => void;
++}) {
++	return (
++		<Dialog open={open} onOpenChange={onOpenChange}>
++			<DialogContent
++				data-testid="registry-api-dialog"
++				className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"
++			>
++				<DialogHeader>
++					<DialogTitle>Public registry API</DialogTitle>
++					<DialogDescription>
++						Every endpoint speaks JSON. Public reads need no auth; writes are rate limited per IP
++						and gated where noted. <code className="font-mono">$BASE</code> is this
++						deployment&apos;s origin.
++					</DialogDescription>
++				</DialogHeader>
++
++				<ul className="space-y-2" aria-label="Registry endpoints">
++					{ENDPOINTS.map((e) => (
++						<li
++							key={e.path + e.method}
++							data-testid="api-endpoint-row"
++							className="rounded-lg border border-border bg-card/60 px-3 py-2.5 transition-colors hover:border-violet-500/40"
++						>
++							<div className="flex flex-wrap items-center gap-2">
++								<span
++									className={`inline-flex items-center rounded-md border px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide ${METHOD_TINT[e.method]}`}
++								>
++									{e.method}
++								</span>
++								<code className="min-w-0 break-all font-mono text-xs">{e.path}</code>
++							</div>
++							<p className="mt-1.5 text-[11px] font-medium text-muted-foreground">Auth: {e.auth}</p>
++							<p className="mt-1 text-xs leading-relaxed text-muted-foreground">{e.notes}</p>
++						</li>
++					))}
++				</ul>
++
++				<div>
++					<p className="mb-1.5 text-xs font-semibold">Quickstart with curl</p>
++					<pre className="max-h-64 overflow-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
++						{CURL_EXAMPLES}
++					</pre>
++				</div>
++
++				<p className="text-[11px] text-muted-foreground">
++					Full contract, threat model and deployment notes live in{" "}
++					<code className="font-mono">docs/key-registry.md</code> in the repository.
++				</p>
++			</DialogContent>
++		</Dialog>
++	);
++}
++
++/** Header action that opens the API reference. */
++export function ApiDocsButton({ onClick }: { onClick: () => void }) {
++	return (
++		<Button
++			type="button"
++			variant="outline"
++			size="sm"
++			data-testid="registry-api-docs"
++			onClick={onClick}
++			className="h-7 gap-1.5 rounded-full px-3 text-[11px] font-medium text-muted-foreground hover:text-foreground"
++		>
++			<Code2 aria-hidden="true" className="size-3.5" />
++			Public API
++			<ExternalLink aria-hidden="true" className="size-3 opacity-60" />
++		</Button>
++	);
++}
+diff --git a/src/components/pgp/tabs/KeysTab.tsx b/src/components/pgp/tabs/KeysTab.tsx
+index 4ad91c5..a442401 100644
+--- a/src/components/pgp/tabs/KeysTab.tsx
++++ b/src/components/pgp/tabs/KeysTab.tsx
+@@ -91,6 +91,7 @@ import {
+ } from "@/components/pgp/registry/TurnstileWidget";
+ import { FingerprintQrButton } from "@/components/pgp/registry/FingerprintQr";
+ import { ScanQrButton } from "@/components/pgp/registry/QrScanner";
++import { ApiDocsButton, ApiDocsDialog } from "@/components/pgp/registry/ApiDocsDialog";
+ import {
+ 	BackupDecryptFailure,
+ 	decryptKeysBackup,
+@@ -227,18 +228,23 @@ function RegistryHealthChip() {
+ 		void refresh();
+ 	}, [refresh]);
+ 
++	const writesDown = health?.ok === true && health.limiterWrite === false;
+ 	const dot =
+ 		health === null || checking
+ 			? "bg-muted-foreground/50"
+-			: health.ok
+-				? "bg-emerald-500 animate-pulse"
+-				: "bg-red-500";
++			: writesDown
++				? "bg-amber-500 animate-pulse"
++				: health.ok
++					? "bg-emerald-500 animate-pulse"
++					: "bg-red-500";
+ 	const label =
+ 		health === null || checking
+ 			? "Checking registry…"
+-			: health.ok
+-				? `Registry connected (${health.schema?.applied.length ?? 0} migrations)`
+-				: `Registry issue: ${health.error ?? "unhealthy"}`;
++			: writesDown
++				? "Registry reads OK — writes failing (publish will 503)"
++				: health.ok
++					? `Registry connected (${health.schema?.applied.length ?? 0} migrations)`
++					: `Registry issue: ${health.error ?? "unhealthy"}`;
+ 
+ 	return (
+ 		<div className="flex flex-wrap items-center gap-2">
+@@ -246,10 +252,10 @@ function RegistryHealthChip() {
+ 				data-testid="registry-health-chip"
+ 				title={
+ 					health?.ok
+-						? `Schema ${health.schema?.applied.join(", ")} · Turnstile ${health.turnstile ?? "unknown"}`
++						? `Schema ${health.schema?.applied.join(", ")} · Turnstile ${health.turnstile ?? "unknown"}${health.limiterWrite === false ? " · D1 writes FAILING" : ""}`
+ 						: (health?.error ?? "Probing the registry database…")
+ 				}
+-				className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-xs transition-colors"
++				className={`inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground shadow-xs transition-colors ${writesDown ? "border-amber-500/50 bg-amber-500/5" : "border-border"}`}
+ 				role="status"
+ 				aria-live="polite"
+ 			>
+@@ -270,6 +276,24 @@ function RegistryHealthChip() {
+ 	);
+ }
+ 
++const QUICKSTART = [
++	{
++		title: "Generate or import a key",
++		detail:
++			"Create one in-browser below, pull it from Keybase, or paste your own armor (private keys get passphrase-encrypted locally first).",
++	},
++	{
++		title: "Publish to the registry",
++		detail:
++			"Pick a source card, press Publish. Optionally escrow an encrypted backup and store the one-time revocation token somewhere safe.",
++	},
++	{
++		title: "Share & verify",
++		detail:
++			"Others find your key by email or fingerprint. Verify aloud with PGP words, or swap fingerprints via QR / camera scan.",
++	},
++] as const;
++
+ export function KeysTab({
+ 	onUseKey,
+ 	onEncryptTo,
+@@ -279,6 +303,7 @@ export function KeysTab({
+ 	onEncryptTo?: (recipient: Recipient) => void;
+ }) {
+ 	const [source, setSource] = useState<KeySource>("encryptor");
++	const [apiOpen, setApiOpen] = useState(false);
+ 	const [outcome, setOutcome] = useState<PublishOutcome | null>(null);
+ 	const [myKeys, setMyKeys] = useState<MyRegistryKey[]>(() => listMyKeys());
+ 
+@@ -319,13 +344,39 @@ export function KeysTab({
+ 			<div className="space-y-1.5">
+ 				<div className="flex flex-wrap items-center justify-between gap-2">
+ 					<h2 className="text-base font-semibold">Key registry</h2>
+-					<RegistryHealthChip />
++					<div className="flex flex-wrap items-center gap-2">
++						<ApiDocsButton onClick={() => setApiOpen(true)} />
++						<RegistryHealthChip />
++					</div>
+ 				</div>
+ 				<p className="text-xs leading-relaxed text-muted-foreground">
+ 					Publish public keys so anyone can find and verify them, and optionally back up your
+ 					passphrase-encrypted private key for cross-device restore. Private keys are accepted only
+ 					when fully encrypted — the server rejects anything else.
+ 				</p>
++
++				<ol
++					data-testid="keys-quickstart"
++					aria-label="How to add a key to the registry in three steps"
++					className="grid gap-2 rounded-xl border border-dashed border-border bg-muted/20 p-3 sm:grid-cols-3"
++				>
++					{QUICKSTART.map((step, i) => (
++						<li key={step.title} className="flex items-start gap-2.5 px-1 py-1">
++							<span
++								aria-hidden="true"
++								className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-[#0055dc]/40 bg-[#0055dc]/10 font-mono text-[10px] font-bold text-[#0055dc] dark:text-[#7fb0ff]"
++							>
++								{i + 1}
++							</span>
++							<div className="min-w-0">
++								<p className="text-xs font-semibold leading-tight">{step.title}</p>
++								<p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
++									{step.detail}
++								</p>
++							</div>
++						</li>
++					))}
++				</ol>
+ 			</div>
+ 
+ 			<div role="radiogroup" aria-label="Key source" className="grid gap-3 sm:grid-cols-3">
+@@ -382,6 +433,8 @@ export function KeysTab({
+ 			<MyKeysList keys={myKeys} onChanged={refreshMyKeys} />
+ 
+ 			<AdminConsole />
++
++			<ApiDocsDialog open={apiOpen} onOpenChange={setApiOpen} />
+ 		</div>
+ 	);
+ }
+diff --git a/src/lib/constants.ts b/src/lib/constants.ts
+index 4125904..3212e0b 100755
+--- a/src/lib/constants.ts
++++ b/src/lib/constants.ts
+@@ -49,6 +49,8 @@ export const STORAGE_KEYS = {
+ 	settings: "encryptor.settings.v1",
+ 	/** Keys this browser published to the registry (fingerprints + tokens). */
+ 	registryKeys: "encryptor.registry.keys.v1",
++	/** Landing-page registry banner dismissal (discoverability banner). */
++	registryBannerDismissed: "encryptor.registry.bannerDismissed",
+ } as const;
+ 
+ /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */
+diff --git a/src/lib/registry/client.ts b/src/lib/registry/client.ts
+index 0c2a849..27d216a 100644
+--- a/src/lib/registry/client.ts
++++ b/src/lib/registry/client.ts
+@@ -121,6 +121,9 @@ async function expectOk(res: Response, fallback: string): Promise<Record<string,
+ export interface RegistryHealth {
+ 	ok: boolean;
+ 	db: boolean;
++	/** False when D1 writes fail while reads work (quota/full/account) —
++	 *  every mutation route will 503 until the operator intervenes. */
++	limiterWrite?: boolean;
+ 	schema?: { applied: string[]; pending: string[] };
+ 	turnstile?: "enforced" | "disabled";
+ 	error?: string;
+-- 
+2.47.3
+

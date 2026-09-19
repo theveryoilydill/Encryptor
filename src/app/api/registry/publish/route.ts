@@ -2,16 +2,28 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
 import {
+	type D1Result,
 	RegistryError,
 	auditSafe,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
 	randomHex,
-	rateLimitSafe,
+	enforceRateLimit,
 	sha256Hex,
 } from "@/lib/registry/db";
-import { parsePublicArmored, verifyChallengeSignature } from "@/lib/registry/keys";
-import { clientIP, readJsonBody, registryErrorResponse, stringField } from "@/lib/registry/routes";
+import {
+	parseEncryptedPrivateArmored,
+	parsePublicArmored,
+	verifyChallengeSignature,
+} from "@/lib/registry/keys";
+import {
+	assertWriteOrigin,
+	clientIP,
+	readJsonBody,
+	registryErrorResponse,
+	stringField,
+} from "@/lib/registry/routes";
+import { requireTurnstile } from "@/lib/registry/turnstile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +32,16 @@ export const dynamic = "force-dynamic";
  * POST /api/registry/publish — publish an armored PUBLIC key.
  *
  * Body: { "armored": "<ASCII armored public key>" }
+ *     optional: { "encryptedPrivate": "<ASCII armored PASSPHRASE-ENCRYPTED
+ *                private key>" } — opt-in escrow so the owner can restore
+ *                their key from any device. The server rejects the upload
+ *                unless every secret packet is passphrase-encrypted, so the
+ *                database never holds usable private key bytes.
+ *     optional: { "dropEncryptedPrivate": true } — remove a previously
+ *                escrowed private key during an authorized replacement.
+ *     optional: { "turnstileToken": "..." } — Cloudflare Turnstile token;
+ *                required when the deployment enforces Turnstile (see
+ *                src/lib/registry/turnstile.ts).
  *     or, to REPLACE an existing key's record:
  *       { "armored": "...", "nonce": "...", "signature": "<cleartext signed>" }
  *       where the signature is made with the CURRENTLY stored private key
@@ -35,25 +57,53 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"publish",
-				clientIP(req),
-				LIMITS.registryPublishLimit,
-				LIMITS.registryPublishWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many publish requests — try again later", 429);
-		}
+		// Origin write-lock runs BEFORE any D1 access so a locked preview
+		// deployment costs zero database reads/writes (owner's "only main
+		// can do stuff to the db" requirement).
+		assertWriteOrigin(req);
+		const db = await getRegistryDBReady();
+		await enforceRateLimit(
+			db,
+			"publish",
+			clientIP(req),
+			LIMITS.registryPublishLimit,
+			LIMITS.registryPublishWindowSec,
+			"Too many publish requests — try again later",
+		);
 
 		const body = await readJsonBody(req);
+
+		// Owner request: Turnstile-gate "adding things to the database".
+		// Publishing (with or without escrow) is the main INSERT path;
+		// verification is enforced only when the deployment configures
+		// TURNSTILE_SECRET_KEY (disabled locally + for seed scripts).
+		await requireTurnstile(
+			typeof body.turnstileToken === "string" ? body.turnstileToken : undefined,
+			clientIP(req),
+		);
+
 		const armored = stringField(body, "armored", LIMITS.registryMaxArmorBytes);
 		if (!armored) throw new RegistryError("The 'armored' field is required", 400);
 
 		const parsed = await parsePublicArmored(armored, LIMITS.registryMaxArmorBytes);
+
+		// Optional escrow: validated BEFORE any write so an invalid
+		// encrypted private key cannot publish the public half.
+		const dropEscrow = body["dropEncryptedPrivate"] === true;
+		const rawPrivate = stringField(body, "encryptedPrivate", LIMITS.registryMaxPrivateArmorBytes);
+		if (rawPrivate && dropEscrow) {
+			throw new RegistryError(
+				"Send either encryptedPrivate or dropEncryptedPrivate, not both",
+				400,
+			);
+		}
+		const escrow = rawPrivate
+			? await parseEncryptedPrivateArmored(
+					rawPrivate,
+					LIMITS.registryMaxPrivateArmorBytes,
+					parsed.fingerprint,
+				)
+			: null;
 
 		const existing = await db
 			.prepare("SELECT revoked, armored FROM registry_keys WHERE fingerprint = ?1")
@@ -111,8 +161,13 @@ export async function POST(req: NextRequest) {
 			if (!ok) {
 				throw new RegistryError("Challenge signature is invalid", 403);
 			}
-			await replaceKeyRecord(db, parsed);
-			await auditSafe(db, "replace", parsed.fingerprint, "authorized by stored key signature");
+			await replaceKeyRecord(db, parsed, escrow, dropEscrow);
+			await auditSafe(
+				db,
+				"replace",
+				parsed.fingerprint,
+				escrow ? "escrow updated" : dropEscrow ? "escrow dropped" : null,
+			);
 			return NextResponse.json(
 				{
 					fingerprint: parsed.fingerprint,
@@ -161,10 +216,18 @@ export async function POST(req: NextRequest) {
 				db
 					.prepare(
 						`INSERT INTO registry_keys
-				 (fingerprint, key_id, armored, revoked, token_hash, created_at, updated_at)
-				 VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)`,
+                                 (fingerprint, key_id, armored, encrypted_private, private_updated_at, revoked, token_hash, created_at, updated_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?7)`,
 					)
-					.bind(parsed.fingerprint, parsed.keyId, parsed.armored, tokenHash, now),
+					.bind(
+						parsed.fingerprint,
+						parsed.keyId,
+						parsed.armored,
+						escrow?.armored ?? null,
+						escrow ? now : null,
+						tokenHash,
+						now,
+					),
 				...parsed.subkeyIds.map((id) =>
 					db
 						.prepare(
@@ -217,10 +280,17 @@ export async function POST(req: NextRequest) {
 	}
 }
 
-/** Overwrite an existing (non-revoked) record atomically. */
+/**
+ * Overwrite an existing (non-revoked) record atomically. Escrow policy:
+ * a provided encryptedPrivate overwrites, dropEscrowPrivate clears, and
+ * neither keeps the existing escrow (a same-fingerprint replacement —
+ * e.g. adding a subkey — must not silently destroy the owner's backup).
+ */
 async function replaceKeyRecord(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	parsed: Awaited<ReturnType<typeof parsePublicArmored>>,
+	escrow: Awaited<ReturnType<typeof parseEncryptedPrivateArmored>> | null,
+	dropEscrow: boolean,
 ) {
 	const now = nowSeconds();
 	// The status UPDATE runs FIRST and alone, gated on `AND revoked = 0` so a
@@ -229,13 +299,36 @@ async function replaceKeyRecord(
 	// after the UPDATE is confirmed do the index rows get rebuilt.
 	// Subkey/email re-inserts mirror the fresh-publish conflict policy (drop
 	// colliding IDs instead of failing the batch).
-	const updated = await db
-		.prepare(
-			`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4
-			 WHERE fingerprint = ?1 AND revoked = 0`,
-		)
-		.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now)
-		.run();
+	// Each escrow branch gets its own statement so the placeholder count
+	// always matches the bound parameters (SQLite fails on out-of-range ?n).
+	let updated: D1Result;
+	if (escrow) {
+		updated = await db
+			.prepare(
+				`UPDATE registry_keys
+                                 SET armored = ?2, key_id = ?3, encrypted_private = ?4, private_updated_at = ?5, updated_at = ?5
+                                 WHERE fingerprint = ?1 AND revoked = 0`,
+			)
+			.bind(parsed.fingerprint, parsed.armored, parsed.keyId, escrow.armored, now)
+			.run();
+	} else if (dropEscrow) {
+		updated = await db
+			.prepare(
+				`UPDATE registry_keys
+                                 SET armored = ?2, key_id = ?3, encrypted_private = NULL, private_updated_at = NULL, updated_at = ?4
+                                 WHERE fingerprint = ?1 AND revoked = 0`,
+			)
+			.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now)
+			.run();
+	} else {
+		updated = await db
+			.prepare(
+				`UPDATE registry_keys SET armored = ?2, key_id = ?3, updated_at = ?4
+                                 WHERE fingerprint = ?1 AND revoked = 0`,
+			)
+			.bind(parsed.fingerprint, parsed.armored, parsed.keyId, now)
+			.run();
+	}
 	if (!updated.meta || Number(updated.meta.changes ?? 0) === 0) {
 		throw new RegistryError("Key was revoked concurrently — replacement refused", 409);
 	}

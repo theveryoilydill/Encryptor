@@ -159,6 +159,86 @@ export async function parsePublicArmored(
 	};
 }
 
+/** A passphrase-encrypted private key validated against a known fingerprint. */
+export interface ParsedEncryptedPrivate {
+	/** Verified to equal the public record's fingerprint. */
+	fingerprint: string;
+	/** Canonicalized armor produced by re-serializing the parsed key. */
+	armored: string;
+}
+
+/**
+ * Parse and validate an armored ENCRYPTED private key for escrow. The
+ * registry may hold private key material ONLY when every secret packet is
+ * passphrase-encrypted (the armored backup form users already keep offline).
+ * Throws RegistryError with a 4xx status on public keys, decrypted secret
+ * packets, fingerprint mismatches, or malformed input.
+ */
+export async function parseEncryptedPrivateArmored(
+	input: string,
+	maxArmorBytes: number,
+	expectedFingerprint: string,
+): Promise<ParsedEncryptedPrivate> {
+	if (typeof input !== "string" || input.trim().length === 0) {
+		throw new RegistryError("The 'encryptedPrivate' field is required", 400);
+	}
+	if (input.length > maxArmorBytes) {
+		throw new RegistryError(`Encrypted private key exceeds the ${maxArmorBytes} byte limit`, 413);
+	}
+
+	let key: openpgp.Key;
+	try {
+		key = await openpgp.readKey({ armoredKey: input });
+	} catch {
+		throw new RegistryError("encryptedPrivate is not a parseable OpenPGP key", 400);
+	}
+	if (!key.isPrivate()) {
+		throw new RegistryError("encryptedPrivate must be a PRIVATE key", 400);
+	}
+
+	// Identity binding: the escrowed key must be the SAME key as the public
+	// record — otherwise a lookup could hand back a decoy key that the
+	// requester believes is theirs.
+	const fingerprint = key.getFingerprint().toUpperCase();
+	if (fingerprint !== expectedFingerprint) {
+		throw new RegistryError("encryptedPrivate does not match this fingerprint", 400);
+	}
+
+	// Hard rule: NO usable private bytes in the database. openpgp.js keeps
+	// a per-packet flag, so walk every packet ourselves instead of relying
+	// on Key.isDecrypted() (whose "some vs every" semantics shifted across
+	// major versions). A single decrypted packet rejects the whole upload.
+	const packets = key.getKeys();
+	const anyDecrypted = packets.some(({ keyPacket }) => {
+		const secret = keyPacket as { isDecrypted?: () => boolean };
+		return typeof secret.isDecrypted === "function" && secret.isDecrypted() === true;
+	});
+	if (anyDecrypted) {
+		throw new RegistryError(
+			"Private key contains decrypted material — encrypt it with a passphrase first",
+			400,
+		);
+	}
+
+	try {
+		await key.verifyPrimaryKey();
+	} catch {
+		throw new RegistryError("Private key has an invalid primary key self-signature", 400);
+	}
+
+	let armored: string;
+	try {
+		armored = key.armor();
+	} catch {
+		throw new RegistryError("Private key could not be re-serialized", 400);
+	}
+	if (armored.length > maxArmorBytes) {
+		throw new RegistryError(`Encrypted private key exceeds the ${maxArmorBytes} byte limit`, 413);
+	}
+
+	return { fingerprint, armored };
+}
+
 /**
  * The exact canonical message key holders must sign for challenge-response
  * revocation/replacement. Keeping it in ONE place (DRY) guarantees the

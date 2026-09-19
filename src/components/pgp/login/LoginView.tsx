@@ -156,21 +156,44 @@ function Segmented({
 	// radiogroup/radio semantics: this control switches MODES in place, it
 	// does not swap tabpanels — role="tab" without an aria-controlled panel
 	// fails axe "nested interactive/missing tabpanel" checks.
+	// WAI-ARIA radio pattern: a single tab stop (the checked radio) with
+	// arrow-key movement — screen readers announce "1 of N" and expect
+	// arrows to move, exactly like a native radio group.
+	const radioRefs = useRef<(HTMLButtonElement | null)[]>([]);
+	const onRadioKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+		const idx = options.findIndex((o) => o.id === value);
+		let next = -1;
+		if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (idx + 1) % options.length;
+		else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
+			next = (idx - 1 + options.length) % options.length;
+		else if (e.key === "Home") next = 0;
+		else if (e.key === "End") next = options.length - 1;
+		if (next < 0) return;
+		e.preventDefault();
+		onChange(options[next].id);
+		// focus follows selection (after React commits the new tabIndex map)
+		requestAnimationFrame(() => radioRefs.current[next]?.focus());
+	};
 	return (
 		<div
 			role="radiogroup"
 			aria-label="Choose an action"
+			onKeyDown={onRadioKeyDown}
 			className="grid gap-1 rounded-lg bg-muted p-1"
 			style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
 		>
-			{options.map((o) => {
+			{options.map((o, i) => {
 				const active = o.id === value;
 				return (
 					<button
 						key={o.id}
+						ref={(el) => {
+							radioRefs.current[i] = el;
+						}}
 						type="button"
 						role="radio"
 						aria-checked={active}
+						tabIndex={active ? 0 : -1}
 						data-testid={`segment-${o.id}`}
 						onClick={() => onChange(o.id)}
 						className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
@@ -232,6 +255,13 @@ function KeyFilePicker({ id, onLoaded }: { id: string; onLoaded: (text: string) 
 
 export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) => void }) {
 	const [open, setOpen] = useState<SourceId | null>(null);
+	// Last non-null open id. The shared openpgp/ubuntu dialog derives its
+	// `source` from `open` — which resets to "openpgp" the moment `open`
+	// clears, BEFORE FocusScope unmounts and reads the latest
+	// onCloseAutoFocus prop. Remembering the opener keeps that prop stable
+	// through the close transition so focus returns to the right button.
+	const lastOpenRef = useRef<SourceId | null>(null);
+	if (open) lastOpenRef.current = open;
 
 	const closeAndReset = useCallback(() => setOpen(null), []);
 
@@ -292,7 +322,7 @@ export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) =
 			/>
 			<PasteKeyDialog
 				open={open === "openpgp" || open === "ubuntu"}
-				source={open === "ubuntu" ? "ubuntu" : "openpgp"}
+				source={lastOpenRef.current === "ubuntu" ? "ubuntu" : "openpgp"}
 				onOpenChange={(o) => !o && closeAndReset()}
 				onUseKey={onUseKey}
 			/>
@@ -313,6 +343,7 @@ function LoginDialog({
 	description,
 	children,
 	widthClass = "sm:max-w-lg",
+	sourceId,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -320,10 +351,24 @@ function LoginDialog({
 	description: string;
 	children: React.ReactNode;
 	widthClass?: string;
+	sourceId: string;
 }) {
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className={`${widthClass} max-h-[85dvh] overflow-y-auto`}>
+			<DialogContent
+				className={`${widthClass} max-h-[85dvh] overflow-y-auto`}
+				onCloseAutoFocus={(e) => {
+					// Radix's built-in focus restore targets a DialogTrigger — the
+					// gate opens these dialogs from plain source buttons (one shared
+					// `open` state), so return focus to the button that opened this
+					// dialog ourselves. Without this, Escape lands focus on <body>.
+					e.preventDefault();
+					const opener = document.querySelector<HTMLButtonElement>(
+						`[data-testid=login-source-${sourceId}]`,
+					);
+					if (opener) opener.focus();
+				}}
+			>
 				<DialogHeader>
 					<DialogTitle>{title}</DialogTitle>
 					<DialogDescription>{description}</DialogDescription>
@@ -349,6 +394,7 @@ function RegistryDialog({
 	const [mode, setMode] = useState<"restore" | "publish" | "generate">("restore");
 	return (
 		<LoginDialog
+			sourceId="registry"
 			open={open}
 			onOpenChange={onOpenChange}
 			title="Encryptor Registry"
@@ -435,8 +481,14 @@ function RestoreForm({
 		}
 	}, [query]);
 
+	const restoreBusyRef = useRef(false);
 	const restore = useCallback(async () => {
-		if (!fingerprint || !passphrase) return;
+		// busy guard: the passphrase field's Enter handler calls this directly,
+		// bypassing the disabled submit button. This must be a REF, not the
+		// `busy` state — two rapid Enters can land before React re-renders, so
+		// a state read goes stale; a ref check is synchronous.
+		if (restoreBusyRef.current || !fingerprint || !passphrase) return;
+		restoreBusyRef.current = true;
 		setBusy(true);
 		setError(null);
 		try {
@@ -470,6 +522,7 @@ function RestoreForm({
 				/checksum|passphrase|decrypt/i.test(msg) ? "Wrong passphrase for this escrowed key." : msg,
 			);
 		} finally {
+			restoreBusyRef.current = false;
 			setBusy(false);
 		}
 	}, [fingerprint, onDone, onUseKey, passphrase]);
@@ -923,6 +976,7 @@ function KeybaseDialog({
 
 	return (
 		<LoginDialog
+			sourceId="keybase"
 			open={open}
 			onOpenChange={onOpenChange}
 			title="Keybase registry"
@@ -1037,6 +1091,7 @@ function PasteKeyDialog({
 
 	return (
 		<LoginDialog
+			sourceId={source}
 			open={open}
 			onOpenChange={onOpenChange}
 			title={copy.title}
@@ -1098,6 +1153,7 @@ function LocalDialog({
 	const [mode, setMode] = useState<"generate" | "paste">("generate");
 	return (
 		<LoginDialog
+			sourceId="local"
 			open={open}
 			onOpenChange={onOpenChange}
 			title="Local keys"

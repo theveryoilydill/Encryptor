@@ -976,6 +976,11 @@ function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDo
 	const [token, setToken] = useState("");
 	const [reason, setReason] = useState("");
 	const [found, setFound] = useState<RegistryLookupKey | null>(null);
+	// Identity from the looked-up PUBLIC key's userIDs — a last-mile aid so
+	// the confirm step shows WHO a fingerprint belongs to, not just that it
+	// exists (the destructive action is irreversible; misidentification is
+	// the one mistake the token cannot undo). Parsed locally, never sent.
+	const [identity, setIdentity] = useState<string | null>(null);
 	const [checking, setChecking] = useState(false);
 	const [revoking, setRevoking] = useState(false);
 	const [done, setDone] = useState(false);
@@ -1002,6 +1007,15 @@ function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDo
 			setFound(hits[0] ?? null);
 			if (hits.length === 0) {
 				setError("No key with that fingerprint is on the registry.");
+				setIdentity(null);
+				return;
+			}
+			try {
+				const v = await validateArmoredKey(hits[0].armored);
+				const u = v.info && "userIDs" in v.info ? v.info.userIDs[0] : undefined;
+				setIdentity(u ? [u.name, u.email].filter(Boolean).join(" — ") || null : null);
+			} catch {
+				setIdentity(null); // identity is a nicety — never block the flow on it
 			}
 		} catch (e) {
 			setError(formatRegistryError(e, "Registry lookup failed"));
@@ -1102,6 +1116,12 @@ function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDo
 							<span className="text-muted-foreground">Fingerprint: </span>
 							<code className="font-mono">{formatFingerprint(found.fingerprint)}</code>
 						</p>
+						{identity && (
+							<p>
+								<span className="text-muted-foreground">Identity: </span>
+								<span className="font-medium">{identity}</span>
+							</p>
+						)}
 						<p>
 							<span className="text-muted-foreground">Status: </span>
 							{found.revoked ? (

@@ -4,12 +4,13 @@
  * ApiReferenceDialog — the "little docs somewhere about how to use the
  * public API" the owner asked for (PR #25). A compact, self-hosted cheat
  * sheet living in the app footer: every registry endpoint with its method,
- * one-line purpose, and two copy-pasteable curl examples. Static content —
- * no fetches, no state beyond open/close.
+ * one-line purpose, and two copy-pasteable curl examples, plus a live
+ * "This deployment" strip (shared health probe) showing the Turnstile and
+ * write-lock state that change how the API behaves from here.
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Code2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,9 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { sharedHealth } from "@/components/pgp/login/publish-flow";
 import { CopyButton } from "@/components/pgp/shared";
+import type { RegistryHealth } from "@/lib/registry/client";
 
 const ENDPOINTS: {
 	method: "GET" | "POST";
@@ -89,6 +92,65 @@ function MethodBadge({ method }: { method: "GET" | "POST" }) {
 	);
 }
 
+/**
+ * Live "This deployment" strip: the two capabilities the health endpoint
+ * reports that change how the API behaves from HERE — Turnstile mode and
+ * the REGISTRY_PROD_ORIGIN write lock. Uses the shared 30s-TTL health
+ * probe (one probe per page window, also used by the publish forms), and
+ * fails OPEN: when the probe fails the strip simply doesn't render and the
+ * dialog stays a static cheat sheet.
+ */
+function DeploymentStatus() {
+	const [health, setHealth] = useState<RegistryHealth | null>(null);
+	useEffect(() => {
+		let cancelled = false;
+		void sharedHealth().then((h) => {
+			if (!cancelled) setHealth(h);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+	if (!health) return null;
+	const turnstileEnforced = health.turnstile === "enforced";
+	const writesLocked = health.writesAllowedHere === false;
+	return (
+		<div
+			data-testid="api-deploy-status"
+			className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/30 px-2.5 py-2 text-[11px]"
+		>
+			<span className="font-medium">This deployment:</span>
+			<span className="inline-flex items-center gap-1.5 text-muted-foreground">
+				<span
+					aria-hidden
+					className={`size-1.5 shrink-0 rounded-full ${
+						turnstileEnforced
+							? "bg-amber-600 dark:bg-amber-400"
+							: "bg-emerald-600 dark:bg-emerald-400"
+					}`}
+				/>
+				Turnstile {health.turnstile ?? "unknown"}
+			</span>
+			<span className="inline-flex items-center gap-1.5 text-muted-foreground">
+				<span
+					aria-hidden
+					className={`size-1.5 shrink-0 rounded-full ${
+						writesLocked ? "bg-amber-600 dark:bg-amber-400" : "bg-emerald-600 dark:bg-emerald-400"
+					}`}
+				/>
+				{writesLocked ? (
+					<>
+						writes read-only here (locked to{" "}
+						<code className="font-mono text-[10px]">{health.writesLockedTo}</code>)
+					</>
+				) : (
+					"writes allowed here"
+				)}
+			</span>
+		</div>
+	);
+}
+
 export function ApiReferenceDialog() {
 	const [open, setOpen] = useState(false);
 	return (
@@ -111,6 +173,8 @@ export function ApiReferenceDialog() {
 						and proof-gated. Replace {"<worker>"} with this deployment&apos;s origin.
 					</DialogDescription>
 				</DialogHeader>
+
+				<DeploymentStatus />
 
 				<ul className="space-y-2" data-testid="api-endpoints">
 					{ENDPOINTS.map((e) => (

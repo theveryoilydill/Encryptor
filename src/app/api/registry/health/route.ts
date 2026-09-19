@@ -3,10 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { LIMITS } from "@/lib/constants";
 import {
 	RegistryError,
+	getOrCreateSalt,
 	getRegistryDBReady,
+	lastSaltSource,
 	nowSeconds,
 	rateLimitSafe,
-	saltConfigured,
 } from "@/lib/registry/db";
 import { appliedSchemaVersions, pendingSchemaVersions } from "@/lib/registry/migrate";
 import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
@@ -47,6 +48,11 @@ export async function GET(req: NextRequest) {
 			true,
 		);
 		const applied = await appliedSchemaVersions(db);
+		// Resolve (or provision) the rate-limit salt — since 0004 the salt is
+		// self-provisioned into registry_meta on first boot, so this can no
+		// longer fail the way the old RE_SALT-only check did (mutations used
+		// to 503 site-wide when the secret vanished from a recreated worker).
+		await getOrCreateSalt(db);
 		let limiterWrite = true;
 		try {
 			// Write probe: reads and writes fail differently — the daily
@@ -71,7 +77,11 @@ export async function GET(req: NextRequest) {
 				ok: true,
 				db: true,
 				limiterWrite,
-				saltConfigured: saltConfigured(),
+				// Kept for dashboard/e2e compatibility: the salt is now ALWAYS
+				// configured (self-provisioned). saltSource says how: "env"
+				// (RE_SALT adopted on first boot) or "generated" (CSPRNG default).
+				saltConfigured: true,
+				saltSource: lastSaltSource() ?? "generated",
 				schema: {
 					applied,
 					pending: pendingSchemaVersions(applied),

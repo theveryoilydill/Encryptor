@@ -1,6 +1,8 @@
 # Key Registry — Design & Research
 
-> Status: implemented (see `/api/registry/*` + `src/lib/registry`).
+> Status: implemented (see `/api/registry/*` + `src/lib/registry`). The UI
+> surface is the **login gate** ("Login/Get your keys") — the Keys tab was
+> removed in the PR #25 review round (see "UI surface" below).
 >
 > # Mr. AI Acting on s183173's Behalf
 
@@ -149,243 +151,63 @@ to any lookup call and each key gains a `words: string[20]` field.
 Without the parameter the field is omitted entirely, keeping default
 responses small.
 
-### QR fingerprint exchange
+## UI surface — the login gate
 
-The Keys tab renders a **QR code per fingerprint** encoding the standard
-`openpgp4fpr:<FINGERPRINT>` URI (OpenKeychain/GnuPG convention). Scanning is
-an out-of-band verification channel: the fingerprint travels camera-to-camera
-instead of through the (possibly tampered) network path, so a MitM who swaps
-keys in API responses cannot survive the comparison. The dialog also copies
-the raw `openpgp4fpr:` URI.
+The Keys tab is GONE (PR #25 review round: "remove that new key tab", "keep
+this minimal"). Signing in is now a full-page gate modeled on the owner's
+mockup: **"Login/Get your keys"** with five big source buttons. The gate
+shows whenever no private key is configured; every flow converges on the
+same in-browser key configuration and never uploads a decrypted key or a
+passphrase:
 
-### Scan-to-lookup (camera)
+- **Encryptor Registry** — two segments:
+  - _Restore my key_: fingerprint or email → registry lookup → fetch the
+    escrowed blob → decrypt locally with the passphrase → configured.
+  - _Publish a key_: paste a private key (decrypted pastes are encrypted
+    locally first), optional escrow, Turnstile when enforced, and the
+    one-time revocation token surfaced on the outcome card. Replacing an
+    already-published fingerprint shows the same possession-proof panel
+    (sign the challenge with the private key) as before.
+- **Keybase registry** — Keybase username + password (PDPKA login through
+  the app's proxies); the decrypted key is never stored, only metadata.
+- **OpenPGP registry (needs private key)** / **Ubuntu Registry (needs
+  private key)** — those keyservers host only PUBLIC keys, so signing in
+  means pasting the matching private key, which is validated and kept
+  locally.
+- **Local keys** — generate a new pair in-browser (optional expiry, optional
+  "also publish to the Encryptor registry" with escrow) or paste a locally
+  managed key.
 
-The **Scan** button next to lookup opens the device camera and feeds frames
-to the browser's built-in `BarcodeDetector` API — no decoder is bundled and
-**frames never leave the device**. A detected `openpgp4fpr:` QR (or bare
-40-hex fingerprint) fills the lookup field and searches automatically.
-Browsers without `BarcodeDetector` (Firefox/Safari) get an explicit note in
-the dialog instead of a silently dead button.
+The old "Your key" dialog is now pure management (identity card, key
+details, share QR, downloads, quantum seal, sign-out); the setup forms
+moved to the gate. Removed with the Keys tab: my-keys bookkeeping and
+backups, registry watch, QR/camera scanning, the Public API dialog, and the
+admin console UI (see next section).
 
-### Registry watch (key-change detection)
+### Registry admin path (backend-only)
 
-Every successful lookup records a **sighting** locally (`localStorage`,
-fingerprint → `{updatedAt, revoked, seenAt}`, capped at 200 entries). Later
-lookups of the same fingerprint compare live state against the last
-sighting:
-
-- `updatedAt` increased → amber callout: **"Key material changed since your
-  last lookup — re-verify out of band before trusting it."**
-- flipped to `revoked` → red callout: **"Revoked since your last lookup —
-  stop trusting this key."**
-
-The server can only report the CURRENT state; noticing "different from what
-I saw before" requires memory, which is exactly what the watch provides —
-a key silently replaced by an attacker (via the authorized-challenge flow
-with a stolen key) is flagged the next time a previous viewer looks it up.
-All storage access is best-effort: private-mode/quota failures degrade to
-"no change detection", never to broken lookups.
-
-### Encrypt to a looked-up key
-
-Every lookup row has an **Encrypt** action: the armored public key is parsed
-client-side and handed to the app as an encryption recipient, then the Encrypt
-tab opens with the chip in place (deduplicated by fingerprint; revoked keys
-refuse the action). This closes the loop the registry exists for —
-find someone's key, then USE it — without copy/pasting armor between tabs.
-
-### My-keys backup (revocation-token safety net)
-
-The "Keys published from this device" list offers a one-click **Backup**
-download (JSON: labels, fingerprints, publish dates, escrow state, and any
-stored revocation tokens). Revocation tokens are the one artifact the
-registry CANNOT recover — only their SHA-256 hash is stored server-side — so
-an offline export is the cheapest insurance against a wiped browser profile.
-The file contains nothing that was not already on the device, but it MUST be
-stored carefully: tokens grant permanent revocation power.
-
-### My-keys restore (backup import)
-
-The **Restore** button (always visible, even on an empty list) imports a
-`encryptor-keys-backup` JSON file back into the local list — completing the
-device-migration loop with Backup. Restores are never a surprise:
-
-- The file is validated FIRST (`format` marker + `version` 1; wrong files are
-  rejected with a specific reason, per-entry corruption is counted as
-  "unusable" instead of blocking the other entries).
-- A confirmation dialog previews exactly what WOULD happen before anything is
-  written: `+N new`, `~N newer`, `=N already current`, `!N unusable`, plus a
-  peek at the incoming records and which carry tokens.
-- The merge is newest-wins per fingerprint (`updatedAt ?? publishedAt`,
-  matched case-insensitively — the registry and backups mix hex case), and a
-  revocation token the local copy lost is rescued from the file even when the
-  local record is newer. Tokens stay on the device; the registry only ever
-  holds their hashes.
-
-### My-keys status audit ("Check on registry")
-
-The **Check on registry** button re-fetches every locally-known fingerprint
-(bounded at 12 per sweep, sequential with a small gap to stay friendly to the
-shared rate bucket) and compares each against the last sighting recorded by
-the registry watch — the same change-detection memory the lookup flow uses,
-applied to one's own keys. Each row gains a badge:
-
-| Badge                         | Meaning                                                                                     |
-| ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `unchanged` (green)           | Registry row matches the last sighting (or first check: healthy, baseline recorded).        |
-| `changed on registry` (amber) | `updated_at` grew or the revoked flag flipped since the last sight — re-verify out of band. |
-| `revoked` (red)               | The registry now reports the key revoked (reason shown in the tooltip).                     |
-| `not on registry` (grey)      | Never published, published from another device, or purged.                                  |
-| `check failed` (dashed)       | Network/server error for that one key — never aborts the sweep.                             |
-
-The summary line reports `N checked · M needs attention` (attention =
-changed/revoked), and sightings are refreshed as the sweep goes, so the next
-lookup of the same key will not re-flag what you just saw.
-
-### Encrypted backups (passphrase-sealed export)
-
-The plaintext backup contains revocation tokens — the only revocation power
-that exists for a key — so the **Encrypted backup** button seals the exact
-same payload with a passphrase before it ever touches disk:
-
-- **Crypto**: PBKDF2-SHA256 at 600,000 iterations (random 16-byte salt per
-  export) derives an AES-256-GCM key (random 12-byte IV per export). All
-  WebCrypto, in-browser; the passphrase never leaves the call scope.
-- **Envelope**: `encryptor-keys-backup-encrypted` `version` 2 — cleartext
-  `exportedAt` + advisory `keyCount`, everything else (fingerprints, emails,
-  tokens) inside the GCM ciphertext. A wrong passphrase or a tampered file
-  fails authentication and is reported as "Wrong passphrase — the backup
-  stays sealed." (no silent recovery path exists).
-- **Gating**: export is blocked until the passphrase reaches at least "Fair"
-  strength (the same zxcvbn-style estimator as key generation) and both
-  fields match; the dialog shows a live strength meter and the KDF
-  parameters.
-- **Restore**: the restore flow sniffs the format — encrypted files open a
-  passphrase stage first ("Unlock"), then the same what-would-change preview
-  as plaintext restores. Plaintext v1 files keep working unchanged; the
-  plaintext **Backup** button stays available but now warns that anyone with
-  the file can revoke your keys.
-
-### "Yours" badge & refresh saved copy
-
-Lookup rows are cross-referenced against the local my-keys list at render
-time:
-
-- A row whose fingerprint is already saved on this device gets an emerald
-  **yours** badge (tooltip shows the local label) — instant "this is mine"
-  recognition when checking your own key.
-- If the registry version is NEWER than the saved copy (e.g. the key was
-  replaced from another device, or an older backup was restored), the row
-  also gets an amber **newer on registry** badge plus a **Refresh copy**
-  action that pulls emails, algorithm label and key ID from the current
-  armored key into the local record — label and revocation token stay
-  untouched, so a one-click heal of multi-device drift can never strand the
-  token.
-
-### Escrow staleness audit ("escrow outdated" / "escrow missing")
-
-A same-fingerprint replace WITHOUT escrow fields deliberately KEEPS the
-stored private-key backup — but that means the escrowed blob can silently
-end up PREDATING the current key version: restoring it would hand back key
-material that no longer matches the public record. The audit sweep now
-detects this drift for keys the list believes are escrowed (the escrow
-probe only runs for non-revoked keys; probe errors never fail the audit):
-
-| Badge                     | Meaning                                                                                            |
-| ------------------------- | -------------------------------------------------------------------------------------------------- |
-| `escrow outdated` (amber) | `private_updated_at` < the key's `updated_at` — replace the key WITH escrow to refresh the backup. |
-| `escrow missing` (amber)  | The registry no longer holds an escrowed backup for this key (dropped, or never stored).           |
-
-The API contract is pinned by an e2e check (`kept escrow updatedAt lags key
-updatedAt`), and a repo fixture script exercises the real drift end-to-end:
+The `ADMIN_REVOKE_TOKEN` override still exists but has NO public UI any
+more (owner: "don't put the admin thing publicly. I can do it in the
+backend"). Operators revoke directly against the API:
 
 ```bash
-node scripts/make-escrow-stale.mjs [baseUrl]   # prints {"fingerprint": ...}
+curl -X POST https://<worker>/api/registry/revoke \
+  -H 'Content-Type: application/json' \
+  -d '{"fingerprint":"<40 HEX>","adminToken":"'$ADMIN_REVOKE_TOKEN'","reason":"abuse"}'
 ```
 
-### Registry admin console (owner-only)
-
-A collapsed **Registry admin** card at the bottom of the Keys tab exposes
-the deployment's `ADMIN_REVOKE_TOKEN` override path (service compromise /
-abuse response — the same endpoint the offline token and key-signed
-challenges use):
-
-- The token is typed per session and kept in component memory ONLY — never
-  persisted to storage, never logged, never echoed; the input is a password
-  field.
-- Fingerprint is validated client-side (40 hex); the reason (optional, ≤200
-  chars, stored on the revoked record) identifies the takedown.
-- Submission requires an explicit confirm dialog spelling out that
-  revocation is PERMANENT (fingerprint can never re-publish, escrow is
-  purged, the record stays visible as revoked).
-- Outcomes are surfaced inline: revoked (with the fingerprint), already
-  revoked, key not found, token rejected (generic 403 — an unconfigured
-  deployment answers the same way, so there is no config disclosure), and
-  rate-limited (with the server's Retry-After).
-
-### Authorized replace from the UI (possession-proof publishing)
-
-The registry always required a signed challenge to replace a published
-fingerprint, but that proof previously existed only in scripts and the API —
-from the UI a re-publish simply bounced with "Key already exists". The Keys
-tab now closes that loop:
-
-- When a publish bounces with the already-exists error, the source card shows
-  an amber **possession-proof panel** instead of a dead error message:
-  - **Encryptor (generated)**: signs the challenge automatically with the key
-    you just generated (the generation passphrase is already in the form) —
-    one click on "Sign challenge & replace".
-  - **Local (armored key)**: asks for that key's passphrase in the panel
-    (password field, memory only) so the challenge can be signed locally. A
-    public-only paste explains that a replace needs the private key instead
-    of offering a button that cannot work.
-  - **Keybase**: explains that public-only keys cannot sign — publish the
-    replacement from a device holding the private key.
-- The signed replace carries the same escrow choice as the form (checked →
-  the escrowed backup is refreshed in the same request; unchecked → the
-  stored backup is KEPT by the server but now lags — see the next bullet).
-- **Escrow-lag honesty**: after a replace that omitted escrow, the outcome
-  card warns that the stored private-key backup predates the registry version
-  (amber). A replace WITH escrow confirms "backup refreshed" (emerald). This
-  is the UI fix path for the audit's `escrow outdated` badge.
-- Local bookkeeping survives a replace: the original `publishedAt` is kept,
-  the shown-once revocation token is carried forward (a replace never
-  returns a new one — the ORIGINAL token stays authoritative), and the
-  `escrowed` flag stays truthful when the server keeps an existing backup.
-
-### Key expiry lifecycle in my-keys
-
-My-keys rows now track the primary-key expiration (`expiresAt`, captured at
-publish/replace time and re-derived on "Refresh saved copy"):
-
-- Per-row badge with a fixed color language: **red** `expired <date>` (treat
-  as untrusted — replace it), **amber** `expires in Nd` / `expires tomorrow`
-  / `expires today` (≤30 days — prepare a renewed key), muted
-  `expires <date>` when there is plenty of time. Nothing renders when the
-  expiration is unknown.
-- Urgent rows get a matching **left accent border** (red/amber) so they are
-  scannable without reading any text.
-- Header summary chips (rendered only when non-zero): `N escrowed` (blue),
-  `N expiring ≤30d` (amber), `N expired` (red).
-- **Sort control** (with more than one key): "Recent first" (default,
-  publish order) and "Expiring first" (soonest expiration on top — expired
-  keys first, keys without a known expiration last).
-
-### Only-my-keys lookup filter
-
-Lookup results gain a sticky **"Only my keys"** toggle (pill button,
-emerald when active). When enabled, rows whose fingerprint is not in the
-local my-keys list are hidden, the count line reads
-"`X of N shown · saved in your keys`", and a dashed empty state explains
-when none of the results are yours. The filter persists across searches so
-it behaves like a preference; the "yours" badge on each row is unaffected.
+The token lives only in the operator's shell/environment — never in the
+app, never persisted by it.
 
 ### Threat model coverage
 
 - **Garbage / oversized uploads** → server-side parse + 64 KB cap + 100 KB body cap + JSON content-type enforcement (also blocks form-based CSRF); Content-Length is rejected BEFORE the body is buffered.
 - **Structural key attacks** → publish verifies the primary self-signature and EVERY subkey binding signature (blocks foreign-subkey "squatting" that would hijack key-ID lookups), caps subkeys at 16 and emails at 10.
 - **Key replacement attack** → replacement requires a signature from the CURRENTLY stored key; the challenge nonce is consumed atomically (scoped to the fingerprint) BEFORE verification; the replacement UPDATE is guarded by `AND revoked = 0` so a record cannot be mutated after a concurrent revocation; the offline token cannot replace, only revoke (fail-safe).
-- **DB dump leak** → only public keys + token hashes + hashed-IP rate buckets; no raw IPs, no plaintext tokens, no PII beyond self-published User IDs. Rate buckets use a server-side salt that fails CLOSED in production if unset.
+- **DB dump leak** → only public keys + token hashes + hashed-IP rate buckets; no raw IPs, no plaintext tokens, no PII beyond self-published User IDs. Rate buckets use a deployment salt that self-provisions on first boot
+  (env `RE_SALT` when present, else a random CSPRNG value persisted in
+  `registry_meta` — see migration 0004), so mutations never fail for want
+  of a secret.
 - **Replay** → challenges are single-use with 10-minute expiry, consumed before verification (failed verification attempts burn the nonce — fail-closed).
 - **Timing attacks** → token/admin comparisons run on SHA-256 digests with a constant-time compare; challenge-signature validity is verified explicitly (every signature's `verified` promise), never inferred from array length.
 - **Quota exhaustion (free tier)** → the D1 rate limiter is read-first: PER-IP OVER-LIMIT requests cost one indexed read and ZERO writes. Lookups are rate limited too (120/h/IP). If the limiter itself cannot reach D1 (quota exhaustion, transient errors), public reads fail OPEN while publish/challenge/revoke fail CLOSED — limiter failure degrades instead of 500-ing everything. Distributed abuse (many IPs under their per-IP limits) can still burn quota, so the free Cloudflare WAF rate-limiting rule for `/api/registry/*` is the real outer defense. Email lookups, key-ID lookups and results are bounded; one email can be claimed by at most 5 keys (revoked keys release their email claims); a sampled global storage guard caps total keys at 50,000. Request caps are enforced on UTF-16 length before buffering (Content-Length) and re-checked after.
@@ -399,7 +221,7 @@ it behaves like a preference; the "yours" badge on each row is unaffected.
 - Add a free Cloudflare WAF rate-limiting rule for `/api/registry/*` as the outer layer (the D1 limiter is the second line, per-IP only).
 - Worker responses are not edge-cached by default; if lookup traffic becomes expensive, add Cache API caching for hot GETs or enable OpenNext cache instrumentation.
 - Monitor D1 metrics (`rows_read`, `rows_written`) and set alerts; the storage guard caps keys at `LIMITS.registryStorageCapKeys`.
-- Set `RE_SALT` (long random string) and optionally `ADMIN_REVOKE_TOKEN` via `wrangler secret put` — the registry fails closed (503) in production without `RE_SALT`.
+- Optionally set `RE_SALT` (long random string) and `ADMIN_REVOKE_TOKEN` via `wrangler secret put`. `RE_SALT` is only adopted on FIRST boot of a fresh database (it is then persisted in `registry_meta`); deployments without it auto-generate a salt, so writes work with zero secrets.
 
 ## Deployment permissions & database writes
 
@@ -422,13 +244,14 @@ Repository-side recommendations (GitHub, not Cloudflare):
 `GET /api/registry/health` distinguishes the two known "reads work, mutations 503"
 failure modes:
 
-- **`saltConfigured: false`** — the Worker has no `RE_SALT` secret. In production the
-  registry fails closed, and because the salt is resolved INSIDE the rate limiter's
-  try-block, every mutation reports a misleading "Registry is temporarily
-  unavailable" 503 while the write probe still passes. Fix:
-  `npx wrangler secret put RE_SALT` (a long random string) — Worker secrets deploy a
-  new version automatically. **Observed live**: a worker recreated/redeployed without
-  its secrets 503'd on every mutation for a day while lookups stayed healthy.
+- ~~`saltConfigured: false`~~ — HISTORICAL (PR #25, twice): a worker recreated or
+  re-linked without its `RE_SALT` secret used to fail CLOSED on every mutation
+  (503) while lookups stayed healthy. Since migration 0004 the salt
+  SELF-PROVISIONS on first boot (env `RE_SALT` when present, else a random
+  CSPRNG value persisted in `registry_meta`) and never changes afterwards, so
+  this failure mode cannot recur. `health.saltConfigured` stays in the payload
+  (always `true` once the DB is reachable) for dashboard compatibility;
+  `health.saltSource` reports `"env"` or `"generated"`.
 - **`limiterWrite: false`** — D1 **writes** fail (daily write quota exhausted, or the
   database is full) while reads work. The fixed-window limiter performs one upsert
   per request, so a bot-scanned public `workers.dev` URL can burn the free tier's
@@ -443,10 +266,11 @@ Diagnosis checklist for the operator:
 # 1. Confirm the outage shape from anywhere:
 curl -s https://<worker>/api/registry/health | jq   # limiterWrite:false = writes down, reads fine
 
-# 2. If saltConfigured:false — set the secret (this is the usual cause after
-#    recreating or re-linking a Worker; secrets do not survive a new worker):
-npx wrangler secret put RE_SALT          # long random string
-npx wrangler secret put ADMIN_REVOKE_TOKEN   # while you are at it (optional)
+# 2. saltConfigured is ALWAYS true since migration 0004 (self-provisioned
+#    salt) — if you still see mutation 503s, skip to step 3/5 (write quota or
+#    limiter outage), or optionally pin a salt on a FRESH database:
+npx wrangler secret put RE_SALT          # long random string (fresh DBs only)
+npx wrangler secret put ADMIN_REVOKE_TOKEN   # optional backend admin revoke
 
 # 3. In the Cloudflare dashboard → Workers & Pages → D1 → encryptor-registry:
 #    check "Rows written / day" against the 100k free-tier limit, and storage size.
@@ -470,7 +294,7 @@ zero writes, and public reads fail open without blocking when the limiter is dow
 
 ```bash
 npx wrangler d1 create encryptor-registry   # copy database_id into wrangler.json
-npx wrangler secret put RE_SALT             # long random string (rate-bucket privacy)
+npx wrangler secret put RE_SALT             # OPTIONAL (fresh DBs): pins the rate-bucket salt
 npx wrangler secret put ADMIN_REVOKE_TOKEN  # optional emergency override
 npx wrangler secret put TURNSTILE_SECRET_KEY  # optional: enforce Turnstile on writes
 bun run deploy
@@ -482,8 +306,8 @@ apply` (remotely or in CI). The worker bundles the SQL from `migrations/`
 any missing version on first database access, tracked in the
 `registry_schema_migrations` ledger table. A freshly created remote D1
 database heals itself on the first request — `GET /api/registry/health`
-reports `{ ok, schema.applied, schema.pending, turnstile }` and is the
-fastest way to check a deployment. After adding a new migration file, run
+reports `{ ok, schema.applied, schema.pending, turnstile, limiterWrite,
+saltConfigured, saltSource }` and is the fastest way to check a deployment. After adding a new migration file, run
 `node scripts/gen-migrations.mjs` and commit the regenerated module
 (Workers Builds CI never runs `wrangler d1 migrations apply`, which is why
 publishes once failed with opaque 500s on an un-migrated database —
@@ -517,6 +341,29 @@ npx wrangler secret put TURNSTILE_SECRET_KEY            # server half (Worker se
 `GET /api/registry/health` reports the active mode
 (`turnstile: "enforced" | "disabled"`).
 
+### Turnstile on preview/branch deployments ("can't add keys?")
+
+Answer to the PR #25 review question: Turnstile was NOT why adds failed.
+On the branch preview the server reported `turnstile: "disabled"` (no
+`TURNSTILE_SECRET_KEY` on the worker) — the real cause was the missing
+`RE_SALT`, which migration 0004 now self-heals (see the 503 runbook
+above). Turnstile WILL, however, break publishes on a preview domain if
+you provision only one half or forget the hostname allowlist:
+
+- **Widget renders but every attempt fails** (`error 110200` — now shown
+  in the UI instead of failing silently): the workers.dev preview hostname
+  is not in the site key's allowlist. Fix: add the preview hostnames in
+  the Cloudflare Turnstile widget config, or switch preview builds to the
+  always-pass dummy pair (site `1x00000000000000000000AA`, secret
+  `1x0000000000000000000000000000000AA`).
+- **Enforced server-side but no widget in the page**: the build lacks
+  `NEXT_PUBLIC_TURNSTILE_SITE_KEY`. The publish form shows an amber
+  explainer instead of an impossible challenge; set the build env var or
+  remove the worker secret.
+- Health stays the one-URL diagnosis: `turnstile: "enforced"` + a publish
+  403 with no widget = build/env mismatch; `enforced` + 503 = siteverify
+  misconfiguration.
+
 ## Testing
 
 The repository ships an end-to-end suite covering every route plus the
@@ -529,10 +376,13 @@ keep/drop semantics, revocation purge):
 ```bash
 npx wrangler d1 migrations apply REGISTRY_DB --local   # local D1 + schema
 bun run dev                                            # terminal 1
-bun run test:registry                                  # terminal 2 (81 checks)
+bun run test:registry                                  # terminal 2 (84 checks)
 ```
 
-`REGISTRY_TEST_BASE` overrides the target URL for preview deployments.
+`REGISTRY_TEST_BASE` overrides the target URL for preview deployments. The
+admin-override checks read `ADMIN_REVOKE_TOKEN` from the server's
+`.dev.vars` (gitignored) in local dev; previews exercise the salt
+self-provisioning path automatically (no secrets needed).
 
 An example user can be seeded against any running target (publishes an
 "Example User" key WITH escrow and writes `.example-user.json`, which is

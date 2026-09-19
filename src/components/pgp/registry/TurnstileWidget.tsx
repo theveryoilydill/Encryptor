@@ -10,10 +10,21 @@
  * site key is absent (local dev, preview builds): it renders a subtle
  * "not configured" note instead of an impossible challenge.
  *
+ * Review round addition: the widget now SURFACES failure codes instead of
+ * failing silently. A Turnstile site key is hostname-allowlisted, so a
+ * preview/branch deployment renders the widget but every challenge fails
+ * with 110200 ("invalid domain") — which used to look exactly like the
+ * "can't add keys" mystery from the review. The diagnostics below make the
+ * mismatch (and the two owner-side fixes) explicit in the UI.
+ *
  * Provisioning (production): set NEXT_PUBLIC_TURNSTILE_SITE_KEY at build
  * time (Workers Builds env) AND TURNSTILE_SECRET_KEY as a worker secret —
  * both halves must exist together or publishing is either blocked (secret
- * without site key) or ungated (site key without secret).
+ * without site key) or ungated (site key without secret). For preview
+ * branches, either add the *.workers.dev hostnames to the site key's
+ * allowlist, or use Cloudflare's always-pass dummy keys (site
+ * 1x00000000000000000000AA + secret 1x0000000000000000000000000000000AA)
+ * so the flow is exercisable without weakening production.
  *
  * The script is loaded ON DEMAND (explicit render, onload callback) so
  * challenges.cloudflare.com is only contacted when a publish form is
@@ -23,7 +34,7 @@
  * # Mr. AI Acting on s183173's Behalf
  */
 import { useEffect, useRef, useState } from "react";
-import { Loader2, ShieldCheck } from "lucide-react";
+import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 
 /** Shape of the explicit-render API we use (subset). */
 interface TurnstileApi {
@@ -50,6 +61,21 @@ export function turnstileSiteKeyConfigured(): boolean {
 	return SITE_KEY.length > 0;
 }
 
+/** Human-readable diagnosis for a Turnstile error callback code. */
+function describeTurnstileError(code: string): string {
+	// Well-known codes from Cloudflare's client-side error list.
+	if (code === "110200" || code === "110442" || code === "300030" || code === "600010") {
+		return `This hostname is not allowlisted for the Turnstile site key (error ${code}) — publishing is impossible here until the owner adds this preview domain to the site key's hostname list, or switches preview builds to the always-pass dummy site key.`;
+	}
+	if (code.startsWith("1104")) {
+		return `The Turnstile site key looks invalid for this widget (error ${code}) — check NEXT_PUBLIC_TURNSTILE_SITE_KEY at build time.`;
+	}
+	if (code === "110500" || code.startsWith("3")) {
+		return `The Turnstile challenge could not run in this browser (error ${code}) — disable script blockers for challenges.cloudflare.com and retry.`;
+	}
+	return `The Turnstile challenge failed (error ${code}) — retry, or check the deployment's Turnstile site key configuration.`;
+}
+
 export function TurnstileWidget({
 	id,
 	onToken,
@@ -64,6 +90,7 @@ export function TurnstileWidget({
 	const onTokenRef = useRef(onToken);
 	onTokenRef.current = onToken;
 	const [ready, setReady] = useState(false);
+	const [errorCode, setErrorCode] = useState<string | null>(null);
 
 	useEffect(() => {
 		if (!SITE_KEY) return;
@@ -75,10 +102,19 @@ export function TurnstileWidget({
 			if (!holderRef.current || !window.turnstile) return;
 			widgetIdRef.current = window.turnstile.render(holderRef.current, {
 				sitekey: SITE_KEY,
-				callback: (token: string) => onTokenRef.current(token),
+				callback: (token: string) => {
+					setErrorCode(null);
+					onTokenRef.current(token);
+				},
 				"expired-callback": () => onTokenRef.current(null),
 				"timeout-callback": () => onTokenRef.current(null),
-				"error-callback": () => onTokenRef.current(null),
+				"error-callback": (code: string) => {
+					// Surface the failure instead of looping silently: the caller
+					// sees WHY no token ever arrives (domain allowlist, bad site
+					// key, blocked script) rather than a mystery 403 on publish.
+					setErrorCode(code || "unknown");
+					onTokenRef.current(null);
+				},
 				theme: "auto",
 				tabindex: 0,
 			});
@@ -147,6 +183,16 @@ export function TurnstileWidget({
 				<p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
 					<Loader2 aria-hidden="true" className="size-3 animate-spin" />
 					Loading bot-protection challenge…
+				</p>
+			)}
+			{errorCode && (
+				<p
+					data-testid="turnstile-error"
+					className="mt-1 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+					role="alert"
+				>
+					<ShieldAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+					<span>{describeTurnstileError(errorCode)}</span>
 				</p>
 			)}
 		</div>

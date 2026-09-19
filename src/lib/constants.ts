@@ -47,10 +47,6 @@ export const STORAGE_KEYS = {
 	lastTab: "encryptor.lastTab",
 	recentRecipients: "encryptor.recentRecipients",
 	settings: "encryptor.settings.v1",
-	/** Keys this browser published to the registry (fingerprints + tokens). */
-	registryKeys: "encryptor.registry.keys.v1",
-	/** Landing-page registry banner dismissal (discoverability banner). */
-	registryBannerDismissed: "encryptor.registry.bannerDismissed",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

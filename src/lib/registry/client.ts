@@ -1,16 +1,20 @@
 /**
  * Browser client for the public key registry (/api/registry/*).
  *
- * One place for request shapes, error text, and the local "my published
- * keys" bookkeeping so the Keys tab stays declarative. Challenges are
- * signed in-browser via lib/pgp signMessage — the passphrase and decrypted
- * key never leave this module's call scope.
+ * One place for request shapes and error text. Challenges are signed
+ * in-browser via lib/pgp signMessage — the passphrase and decrypted key
+ * never leave this module's call scope.
+ *
+ * Simplified for the login-gate UI (PR #25 review round): the "my published
+ * keys" bookkeeping, backup import/export, watch layer, and the admin
+ * revoke helper are gone — publishing now lives in the Encryptor Registry
+ * login card, which surfaces the one-time revocation token at publish time.
+ * Admin revocation remains a BACKEND-ONLY path (ADMIN_REVOKE_TOKEN via
+ * curl/wrangler) per the owner's request to keep it out of the public UI.
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { STORAGE_KEYS } from "@/lib/constants";
 import { signMessage } from "@/lib/pgp/pgp";
-import { getKeySighting, noteKeySighted } from "@/lib/registry/watch";
 
 /** One key record as returned by the public lookup endpoint. */
 export interface RegistryLookupKey {
@@ -32,29 +36,6 @@ export interface RegistryPublishResult {
 	replaced: boolean;
 	revocationToken?: string;
 	warning?: string;
-}
-
-/** Locally persisted metadata for a key this browser published. */
-export interface MyRegistryKey {
-	fingerprint: string;
-	keyId: string;
-	emails: string[];
-	label: string;
-	publishedAt: number;
-	/** Shown-once revocation token, kept here because offline copies can
-            be lost; the registry only stores its SHA-256 hash. */
-	revocationToken?: string;
-	escrowed: boolean;
-	/** Human algorithm label captured at publish time (e.g. "Ed25519",
-	 *  "RSA · 3072-bit") so the list can badge keys without re-parsing
-	 *  armor from the network. Absent on pre-existing local records. */
-	algo?: string;
-	/** Last local change to this record (publish/replace/escrow update). */
-	updatedAt?: number;
-	/** Primary-key expiration (epoch ms) captured at publish/refresh time
-	 *  so the list can badge expiring/expired keys without re-parsing
-	 *  armor. Absent = unknown or no expiration. */
-	expiresAt?: number;
 }
 
 /** Thrown for non-2xx registry responses; carries the server's error text. */
@@ -124,9 +105,12 @@ export interface RegistryHealth {
 	/** False when D1 writes fail while reads work (quota/full/account) —
 	 *  every mutation route will 503 until the operator intervenes. */
 	limiterWrite?: boolean;
-	/** False when RE_SALT is unset in production — mutations 503 until the
-	 *  operator runs `wrangler secret put RE_SALT`. */
+	/** Always true since migration 0004 (self-provisioned salt); kept for
+	 *  dashboard compatibility. See saltSource for how it was provisioned. */
 	saltConfigured?: boolean;
+	/** "env" = the RE_SALT secret was adopted on first boot; "generated" =
+	 *  a random CSPRNG salt was provisioned automatically. */
+	saltSource?: "env" | "generated";
 	schema?: { applied: string[]; pending: string[] };
 	turnstile?: "enforced" | "disabled";
 	error?: string;
@@ -134,8 +118,8 @@ export interface RegistryHealth {
 
 /**
  * GET /api/registry/health — schema + capability probe. Hitting it also
- * triggers the worker's self-migration, so a fresh (never migrated) remote
- * D1 database heals simply by checking health.
+ * triggers the worker's self-migration (and salt provisioning), so a fresh
+ * remote D1 database heals simply by checking health.
  */
 export async function registryHealth(): Promise<RegistryHealth> {
 	const res = await fetch("/api/registry/health", { cache: "no-store" });
@@ -273,14 +257,6 @@ export function registryStoreEscrow(input: {
 	return registryMutateEscrow({ ...input });
 }
 
-export function registryDeleteEscrow(input: {
-	fingerprint: string;
-	privateKeyArmored: string;
-	passphrase: string;
-}): Promise<void> {
-	return registryMutateEscrow({ ...input });
-}
-
 /** POST /api/registry/revoke — permanent retraction via the offline token. */
 export async function registryRevokeByToken(
 	fingerprint: string,
@@ -294,363 +270,4 @@ export async function registryRevokeByToken(
 	});
 	const body = await expectOk(res, "Revocation failed");
 	if (body.alreadyRevoked === true) return;
-}
-
-/**
- * POST /api/registry/revoke — ADMIN override path (service-compromise /
- * abuse response). Requires the registry operator's ADMIN_REVOKE_TOKEN.
- * The token lives ONLY in the caller's memory: it is sent once in the
- * request body, never persisted, never logged, never echoed in errors.
- */
-export async function registryAdminRevoke(
-	fingerprint: string,
-	adminToken: string,
-	reason?: string,
-): Promise<{ alreadyRevoked: boolean }> {
-	const res = await fetch("/api/registry/revoke", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			fingerprint,
-			adminToken,
-			...(reason ? { reason } : {}),
-		}),
-	});
-	const body = await expectOk(res, "Admin revocation failed");
-	return { alreadyRevoked: body.alreadyRevoked === true };
-}
-
-/* ------------------------- local "my keys" bookkeeping ------------------------ */
-
-export function listMyKeys(): MyRegistryKey[] {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEYS.registryKeys);
-		if (!raw) return [];
-		const parsed = JSON.parse(raw);
-		return Array.isArray(parsed) ? (parsed as MyRegistryKey[]) : [];
-	} catch {
-		return [];
-	}
-}
-
-function saveMyKeys(keys: MyRegistryKey[]): void {
-	try {
-		localStorage.setItem(STORAGE_KEYS.registryKeys, JSON.stringify(keys));
-	} catch {
-		// Storage may be unavailable (private mode); the registry state
-		// lives server-side, this list is only a convenience.
-	}
-}
-
-/** Fingerprints must match case-insensitively: the registry/backup use
- *  mixed-case hex, and treating "ABC…" and "abc…" as two keys would
- *  duplicate rows and strand revocation tokens on the wrong record. */
-function sameFpr(a: string, b: string): boolean {
-	return a.toLowerCase() === b.toLowerCase();
-}
-
-export function rememberMyKey(key: MyRegistryKey): void {
-	const keys = listMyKeys().filter((k) => !sameFpr(k.fingerprint, key.fingerprint));
-	saveMyKeys([key, ...keys].slice(0, 50));
-}
-
-export function updateMyKey(
-	fingerprint: string,
-	patch: Partial<
-		Pick<
-			MyRegistryKey,
-			| "escrowed"
-			| "revocationToken"
-			| "label"
-			| "algo"
-			| "updatedAt"
-			| "keyId"
-			| "emails"
-			| "expiresAt"
-		>
-	>,
-): void {
-	saveMyKeys(
-		listMyKeys().map((k) => (sameFpr(k.fingerprint, fingerprint) ? { ...k, ...patch } : k)),
-	);
-}
-
-export function forgetMyKey(fingerprint: string): void {
-	saveMyKeys(listMyKeys().filter((k) => !sameFpr(k.fingerprint, fingerprint)));
-}
-
-/**
- * Build a portable JSON backup of the locally-known published keys.
- *
- * Revocation tokens are the ONE thing the registry cannot recover (only
- * their hash is stored server-side), so the backup deliberately includes
- * them: an offline copy is the emergency brake for every key this browser
- * published. Everything in the file is already on this device — exporting
- * leaks nothing new, but the FILE must be stored carefully (tokens grant
- * revocation power).
- */
-export function exportMyKeys(): string {
-	return JSON.stringify(
-		{
-			format: "encryptor-keys-backup",
-			version: 1,
-			exportedAt: new Date().toISOString(),
-			keys: listMyKeys(),
-		},
-		null,
-		2,
-	);
-}
-
-/* --------------------------- backup import/restore -------------------------- */
-
-/** Result of validating a backup file's contents. */
-export interface ParsedBackup {
-	/** ISO timestamp copied from the file, when present. */
-	exportedAt: string | null;
-	/** Structurally valid records, fingerprints normalized lowercase. */
-	keys: MyRegistryKey[];
-	/** Entries dropped because they failed structural validation. */
-	invalid: number;
-}
-
-const FPR_RE = /^[0-9a-f]{40}$/;
-
-/** Coerce one raw backup entry into a MyRegistryKey, or null if unusable. */
-function sanitizeBackupKey(raw: unknown): MyRegistryKey | null {
-	if (!raw || typeof raw !== "object") return null;
-	const r = raw as Record<string, unknown>;
-	const fpr = typeof r.fingerprint === "string" ? r.fingerprint.trim().toLowerCase() : "";
-	if (!FPR_RE.test(fpr)) return null;
-	const emails = Array.isArray(r.emails)
-		? r.emails.filter((e): e is string => typeof e === "string" && e.length > 0).slice(0, 10)
-		: [];
-	const publishedAt =
-		typeof r.publishedAt === "number" && Number.isFinite(r.publishedAt)
-			? r.publishedAt
-			: Date.now();
-	return {
-		fingerprint: fpr,
-		keyId:
-			typeof r.keyId === "string" && /^[0-9a-f]{8,16}$/i.test(r.keyId)
-				? r.keyId.toUpperCase()
-				: fpr.slice(-16).toUpperCase(),
-		emails,
-		label:
-			typeof r.label === "string" && r.label.trim()
-				? r.label.trim()
-				: (emails[0] ?? "Imported key"),
-		publishedAt,
-		...(typeof r.revocationToken === "string" && r.revocationToken
-			? { revocationToken: r.revocationToken }
-			: {}),
-		escrowed: r.escrowed === true,
-		...(typeof r.algo === "string" && r.algo ? { algo: r.algo } : {}),
-		...(typeof r.updatedAt === "number" && Number.isFinite(r.updatedAt)
-			? { updatedAt: r.updatedAt }
-			: {}),
-	};
-}
-
-/**
- * Validate a keys-backup file's text. Throws with a human explanation for
- * wrong files (bad JSON, foreign format, unknown version) so the UI can
- * show exactly why a restore was refused; per-entry problems are counted
- * instead of fatal — one corrupt record shouldn't block the other 49.
- */
-export function parseKeysBackup(text: string): ParsedBackup {
-	let data: unknown;
-	try {
-		data = JSON.parse(text);
-	} catch {
-		throw new Error("That file is not valid JSON.");
-	}
-	if (!data || typeof data !== "object" || Array.isArray(data)) {
-		throw new Error("Not an Encryptor keys backup.");
-	}
-	const d = data as Record<string, unknown>;
-	if (d.format !== "encryptor-keys-backup") {
-		throw new Error("Not an Encryptor keys backup (missing format marker).");
-	}
-	if (d.version !== 1) {
-		throw new Error(`Unsupported backup version (${String(d.version)}). This app reads version 1.`);
-	}
-	if (!Array.isArray(d.keys)) throw new Error("Backup has no keys array.");
-	const keys: MyRegistryKey[] = [];
-	let invalid = 0;
-	for (const raw of d.keys.slice(0, 200)) {
-		const k = sanitizeBackupKey(raw);
-		if (k) keys.push(k);
-		else invalid += 1;
-	}
-	return { exportedAt: typeof d.exportedAt === "string" ? d.exportedAt : null, keys, invalid };
-}
-
-export interface RestoreReport {
-	added: number;
-	updated: number;
-	skipped: number;
-}
-
-const stampOf = (k: MyRegistryKey): number => k.updatedAt ?? k.publishedAt;
-
-/**
- * Shared merge accounting: applies the newest-wins-by-fingerprint policy to
- * a working map (without touching storage) and reports what happened. Used
- * by both the confirmation-dialog preview and the actual merge so the two
- * can never disagree about what a restore will do.
- */
-function accountMerge(
-	incoming: MyRegistryKey[],
-	current: MyRegistryKey[],
-): { map: Map<string, MyRegistryKey>; report: RestoreReport } {
-	const byFpr = new Map(current.map((k) => [k.fingerprint.toLowerCase(), k]));
-	let added = 0;
-	let updated = 0;
-	let skipped = 0;
-	for (const inc of incoming) {
-		const cur = byFpr.get(inc.fingerprint.toLowerCase());
-		if (!cur) {
-			byFpr.set(inc.fingerprint.toLowerCase(), inc);
-			added += 1;
-			continue;
-		}
-		if (stampOf(inc) > stampOf(cur)) {
-			byFpr.set(inc.fingerprint, {
-				...inc,
-				...(inc.revocationToken || !cur.revocationToken
-					? {}
-					: { revocationToken: cur.revocationToken }),
-			});
-			updated += 1;
-		} else {
-			if (!cur.revocationToken && inc.revocationToken) {
-				byFpr.set(inc.fingerprint, { ...cur, revocationToken: inc.revocationToken });
-			}
-			skipped += 1;
-		}
-	}
-	return { map: byFpr, report: { added, updated, skipped } };
-}
-
-/**
- * What a restore WOULD do, without mutating anything — shown in the
- * confirmation dialog so "N new · M updated · K already current" is never a
- * guess.
- */
-export function previewRestore(incoming: MyRegistryKey[]): RestoreReport {
-	return accountMerge(incoming, listMyKeys()).report;
-}
-
-/** Apply the merge computed by accountMerge and persist it (cap 50). */
-export function mergeMyKeys(incoming: MyRegistryKey[]): RestoreReport {
-	const { map, report } = accountMerge(incoming, listMyKeys());
-	saveMyKeys([...map.values()].sort((a, b) => stampOf(b) - stampOf(a)).slice(0, 50));
-	return report;
-}
-
-/* --------------------------- registry status audit -------------------------- */
-
-export type MyKeyAuditOutcome = "ok" | "changed" | "revoked" | "missing" | "error";
-
-export interface MyKeyAudit {
-	fingerprint: string;
-	outcome: MyKeyAuditOutcome;
-	/** Human explanation rendered as the badge tooltip / summary. */
-	detail: string;
-	/** Escrow drift for keys the list believes are escrowed: the stored
-	 *  private-key backup predates the current key version (outdated) or
-	 *  is gone entirely (missing). Undefined = no drift detected / not
-	 *  checked (non-escrowed key, revoked key, or probe error). */
-	escrowDrift?: "outdated" | "missing";
-}
-
-/**
- * Bulk re-verification of the keys this device published: re-fetch each
- * fingerprint from the registry and compare it with the last sighting the
- * watch layer recorded — the same change-detection memory the lookup flow
- * uses, applied to one's own keys. Sequential with a small gap so a full
- * sweep stays friendly to the shared rate bucket; individual failures
- * become "error" rows instead of aborting. Sightings are refreshed as the
- * sweep goes, so the next lookup of the same key won't re-flag.
- */
-export async function auditMyKeysOnRegistry(
-	keys: MyRegistryKey[],
-	opts: { max?: number; onResult?: (a: MyKeyAudit) => void } = {},
-): Promise<MyKeyAudit[]> {
-	const max = opts.max ?? 12;
-	const targets = keys.slice(0, max);
-	const results: MyKeyAudit[] = [];
-	for (let i = 0; i < targets.length; i += 1) {
-		const k = targets[i];
-		let audit: MyKeyAudit;
-		try {
-			const row = (await registryLookup({ fingerprint: k.fingerprint }))[0];
-			if (!row) {
-				audit = {
-					fingerprint: k.fingerprint,
-					outcome: "missing",
-					detail:
-						"Not on the registry — published from another device, purged, or never published.",
-				};
-			} else {
-				const prior = getKeySighting(k.fingerprint);
-				noteKeySighted(k.fingerprint, { updatedAt: row.updatedAt, revoked: row.revoked });
-				if (row.revoked) {
-					audit = {
-						fingerprint: k.fingerprint,
-						outcome: "revoked",
-						detail: row.revokeReason
-							? `Revoked on the registry: ${row.revokeReason}`
-							: "Revoked on the registry.",
-					};
-				} else if (prior && (prior.revoked || row.updatedAt > prior.updatedAt)) {
-					audit = {
-						fingerprint: k.fingerprint,
-						outcome: "changed",
-						detail: `Key material changed on the registry since ${new Date(prior.seenAt).toLocaleString()} — re-verify out of band.`,
-					};
-				} else if (prior) {
-					audit = {
-						fingerprint: k.fingerprint,
-						outcome: "ok",
-						detail: `Unchanged since ${new Date(prior.seenAt).toLocaleString()}.`,
-					};
-				} else {
-					audit = {
-						fingerprint: k.fingerprint,
-						outcome: "ok",
-						detail: "On the registry and healthy — baseline recorded.",
-					};
-				}
-			}
-			// Escrow drift: for keys we BELIEVE are escrowed, the
-			// stored private-key backup must not predate the current
-			// key version — restoring it would hand back material that
-			// no longer matches the public record. Probe errors never
-			// fail the audit.
-			if (k.escrowed && row && !row.revoked) {
-				try {
-					const esc = await registryFetchEscrow(k.fingerprint);
-					if (!esc.encryptedPrivate) {
-						audit.escrowDrift = "missing";
-					} else if (typeof esc.updatedAt === "number" && esc.updatedAt < row.updatedAt) {
-						audit.escrowDrift = "outdated";
-					}
-				} catch {
-					// probe failure is not an audit failure
-				}
-			}
-		} catch (e) {
-			audit = {
-				fingerprint: k.fingerprint,
-				outcome: "error",
-				detail: e instanceof Error ? e.message : "Lookup failed.",
-			};
-		}
-		results.push(audit);
-		opts.onResult?.(audit);
-		if (i < targets.length - 1) await new Promise((r) => setTimeout(r, 150));
-	}
-	return results;
 }

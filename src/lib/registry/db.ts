@@ -78,8 +78,14 @@ export interface RateLimitOutcome {
 	limiterDown?: boolean;
 }
 
-/** Development-only fallback salt — NEVER used in production builds. */
-const DEV_SALT = "encryptor-registry-dev-salt";
+/**
+ * Where the deployment's rate-limit/privacy salt came from:
+ *  - "env": the RE_SALT worker secret, adopted on first boot and persisted;
+ *  - "generated": a random CSPRNG salt provisioned on first boot (the
+ *    default for previews and fresh recreations — no secrets needed).
+ * # Mr. AI Acting on s183173's Behalf
+ */
+export type SaltSource = "env" | "generated";
 
 /** Resolve the full Cloudflare env (bindings + secrets), or undefined. */
 export function getCloudflareEnv(): RegistryEnv | undefined {
@@ -120,29 +126,91 @@ export async function getRegistryDBReady(): Promise<D1DatabaseLike> {
 }
 
 /**
- * Resolve the rate-limit/privacy salt. In production a missing RE_SALT
- * fails CLOSED (503): a known constant salt would make rate buckets
- * brute-forceable from a DB dump, turning it into an IP-disclosure leak.
- * Local development supplies it via .dev.vars.
+ * Resolve the rate-limit/privacy salt — self-provisioning, fail-safe.
+ *
+ * HISTORY: this used to read the RE_SALT worker secret and fail CLOSED
+ * (503) on every mutation when it was missing. That secret vanished twice
+ * on PR #25's deployments (worker recreation/relink drops secrets), and
+ * every publish 503'd while reads kept working — the owner's "can't add
+ * keys" report. The salt is now provisioned on first DB access and stored
+ * in registry_meta (migration 0004):
+ *
+ *  1. A stored salt always wins — the value NEVER changes for a database,
+ *     so bucket hashing stays stable across isolates and deploys.
+ *  2. On a fresh database, RE_SALT (when the secret exists) is adopted and
+ *     persisted — source "env", the strongest option.
+ *  3. Otherwise a random 32-byte CSPRNG salt is generated and persisted —
+ *     source "generated". Every deployment (preview branches, recreated
+ *     workers, local dev) works out of the box with zero manual secrets.
+ *
+ * Rate buckets are per-window and hold nothing but the hashed
+ * action|ip|window tuple, so nothing persistent depends on the value.
+ * Memoized per isolate: one read after the first request.
  */
-/**
- * True when the deployment has (or does not need) RE_SALT. Health reports
- * this so a missing secret is diagnosable from one URL: mutations 503 with
- * a misleading "limiter unavailable" because getSalt() throws INSIDE the
- * rateLimit try-block — while the write probe (which never touches the
- * salt) reports limiterWrite:true. Observed live on a worker that lost its
- * secrets during a redeploy.
- */
-export function saltConfigured(): boolean {
-	return Boolean(getCloudflareEnv()?.RE_SALT) || process.env.NODE_ENV !== "production";
+let saltPromise: Promise<string> | null = null;
+let saltSourceSeen: SaltSource | null = null;
+
+/** Source of the resolved salt — null until getOrCreateSalt has run once. */
+export function lastSaltSource(): SaltSource | null {
+	return saltSourceSeen;
 }
-function getSalt(): string {
-	const salt = getCloudflareEnv()?.RE_SALT;
-	if (salt) return salt;
-	if (process.env.NODE_ENV === "production") {
-		throw new RegistryError("RE_SALT secret is not configured on this deployment", 503);
+
+/** Test/isolate helper: forget the memoized salt (next call re-resolves). */
+export function resetSaltCache(): void {
+	saltPromise = null;
+	saltSourceSeen = null;
+}
+
+async function resolveSalt(db: D1DatabaseLike): Promise<string> {
+	const existing = await db
+		.prepare("SELECT value FROM registry_meta WHERE key = 'salt'")
+		.first<{ value: string }>();
+	if (existing?.value) {
+		// The stored salt always wins — never regenerate, never overwrite.
+		// Report how it was originally provisioned (recorded on first boot;
+		// rows written before this column existed report as "generated").
+		const src = await db
+			.prepare("SELECT value FROM registry_meta WHERE key = 'salt_source'")
+			.first<{ value: string }>();
+		saltSourceSeen = src?.value === "env" ? "env" : "generated";
+		return existing.value;
 	}
-	return DEV_SALT;
+	const envSalt = getCloudflareEnv()?.RE_SALT;
+	const useEnv = typeof envSalt === "string" && envSalt.length >= 16;
+	const candidate = useEnv ? (envSalt as string) : randomHex(32);
+	const source: SaltSource = useEnv ? "env" : "generated";
+	// INSERT ... DO NOTHING: two isolates racing the same fresh database
+	// converge on the FIRST writer's salt; the loser re-reads below.
+	await db
+		.prepare(
+			"INSERT INTO registry_meta (key, value, updated_at) VALUES ('salt', ?1, ?2) ON CONFLICT (key) DO NOTHING",
+		)
+		.bind(candidate, nowSeconds())
+		.run();
+	await db
+		.prepare(
+			"INSERT INTO registry_meta (key, value, updated_at) VALUES ('salt_source', ?1, ?2) ON CONFLICT (key) DO NOTHING",
+		)
+		.bind(source, nowSeconds())
+		.run();
+	const row = await db
+		.prepare("SELECT value FROM registry_meta WHERE key = 'salt'")
+		.first<{ value: string }>();
+	const salt = row?.value ?? candidate;
+	saltSourceSeen = source;
+	return salt;
+}
+
+/** Get (or provision) the deployment salt for this database. Memoized. */
+export function getOrCreateSalt(db: D1DatabaseLike): Promise<string> {
+	if (!saltPromise) {
+		saltPromise = resolveSalt(db).catch((e) => {
+			// Never memoize a failure — the next request retries.
+			saltPromise = null;
+			throw e;
+		});
+	}
+	return saltPromise;
 }
 
 /** SHA-256 of a UTF-8 string, as lowercase hex. */
@@ -192,7 +260,8 @@ export async function rateLimit(
 	windowSeconds: number,
 ): Promise<RateLimitOutcome> {
 	const window = Math.floor(Date.now() / 1000 / windowSeconds);
-	const bucket = await sha256Hex(`${getSalt()}|${action}|${ip}|${window}`);
+	const salt = await getOrCreateSalt(db);
+	const bucket = await sha256Hex(`${salt}|${action}|${ip}|${window}`);
 	const resetAt = (window + 1) * windowSeconds;
 	const retryAfter = Math.max(1, resetAt - nowSeconds());
 	// Read-first: over-limit requests cost one indexed read and ZERO

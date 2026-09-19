@@ -12,6 +12,13 @@ import * as openpgp from "openpgp";
 // Override the target with REGISTRY_TEST_BASE for preview deployments.
 // # Mr. AI Acting on s183173's Behalf
 const BASE = process.env.REGISTRY_TEST_BASE ?? "http://localhost:3000";
+// Remote targets (*.workers.dev etc.): the Cloudflare edge REJECTS requests
+// carrying client-supplied cf-* reserved headers (403 before the worker runs),
+// so spoofed per-test IP buckets are impossible there — they are only a
+// local-dev tool. Remote runs go header-less from the real IP and the
+// rate-limit-exhaustion section is skipped (deliberately exhausting shared
+// buckets would self-DoS the run and pollute the limiter for real users).
+const IS_REMOTE = !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/.test(BASE);
 // Unique-per-run identity suffix (see makeKey calls below).
 const RUN = Date.now().toString(36);
 let passed = 0;
@@ -34,10 +41,12 @@ async function api(path, opts = {}) {
 	// and exhaust the anonymous bucket. The rotating RUN_OCTET keeps every
 	// run independent; explicit IP(n) headers override this default.
 	const { headers: extra, ...rest } = opts;
-	const res = await fetch(`${BASE}${path}`, {
-		...rest,
-		headers: { "cf-connecting-ip": `10.7.${RUN_OCTET}.99`, ...extra },
-	});
+	const headers = { ...extra };
+	// explicit per-test IP(n) headers must win over the shared default bucket
+	if (!IS_REMOTE && headers["cf-connecting-ip"] == null) {
+		headers["cf-connecting-ip"] = `10.7.${RUN_OCTET}.99`;
+	}
+	const res = await fetch(`${BASE}${path}`, { ...rest, headers });
 	let body = null;
 	try {
 		body = await res.json();
@@ -79,7 +88,7 @@ async function signChallengeEncrypted(privateKey, passphrase, fingerprint, nonce
 // seconds so repeated runs never inherit a spent rate-limit window from a
 // persistent local D1. # Mr. AI Acting on s183173's Behalf
 const RUN_OCTET = (Math.floor(Date.now() / 1000) % 250) + 1;
-const IP = (n) => ({ "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
+const IP = (n) => (IS_REMOTE ? {} : { "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
 
 /** Challenge fetch with its OWN IP bucket — challenges share one bucket per
  *  client IP (10/h), so the suite would exhaust the shared anon bucket once
@@ -478,8 +487,18 @@ console.log("== payload guards ==");
 	check("invalid JSON -> 400", notJson.status === 400, `got ${notJson.status}`);
 }
 
-console.log("== rate limiting (separate IP bucket) ==");
-{
+if (IS_REMOTE) {
+	console.warn(
+		`NOTE: remote target ${BASE} — cf-connecting-ip spoofing disabled (the edge 403s reserved cf-* headers); ` +
+			"per-test IP buckets collapsed onto the real IP; rate-limit section skipped.",
+	);
+}
+console.log(
+	IS_REMOTE
+		? "== rate limiting: SKIPPED (remote target — no spoofed-IP buckets) =="
+		: "== rate limiting (separate IP bucket) ==",
+);
+if (!IS_REMOTE) {
 	const codes = [];
 	for (let i = 0; i < 8; i++) {
 		const r = await jsonPost("/api/registry/publish", { armored: `garbage-${i}` }, IP(250));

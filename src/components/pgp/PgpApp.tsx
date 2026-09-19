@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
 import { useTheme } from "next-themes";
 import {
 	Loader2,
@@ -339,6 +339,18 @@ export default function PgpApp() {
 		[handleSetPrivateKey],
 	);
 
+	// One-shot screen-reader announcement when the gate sign-in completes
+	// (privateKey transitions null -> configured). The existing tab region
+	// below covers tab changes; sign-in deserves its own polite message.
+	const prevKeyRef = useRef<PrivateKeyConfig | null>(null);
+	const [signInAnnouncement, setSignInAnnouncement] = useState("");
+	useEffect(() => {
+		if (!prevKeyRef.current && privateKey) {
+			setSignInAnnouncement(`Signed in as ${privateKey.label}. Keys are ready to use.`);
+		}
+		prevKeyRef.current = privateKey;
+	}, [privateKey]);
+
 	// R9 auto-lock enforcement for the UI state: the freshness gate covers real
 	// unlock attempts; this lightweight interval covers the header indicator +
 	// announcement when the deadline passes while the app is open.
@@ -460,6 +472,11 @@ export default function PgpApp() {
 			<span aria-hidden={false} className="sr-only" role="status" aria-live="polite">
 				{currentTabLabel} tab selected
 			</span>
+			{signInAnnouncement && (
+				<span aria-hidden={false} className="sr-only" role="status" aria-live="polite">
+					{signInAnnouncement}
+				</span>
+			)}
 
 			<Header
 				onConfigure={() => setConfigOpen(true)}

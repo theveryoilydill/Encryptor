@@ -12,7 +12,8 @@
 		"preview": "next build && opennextjs-cloudflare build --skipNextBuild && opennextjs-cloudflare preview --skipNextBuild",
 		"start": "next start",
 		"typecheck": "tsc --noEmit",
-		"test:registry": "node scripts/registry-e2e.mjs"
+		"test:registry": "node scripts/registry-e2e.mjs",
+		"probe:live": "node scripts/live-write-probe.mjs"
 	},
 	"dependencies": {
 		"@blocknote/core": "^0.54.2",

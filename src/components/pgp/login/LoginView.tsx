@@ -108,7 +108,8 @@ const SOURCES: {
 		blurb: "Sign in with your Keybase account",
 		icon: Globe,
 		className:
-			"border-blue-800/60 bg-blue-700 text-white hover:bg-blue-700/90 dark:bg-blue-800 dark:hover:bg-blue-800/90",
+			// blue-800 in light mode too: keeps the white opacity-75 blurb >= 4.5:1 AA
+			"border-blue-900/40 bg-blue-800 text-white hover:bg-blue-800/90 dark:border-blue-700/60 dark:bg-blue-800 dark:hover:bg-blue-800/90",
 	},
 	{
 		id: "openpgp",

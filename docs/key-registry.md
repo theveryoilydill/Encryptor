@@ -379,10 +379,31 @@ bun run dev                                            # terminal 1
 bun run test:registry                                  # terminal 2 (84 checks)
 ```
 
-`REGISTRY_TEST_BASE` overrides the target URL for preview deployments. The
-admin-override checks read `ADMIN_REVOKE_TOKEN` from the server's
-`.dev.vars` (gitignored) in local dev; previews exercise the salt
-self-provisioning path automatically (no secrets needed).
+`REGISTRY_TEST_BASE` overrides the target URL. Local targets (default)
+spoof per-test `cf-connecting-ip` buckets so every run is independent; a
+remote target (e.g. `https://<preview>.workers.dev`) is detected
+automatically: the spoofed headers are dropped (the Cloudflare edge rejects
+client-supplied reserved `cf-*` headers with 403 before the worker runs) and
+the rate-limit-exhaustion section is skipped. The admin-override checks read
+`ADMIN_REVOKE_TOKEN` from the server's `.dev.vars` (gitignored) in local
+dev; previews exercise the salt self-provisioning path automatically (no
+secrets needed).
+
+### Verifying a live deployment (write probe)
+
+`scripts/live-write-probe.mjs` proves the full write lifecycle against any
+deployment in one shot — fresh key, publish (201), lookup, revoke via the
+returned one-time token, revoked visibility — and needs no secrets:
+
+```bash
+bun run probe:live                                   # branch preview
+PROBE_BASE=https://<your-deployment>.workers.dev bun run probe:live
+```
+
+It leaves at most one clearly-marked revoked probe record
+(`ai-probe.<run>@ai-verify.local`). Note that lookup responses are publicly
+cached (60 s browser / 5 min edge), so a lookup made immediately after a
+change may briefly lag until the cache entry expires.
 
 An example user can be seeded against any running target (publishes an
 "Example User" key WITH escrow and writes `.example-user.json`, which is

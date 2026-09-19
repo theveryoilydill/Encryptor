@@ -18,6 +18,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 import {
+	ChevronDown,
 	Dice5,
 	Eye,
 	EyeOff,
@@ -66,6 +67,7 @@ import {
 	formatRegistryError,
 	registryFetchEscrow,
 	registryLookup,
+	registryRevokeByToken,
 	type RegistryLookupKey,
 } from "@/lib/registry/client";
 import { toast } from "@/hooks/use-toast";
@@ -392,6 +394,12 @@ function RegistryDialog({
 	onUseKey: (config: PrivateKeyConfig) => void;
 }) {
 	const [mode, setMode] = useState<"restore" | "publish" | "generate">("restore");
+	// Self-service revocation lives behind a quiet disclosure (not a fourth
+	// segment): it is the rare emergency-brake path, and the owner asked the
+	// gate stay minimal. It completes the lifecycle the publish outcome card
+	// promises — "this token is the only way to retract this key".
+	const [revokeOpen, setRevokeOpen] = useState(false);
+	const writesLocked = useWritesLocked();
 	return (
 		<LoginDialog
 			sourceId="registry"
@@ -417,6 +425,33 @@ function RegistryDialog({
 				) : (
 					<PublishPasteForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} />
 				)}
+				<div className="border-t border-border/60 pt-3">
+					<button
+						type="button"
+						data-testid="revoke-disclosure"
+						aria-expanded={revokeOpen}
+						aria-controls="revoke-panel"
+						onClick={() => setRevokeOpen((o) => !o)}
+						className="flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+					>
+						Revoke a published key with your one-time token
+						<ChevronDown
+							aria-hidden
+							className={`size-3.5 shrink-0 transition-transform duration-150 ${revokeOpen ? "rotate-180" : ""}`}
+						/>
+					</button>
+					{revokeOpen && (
+						<div
+							id="revoke-panel"
+							className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3"
+						>
+							<RevokeTokenForm
+								writesLocked={writesLocked === true}
+								onDone={() => onOpenChange(false)}
+							/>
+						</div>
+					)}
+				</div>
 			</div>
 		</LoginDialog>
 	);
@@ -768,6 +803,13 @@ function PublishPasteForm({
 		<div className="space-y-3" data-testid="publish-paste-form">
 			{outcome ? (
 				<div className="space-y-3">
+					{/* Mounted with the outcome card so screen readers hear the
+                                            result instead of silent content swap (publish is async
+                                            and happens away from focus). */}
+					<span className="sr-only" role="status">
+						Key published to the registry. Fingerprint {formatFingerprint(outcome.fingerprint)}. The
+						one-time revocation token is on screen — save it now.
+					</span>
 					<PublishOutcomeCard outcome={outcome} />
 					<Button type="button" className="w-full" onClick={useKey}>
 						Use this key in Encryptor
@@ -917,6 +959,202 @@ function PublishPasteForm({
 					<FormError message={error ?? (pub.replaceNeeded ? null : pub.error)} />
 				</>
 			)}
+		</div>
+	);
+}
+
+/**
+ * Self-service retraction — the emergency brake the publish outcome card
+ * promises: fingerprint + the one-time token shown at publish (works even
+ * when the key material or passphrase is lost). Two-phase on purpose:
+ * lookup first (so the confirm button never acts on a typo'd fingerprint),
+ * then an explicit destructive confirm. NOT the admin path — the per-key
+ * token IS the authorization, no shared secret involved.
+ */
+function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDone: () => void }) {
+	const [fpr, setFpr] = useState("");
+	const [token, setToken] = useState("");
+	const [reason, setReason] = useState("");
+	const [found, setFound] = useState<RegistryLookupKey | null>(null);
+	const [checking, setChecking] = useState(false);
+	const [revoking, setRevoking] = useState(false);
+	const [done, setDone] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const normalizeFpr = (raw: string) => raw.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
+	const validFpr = /^[0-9A-F]{40}$/.test(normalizeFpr(fpr));
+
+	const setQuery = (v: string) => {
+		// Any edit invalidates the preview — the confirm button must never
+		// act on facts looked up for a DIFFERENT fingerprint or token.
+		setFpr(v);
+		setFound(null);
+		setError(null);
+	};
+
+	const check = useCallback(async () => {
+		const f = normalizeFpr(fpr);
+		if (!/^[0-9A-F]{40}$/.test(f)) return;
+		setChecking(true);
+		setError(null);
+		try {
+			const hits = await registryLookup({ fingerprint: f });
+			setFound(hits[0] ?? null);
+			if (hits.length === 0) {
+				setError("No key with that fingerprint is on the registry.");
+			}
+		} catch (e) {
+			setError(formatRegistryError(e, "Registry lookup failed"));
+		} finally {
+			setChecking(false);
+		}
+	}, [fpr]);
+
+	const revoke = useCallback(async () => {
+		const f = normalizeFpr(fpr);
+		if (!found || !token.trim()) return;
+		setRevoking(true);
+		setError(null);
+		try {
+			await registryRevokeByToken(f, token.trim(), reason.trim() || undefined);
+			setDone(true);
+		} catch (e) {
+			setError(formatRegistryError(e, "Revocation failed"));
+		} finally {
+			setRevoking(false);
+		}
+	}, [fpr, found, reason, token]);
+
+	if (done) {
+		return (
+			<div className="space-y-3" data-testid="revoke-done">
+				<span className="sr-only" role="status">
+					The key was permanently revoked on the registry.
+				</span>
+				<div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3">
+					<p className="text-xs font-medium text-emerald-800 dark:text-emerald-300">Key revoked.</p>
+					<p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+						Lookups of <code className="font-mono">{formatFingerprint(normalizeFpr(fpr))}</code> now
+						report it as revoked. The escrowed backup, if any, was purged. This cannot be undone.
+					</p>
+				</div>
+				<Button type="button" className="w-full" onClick={onDone}>
+					Done
+				</Button>
+			</div>
+		);
+	}
+
+	return (
+		<div className="space-y-3" data-testid="revoke-form">
+			{writesLocked && <WritesLockedNotice />}
+			<div className="grid gap-1.5">
+				<Label htmlFor="revoke-fpr">Key fingerprint</Label>
+				<Input
+					id="revoke-fpr"
+					value={fpr}
+					onChange={(e) => setQuery(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" && validFpr && !found) {
+							e.preventDefault();
+							void check();
+						}
+					}}
+					placeholder="40-character fingerprint (spaces and 0x are fine)"
+					className="font-mono text-xs"
+					autoComplete="off"
+					spellCheck={false}
+					disabled={writesLocked}
+				/>
+			</div>
+			<div className="grid gap-1.5">
+				<Label htmlFor="revoke-token">One-time revocation token</Label>
+				<Input
+					id="revoke-token"
+					type="password"
+					value={token}
+					onChange={(e) => setToken(e.target.value)}
+					placeholder="Shown once when the key was published"
+					className="font-mono text-xs"
+					autoComplete="off"
+					disabled={writesLocked}
+				/>
+			</div>
+			<div className="grid gap-1.5">
+				<Label htmlFor="revoke-reason">
+					Reason{" "}
+					<span className="font-normal text-muted-foreground">(optional, shown publicly)</span>
+				</Label>
+				<Input
+					id="revoke-reason"
+					value={reason}
+					onChange={(e) => setReason(e.target.value)}
+					placeholder="e.g. key superseded, machine lost"
+					autoComplete="off"
+					maxLength={200}
+					disabled={writesLocked}
+				/>
+			</div>
+			{found && (
+				<div className="space-y-2 rounded-lg border border-border p-3" data-testid="revoke-preview">
+					<div className="grid gap-0.5 text-xs">
+						<p>
+							<span className="text-muted-foreground">Fingerprint: </span>
+							<code className="font-mono">{formatFingerprint(found.fingerprint)}</code>
+						</p>
+						<p>
+							<span className="text-muted-foreground">Status: </span>
+							{found.revoked ? (
+								<span>
+									already revoked
+									{found.revokedAt
+										? ` on ${new Date(found.revokedAt * 1000).toLocaleDateString()}`
+										: ""}
+									{found.revokeReason ? ` — “${found.revokeReason}”` : ""}
+								</span>
+							) : (
+								<span className="font-medium">
+									active on the registry
+									{found.createdAt
+										? ` since ${new Date(found.createdAt * 1000).toLocaleDateString()}`
+										: ""}
+								</span>
+							)}
+						</p>
+					</div>
+					{!found.revoked && (
+						<>
+							<p className="text-[11px] leading-relaxed text-muted-foreground">
+								Revocation is <strong>permanent</strong>: the key is marked revoked for everyone,
+								its escrowed backup is purged, and the fingerprint can never be re-published. Keep
+								the token — it stops working after this.
+							</p>
+							<Button
+								type="button"
+								variant="destructive"
+								size="sm"
+								onClick={() => void revoke()}
+								disabled={writesLocked || revoking || !token.trim()}
+							>
+								{revoking && <Loader2 aria-hidden className="size-4 animate-spin" />}
+								{revoking ? "Revoking…" : "Permanently revoke this key"}
+							</Button>
+						</>
+					)}
+				</div>
+			)}
+			{!found && (
+				<Button
+					type="button"
+					size="sm"
+					onClick={() => void check()}
+					disabled={checking || writesLocked || !validFpr}
+				>
+					{checking && <Loader2 aria-hidden className="size-4 animate-spin" />}
+					{checking ? "Looking up…" : "Look up key"}
+				</Button>
+			)}
+			<FormError message={error} />
 		</div>
 	);
 }
@@ -1272,6 +1510,11 @@ function GenerateForm({
 		<div className="grid gap-3" data-testid="generate-form">
 			{outcome ? (
 				<div className="space-y-3">
+					<span className="sr-only" role="status">
+						Key generated and published to the registry. Fingerprint{" "}
+						{formatFingerprint(outcome.fingerprint)}. The one-time revocation token is on screen —
+						save it now.
+					</span>
 					<PublishOutcomeCard outcome={outcome} />
 					<Button
 						type="button"

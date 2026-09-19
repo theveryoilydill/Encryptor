@@ -16,7 +16,7 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
 	Dice5,
 	Eye,
@@ -148,9 +148,12 @@ function Segmented({
 	onChange: (v: string) => void;
 	options: { id: string; label: string }[];
 }) {
+	// radiogroup/radio semantics: this control switches MODES in place, it
+	// does not swap tabpanels — role="tab" without an aria-controlled panel
+	// fails axe "nested interactive/missing tabpanel" checks.
 	return (
 		<div
-			role="tablist"
+			role="radiogroup"
 			aria-label="Choose an action"
 			className="grid gap-1 rounded-lg bg-muted p-1"
 			style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
@@ -161,8 +164,8 @@ function Segmented({
 					<button
 						key={o.id}
 						type="button"
-						role="tab"
-						aria-selected={active}
+						role="radio"
+						aria-checked={active}
 						data-testid={`segment-${o.id}`}
 						onClick={() => onChange(o.id)}
 						className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
@@ -176,6 +179,47 @@ function Segmented({
 				);
 			})}
 		</div>
+	);
+}
+
+/**
+ * Small "load a key file" affordance for the paste forms: reads a local
+ * .asc/.txt export (gpg --export-secret-keys -a & co) into the textarea.
+ * File contents NEVER leave the browser — same contract as pasting.
+ */
+function KeyFilePicker({ id, onLoaded }: { id: string; onLoaded: (text: string) => void }) {
+	const inputRef = useRef<HTMLInputElement | null>(null);
+	const [fileName, setFileName] = useState<string | null>(null);
+	return (
+		<>
+			<input
+				ref={inputRef}
+				id={id}
+				type="file"
+				accept=".asc,.txt,application/pgp-keys,text/plain"
+				className="sr-only"
+				tabIndex={-1}
+				aria-hidden="true"
+				onChange={(e) => {
+					const file = e.target.files?.[0];
+					if (!file) return;
+					setFileName(file.name);
+					void file.text().then((t) => onLoaded(t));
+					e.target.value = "";
+				}}
+			/>
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				className="h-7 gap-1.5 px-2 text-[11px]"
+				onClick={() => inputRef.current?.click()}
+				title="Load an armored key from a .asc file"
+			>
+				<Upload aria-hidden className="size-3" />
+				{fileName ? `Loaded ${fileName}` : "Load .asc file"}
+			</Button>
+		</>
 	);
 }
 
@@ -670,7 +714,16 @@ function PublishPasteForm({
 			) : (
 				<>
 					<div className="grid gap-1.5">
-						<Label htmlFor="publish-armor">Private key (armored)</Label>
+						<div className="flex items-center justify-between gap-2">
+							<Label htmlFor="publish-armor">Private key (armored)</Label>
+							<KeyFilePicker
+								id="publish-armor-file"
+								onLoaded={(t) => {
+									setArmored(t);
+									void check(t);
+								}}
+							/>
+						</div>
 						<Textarea
 							id="publish-armor"
 							value={armored}
@@ -762,20 +815,15 @@ function PublishPasteForm({
 					)}
 
 					{parsed && !pub.replaceNeeded && (
-						<>
-							<TurnstileGate onToken={pub.setTsToken} attempt={pub.tsAttempt} />
-							<Button
-								type="button"
-								className="w-full"
-								onClick={doPublish}
-								disabled={busy || pub.publishing}
-							>
-								{(busy || pub.publishing) && (
-									<Loader2 aria-hidden className="size-4 animate-spin" />
-								)}
-								Publish to the registry
-							</Button>
-						</>
+						<Button
+							type="button"
+							className="w-full"
+							onClick={doPublish}
+							disabled={busy || pub.publishing}
+						>
+							{(busy || pub.publishing) && <Loader2 aria-hidden className="size-4 animate-spin" />}
+							Publish to the registry
+						</Button>
 					)}
 
 					{pub.replaceNeeded && (
@@ -787,6 +835,12 @@ function PublishPasteForm({
 							error={pub.error}
 						/>
 					)}
+
+					{/* Always mounted once a key is parsed — including during the
+                                            replace flow: the 409'd attempt consumed the single-use
+                                            Turnstile token server-side, so a fresh one must be mintable
+                                            right here or the replace dead-ends with an unfixable 403. */}
+					{parsed && <TurnstileGate onToken={pub.setTsToken} attempt={pub.tsAttempt} />}
 
 					<FormError message={error ?? (pub.replaceNeeded ? null : pub.error)} />
 				</>
@@ -971,7 +1025,10 @@ function PasteKeyDialog({
 		>
 			<div className="grid gap-3" data-testid="paste-key-form">
 				<div className="grid gap-1.5">
-					<Label htmlFor={`paste-armor-${source}`}>Private key (armored)</Label>
+					<div className="flex items-center justify-between gap-2">
+						<Label htmlFor={`paste-armor-${source}`}>Private key (armored)</Label>
+						<KeyFilePicker id={`paste-armor-file-${source}`} onLoaded={setArmored} />
+					</div>
 					<Textarea
 						id={`paste-armor-${source}`}
 						value={armored}
@@ -1309,7 +1366,10 @@ function LocalPasteForm({
 	return (
 		<div className="grid gap-3" data-testid="local-paste-form">
 			<div className="grid gap-1.5">
-				<Label htmlFor="local-armor">Private key (armored)</Label>
+				<div className="flex items-center justify-between gap-2">
+					<Label htmlFor="local-armor">Private key (armored)</Label>
+					<KeyFilePicker id="local-armor-file" onLoaded={setArmored} />
+				</div>
 				<Textarea
 					id="local-armor"
 					value={armored}

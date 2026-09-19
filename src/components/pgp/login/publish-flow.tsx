@@ -166,8 +166,13 @@ export function useRegistryPublish() {
 					e.status === 409 &&
 					/already exists/i.test(e.message)
 				) {
+					// The 409 arrives AFTER requireTurnstile on the server, so the
+					// single-use token was already consumed by this attempt — drop
+					// it and remount the widget (which stays rendered beside the
+					// replace panel) so the retry can mint a fresh one.
 					setReplaceNeeded(true);
 					setError(null);
+					resetTs();
 					return null;
 				}
 				setError(formatRegistryError(e, "Publishing failed"));

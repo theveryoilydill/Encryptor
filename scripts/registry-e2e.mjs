@@ -145,6 +145,18 @@ console.log("== health & self-migration ==");
 		r.body?.turnstile === "enforced" || r.body?.turnstile === "disabled",
 		String(r.body?.turnstile),
 	);
+	// Origin write-lock fields (REGISTRY_PROD_ORIGIN): unset locally, so
+	// the unlocked shape must be exactly this (null + allowed).
+	check(
+		"health reports writesLockedTo null (unlocked local default)",
+		r.body?.writesLockedTo === null,
+		String(r.body?.writesLockedTo),
+	);
+	check(
+		"health reports writesAllowedHere true locally",
+		r.body?.writesAllowedHere === true,
+		String(r.body?.writesAllowedHere),
+	);
 	const r2 = await api("/api/registry/health");
 	check("health is idempotent (repeat call)", r2.status === 200 && r2.body.ok === true);
 	check(

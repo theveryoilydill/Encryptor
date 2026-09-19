@@ -35,6 +35,7 @@ import {
 	registryHealth,
 	registryPublish,
 	signChallenge,
+	type RegistryHealth,
 } from "@/lib/registry/client";
 import { formatFingerprint } from "@/lib/pgp/pgp";
 
@@ -65,6 +66,65 @@ export async function publicFromPrivate(armoredPrivate: string): Promise<string>
 }
 
 /**
+ * Memoized health probe shared by every publish-surface consumer
+ * (TurnstileGate, useWritesLocked). One network probe per 30s window per
+ * page instead of one per mounted component — health is slow-changing
+ * configuration, and the probe hits D1 server-side so it should stay rare.
+ * A failed probe resolves null so consumers fail open (UI stays usable and
+ * the server still has the final word).
+ */
+let sharedHealthCache: { at: number; promise: Promise<RegistryHealth | null> } | null = null;
+export function sharedHealth(ttlMs = 30_000): Promise<RegistryHealth | null> {
+	if (!sharedHealthCache || Date.now() - sharedHealthCache.at > ttlMs) {
+		sharedHealthCache = {
+			at: Date.now(),
+			promise: registryHealth().catch(() => null),
+		};
+	}
+	return sharedHealthCache.promise;
+}
+
+/**
+ * Tri-state "does THIS deployment allow registry writes?": true only when
+ * the server EXPLICITLY reports writesAllowedHere:false (REGISTRY_PROD_ORIGIN
+ * set + non-production host). null (probe failed / field missing) and false
+ * both mean "assume writable" — the lock UX must never appear on healthy
+ * deployments, and the server still rejects anything the UI misses.
+ */
+export function useWritesLocked(): boolean | null {
+	const [locked, setLocked] = useState<boolean | null>(null);
+	useEffect(() => {
+		let cancelled = false;
+		void sharedHealth().then((h) => {
+			if (!cancelled) setLocked(h?.writesAllowedHere === false);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+	return locked;
+}
+
+/**
+ * Read-only notice for write-locked deployments (branch previews while the
+ * owner enforces REGISTRY_PROD_ORIGIN). Rendered above publish actions —
+ * pairs with disabling them so users never fill a form that can only 403.
+ */
+export function WritesLockedNotice() {
+	return (
+		<div
+			data-testid="writes-locked-notice"
+			role="note"
+			className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300"
+		>
+			This deployment is <span className="font-semibold">read-only</span>: registry writes are
+			locked to the production origin (REGISTRY_PROD_ORIGIN). Lookups and restores still work —
+			publish from the production site instead.
+		</div>
+	);
+}
+
+/**
  * Turnstile gate: renders the challenge only when the SERVER enforces it.
  * Probes /api/registry/health once and pairs that with the build-time site
  * key so every mismatch is explainable instead of a mystery 403:
@@ -84,13 +144,9 @@ export function TurnstileGate({
 
 	useEffect(() => {
 		let cancelled = false;
-		void registryHealth()
-			.then((h) => {
-				if (!cancelled) setEnforced(h.turnstile === "enforced");
-			})
-			.catch(() => {
-				if (!cancelled) setEnforced(null);
-			});
+		void sharedHealth().then((h) => {
+			if (!cancelled) setEnforced(h ? h.turnstile === "enforced" : null);
+		});
 		return () => {
 			cancelled = true;
 		};
@@ -323,12 +379,15 @@ export function ReplacePanel({
 	onConfirm,
 	busy,
 	error,
+	locked = false,
 }: {
 	passphrase: string;
 	onPassphraseChange: (v: string) => void;
 	onConfirm: () => void;
 	busy: boolean;
 	error: string | null;
+	/** Write-locked deployment: possession proof ends in a server 403. */
+	locked?: boolean;
 }) {
 	return (
 		<div
@@ -355,7 +414,7 @@ export function ReplacePanel({
 					{error}
 				</p>
 			)}
-			<Button type="button" size="sm" onClick={onConfirm} disabled={busy || !passphrase}>
+			<Button type="button" size="sm" onClick={onConfirm} disabled={busy || locked || !passphrase}>
 				{busy ? "Signing & replacing…" : "Sign challenge & replace"}
 			</Button>
 		</div>

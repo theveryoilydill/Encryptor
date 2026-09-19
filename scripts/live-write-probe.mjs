@@ -42,6 +42,21 @@ console.log(`probe target: ${BASE}`);
 const email = `ai-probe.${Date.now().toString(36)}@ai-verify.local`;
 console.log(`probe identity: ${email}`);
 
+// Write-lock awareness (REGISTRY_PROD_ORIGIN): a locked deployment is
+// EXPECTED to reject the publish with 403 — that is the feature working,
+// not a probe failure. Report it distinctly and exit 2 so CI/cron can
+// tell "locked by design" apart from "writes broken".
+const health0 = await api("/api/registry/health");
+if (health0.body?.writesAllowedHere === false) {
+	console.log(
+		`  INFO deployment is write-locked (writesLockedTo=${health0.body?.writesLockedTo ?? "unknown"})`,
+	);
+	console.log(
+		"\nLIVE WRITE PROBE: SKIPPED — read-only deployment (REGISTRY_PROD_ORIGIN set; not a failure)",
+	);
+	process.exit(2);
+}
+
 // The private half is generated but deliberately discarded — the probe only
 // exercises the public-key publish path and never retains key material.
 const { privateKey: _discarded, publicKey } = await openpgp.generateKey({

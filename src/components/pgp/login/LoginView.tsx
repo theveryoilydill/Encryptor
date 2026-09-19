@@ -49,8 +49,10 @@ import {
 	PublishOutcomeCard,
 	ReplacePanel,
 	TurnstileGate,
+	WritesLockedNotice,
 	publicFromPrivate,
 	useRegistryPublish,
+	useWritesLocked,
 } from "@/components/pgp/login/publish-flow";
 import { PROXIES, type PrivateKeyConfig } from "@/components/pgp/contracts";
 import { generatePassphrase } from "@/lib/pgp/passphrase";
@@ -583,6 +585,7 @@ function PublishPasteForm({
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const pub = useRegistryPublish();
+	const writesLocked = useWritesLocked();
 
 	const check = useCallback(async (text: string) => {
 		setError(null);
@@ -822,12 +825,14 @@ function PublishPasteForm({
 						</div>
 					)}
 
+					{parsed && writesLocked === true && <WritesLockedNotice />}
+
 					{parsed && !pub.replaceNeeded && (
 						<Button
 							type="button"
 							className="w-full"
 							onClick={doPublish}
-							disabled={busy || pub.publishing}
+							disabled={busy || pub.publishing || writesLocked === true}
 						>
 							{(busy || pub.publishing) && <Loader2 aria-hidden className="size-4 animate-spin" />}
 							Publish to the registry
@@ -841,6 +846,7 @@ function PublishPasteForm({
 							onConfirm={doReplace}
 							busy={busy || pub.replacing}
 							error={pub.error}
+							locked={writesLocked === true}
 						/>
 					)}
 
@@ -1135,6 +1141,7 @@ function GenerateForm({
 	const [pending, setPending] = useState<PrivateKeyConfig | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const pub = useRegistryPublish();
+	const writesLocked = useWritesLocked();
 
 	const canGenerate =
 		passphrase.length >= 8 && !generating && (email.trim() === "" || EMAIL_RE.test(email.trim()));
@@ -1323,8 +1330,14 @@ function GenerateForm({
 						)}
 					</div>
 					{publish && <TurnstileGate onToken={pub.setTsToken} attempt={pub.tsAttempt} />}
+					{publish && writesLocked === true && <WritesLockedNotice />}
 					<FormError message={error ?? pub.error} />
-					<Button type="button" className="w-full" onClick={submit} disabled={!canGenerate}>
+					<Button
+						type="button"
+						className="w-full"
+						onClick={submit}
+						disabled={!canGenerate || (publish && writesLocked === true)}
+					>
 						{generating && <Loader2 aria-hidden className="size-4 animate-spin" />}
 						{generating ? "Generating…" : publish ? "Generate & publish" : "Generate & sign in"}
 					</Button>

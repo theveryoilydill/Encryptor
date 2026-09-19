@@ -13,7 +13,13 @@ import {
 	parseEncryptedPrivateArmored,
 	verifyChallengeSignature,
 } from "@/lib/registry/keys";
-import { clientIP, readJsonBody, registryErrorResponse, stringField } from "@/lib/registry/routes";
+import {
+	assertWriteOrigin,
+	clientIP,
+	readJsonBody,
+	registryErrorResponse,
+	stringField,
+} from "@/lib/registry/routes";
 import { requireTurnstile } from "@/lib/registry/turnstile";
 
 export const runtime = "nodejs";
@@ -38,6 +44,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
 	try {
+		assertWriteOrigin(req); // origin write-lock BEFORE any D1 access
 		const db = await getRegistryDBReady();
 		await enforceRateLimit(
 			db,

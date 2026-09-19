@@ -10,11 +10,31 @@ import {
 	rateLimitSafe,
 } from "@/lib/registry/db";
 import { appliedSchemaVersions, pendingSchemaVersions } from "@/lib/registry/migrate";
-import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
+import { clientIP, isLocalDevHost, registryErrorResponse } from "@/lib/registry/routes";
 import { turnstileEnforced } from "@/lib/registry/turnstile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/**
+ * Whether THIS deployment (request host) may mutate under the
+ * REGISTRY_PROD_ORIGIN write-lock. Mirrors assertWriteOrigin() logic so the
+ * health probe is a truthful one-URL answer to "can this deployment write?".
+ */
+function writesAllowedHereFor(req: NextRequest): boolean {
+	const configured = process.env.REGISTRY_PROD_ORIGIN?.trim();
+	if (!configured) return true;
+	if (process.env.NODE_ENV !== "production") return true;
+	const host = (req.headers.get("host") ?? new URL(req.url).hostname).toLowerCase();
+	if (isLocalDevHost(host)) return true;
+	let allowedHost = configured.toLowerCase();
+	try {
+		allowedHost = new URL(configured).host.toLowerCase();
+	} catch {
+		/* configured as a bare host */
+	}
+	return host === allowedHost;
+}
 
 /**
  * GET /api/registry/health — operator-facing schema + capability probe.
@@ -87,6 +107,12 @@ export async function GET(req: NextRequest) {
 					pending: pendingSchemaVersions(applied),
 				},
 				turnstile: turnstileEnforced() ? "enforced" : "disabled",
+				// Origin write-lock (REGISTRY_PROD_ORIGIN): writesLockedTo is the
+				// configured production origin (null = unlocked); writesAllowedHere
+				// says whether THIS deployment (request host) may mutate. A branch
+				// preview under a locked config reports writesAllowedHere:false.
+				writesLockedTo: process.env.REGISTRY_PROD_ORIGIN?.trim() || null,
+				writesAllowedHere: writesAllowedHereFor(req),
 			},
 			{ headers: { "Cache-Control": "no-store" } },
 		);

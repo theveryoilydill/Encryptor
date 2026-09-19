@@ -13,6 +13,7 @@ import {
 } from "@/lib/registry/db";
 import { normalizeFingerprint, verifyChallengeSignature } from "@/lib/registry/keys";
 import {
+	assertWriteOrigin,
 	clientIP,
 	readJsonBody,
 	registryErrorResponse,
@@ -48,6 +49,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
 	try {
+		assertWriteOrigin(req); // origin write-lock BEFORE any D1 access
 		const db = await getRegistryDBReady();
 		await enforceRateLimit(
 			db,

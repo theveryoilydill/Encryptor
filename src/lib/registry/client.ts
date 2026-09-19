@@ -113,6 +113,10 @@ export interface RegistryHealth {
 	saltSource?: "env" | "generated";
 	schema?: { applied: string[]; pending: string[] };
 	turnstile?: "enforced" | "disabled";
+	/** REGISTRY_PROD_ORIGIN when configured (null = writes unlocked). */
+	writesLockedTo?: string | null;
+	/** Whether THIS deployment (request host) may mutate under the lock. */
+	writesAllowedHere?: boolean;
 	error?: string;
 }
 

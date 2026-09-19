@@ -16,7 +16,13 @@ import {
 	parsePublicArmored,
 	verifyChallengeSignature,
 } from "@/lib/registry/keys";
-import { clientIP, readJsonBody, registryErrorResponse, stringField } from "@/lib/registry/routes";
+import {
+	assertWriteOrigin,
+	clientIP,
+	readJsonBody,
+	registryErrorResponse,
+	stringField,
+} from "@/lib/registry/routes";
 import { requireTurnstile } from "@/lib/registry/turnstile";
 
 export const runtime = "nodejs";
@@ -51,6 +57,10 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
 	try {
+		// Origin write-lock runs BEFORE any D1 access so a locked preview
+		// deployment costs zero database reads/writes (owner's "only main
+		// can do stuff to the db" requirement).
+		assertWriteOrigin(req);
 		const db = await getRegistryDBReady();
 		await enforceRateLimit(
 			db,

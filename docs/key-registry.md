@@ -136,6 +136,42 @@ would wrongly blame the client (this distinction lives in one place,
 site-by-site). Public reads (lookup) keep failing OPEN and are simply
 unthrottled for the duration of the outage.
 
+### Public API quickstart (curl)
+
+Little copy-paste cheatsheet — replace `<worker>` with the deployment
+origin (e.g. `https://encryptor.example.workers.dev`). The same calls are
+available in-app under **Footer → Public API**.
+
+```bash
+# 1) Look up a published key by fingerprint, key ID, or email (CORS *, no auth):
+curl -s "https://<worker>/api/registry/lookup?email=you@example.com" | jq
+curl -s "https://<worker>/api/registry/lookup?fingerprint=<40 hex>" | jq
+#    ...add &words=1 for the PGP-word rendering of the fingerprint.
+
+# 2) Publish a public key (optionally with a passphrase-encrypted escrow):
+curl -s -X POST "https://<worker>/api/registry/publish" \
+  -H "Content-Type: application/json" \
+  -d '{"armored":"-----BEGIN PGP PUBLIC KEY BLOCK-----\n…"}'
+# 201 → {"fingerprint":"…","revocationToken":"…"}  ← SAVE the token NOW,
+#      it is shown once and is the only key-free way to retract.
+
+# 3) Restore an escrowed backup (returns the passphrase-ENCRYPTED private key):
+curl -s "https://<worker>/api/registry/private-key?fingerprint=<40 hex>" | jq
+
+# 4) Revoke with the one-time token (no private key needed):
+curl -s -X POST "https://<worker>/api/registry/revoke" \
+  -H "Content-Type: application/json" \
+  -d '{"fingerprint":"<40 hex>","token":"<one-time token>"}'
+
+# 5) Operator health (schema, limiter write probe, Turnstile + write-lock state):
+curl -s "https://<worker>/api/registry/health" | jq
+```
+
+Replacement and escrow management additionally need a signed challenge
+(`GET /api/registry/challenge?fingerprint=` → cleartext-sign the `message`
+with the currently stored private key → send `nonce` + `signature`); see the
+route docs in `src/app/api/registry/*`.
+
 ### Verifying fingerprints aloud (PGP word list)
 
 Lookup results can render the fingerprint as its **PGP words** (the
@@ -238,6 +274,38 @@ Repository-side recommendations (GitHub, not Cloudflare):
 
 - **Branch protection** on `main` and `develop` (require PR review + status checks) — since the Worker deploys branch heads, protecting the branches protects what gets deployed. The repo owner merging with admin privileges bypasses review only deliberately.
 - **Outsiders cannot push branches to this repository** unless you add them as collaborators — for a public repo they fork instead. That is the correct default; nothing to fix.
+
+### Locking writes to the production deployment (`REGISTRY_PROD_ORIGIN`)
+
+One platform caveat the table above glosses over: **Cloudflare Workers
+Builds gives every pushed branch a preview Worker that shares the
+production D1 binding.** So any branch pushed to THIS repo (owner or trusted
+collaborator) can write production data — fork PRs still cannot (no
+secrets/binding).
+
+To enforce "only the production deployment (i.e. what `main` builds) writes
+to the database", set the environment variable:
+
+```
+REGISTRY_PROD_ORIGIN = https://encryptor.example.workers.dev   # exact prod origin
+```
+
+- Every registry **mutation** route (publish, challenge, revoke, escrow
+  store/delete) then rejects any other host with **403 BEFORE touching D1**
+  (no migrations check, no rate-limiter write burn).
+- The production host matches → writes work exactly as before; local dev
+  (`localhost`) and non-production builds are always exempt.
+- Previews become **read-only mirrors**: lookups/restore keep working on
+  branch previews, publishes 403 with
+  `"Registry writes are locked to the production origin…"`.
+- `GET /api/registry/health` reports the state:
+  `writesLockedTo` (the configured origin, `null` = unlocked) and
+  `writesAllowedHere` (whether THIS deployment may mutate) — a one-URL
+  check that a preview is properly locked.
+- Unset (default) = previous behavior: every deployment of this repo can
+  write, which is what you want while testing publish flows on a preview.
+  Flip it on in the Cloudflare dashboard (Worker → Settings → Variables)
+  whenever you want the lock enforced; no code changes needed.
 
 ## If registry writes fail (503 "Registry is temporarily unavailable")
 

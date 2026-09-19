@@ -748,6 +748,13 @@ function PublishPasteForm({
 						</p>
 					)}
 
+					{!parsed && (
+						<p className="text-[11px] leading-relaxed text-muted-foreground">
+							No key yet? Pick <strong>Local keys</strong> on the login page, generate a pair, then
+							come back here to publish it.
+						</p>
+					)}
+
 					{parsed && localEncryptNeeded && !readyArmor && (
 						<div className="grid gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
 							<Label htmlFor="publish-new-pass">New backup passphrase</Label>

@@ -26,6 +26,7 @@ import {
 } from "@/components/pgp/contracts";
 import { ConfigureModal } from "@/components/pgp/ConfigureModal";
 import { LoginView } from "@/components/pgp/login/LoginView";
+import { ApiReferenceDialog } from "@/components/pgp/registry/ApiReferenceDialog";
 import { PassphrasePrompt } from "@/components/pgp/PassphrasePrompt";
 import { SettingsDialog } from "@/components/pgp/SettingsDialog";
 import { ShortcutsDialog } from "@/components/pgp/ShortcutsDialog";
@@ -865,6 +866,7 @@ function Footer({ onSelfTest }: { onSelfTest: () => Promise<void> }) {
 						)}
 						{testing ? "Testing…" : "Crypto self-test"}
 					</Button>
+					<ApiReferenceDialog />
 					<a
 						href="https://github.com/theveryoilydill/Encryptor"
 						target="_blank"

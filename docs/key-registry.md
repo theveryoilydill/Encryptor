@@ -395,9 +395,21 @@ token-gated and are not captcha'd). Provisioning, both halves together:
 
 ```bash
 npx wrangler secret put TURNSTILE_SECRET_KEY            # server half (Worker secret)
-# client half: build-time env var in Workers Builds settings:
-#   NEXT_PUBLIC_TURNSTILE_SITE_KEY = <your Turnstile site key>
+# client half: ALREADY COMMITTED — .env.production carries the site key of
+# the widget the owner created for PR #25 (0x4AAAAAAE9KeNj44QrpjEW1).
+# It is PUBLIC BY DESIGN (it ships in every visitor's HTML; only the
+# secret key is sensitive). A dashboard/build env var of the same name
+# overrides the committed file if the widget ever rotates.
 ```
+
+So the single owner-side step to flip writes to Turnstile-enforced is
+setting the worker secret; the client half rides with the build.
+
+Widget hostname allowlist (Turnstile does not support wildcards): add the
+exact production hostname, `localhost` + `127.0.0.1` for local tests, and
+each branch-preview hostname you want to test publishes from — anything
+else fails client-side with `110200`, which the UI now surfaces with a
+clear explainer.
 
 - Secret configured + valid widget token → write proceeds.
 - Secret configured + missing/invalid/expired token → 403 with a clear

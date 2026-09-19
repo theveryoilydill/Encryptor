@@ -102,7 +102,10 @@ const SOURCES: {
 		blurb: "Restore an escrowed key, or publish one",
 		icon: KeyRound,
 		className:
-			"border-sky-300/60 bg-sky-200 text-sky-950 hover:bg-sky-200/80 dark:border-sky-700/60 dark:bg-sky-900/60 dark:text-sky-100 dark:hover:bg-sky-900/80",
+			// blue-800 in light mode too: keeps the white opacity-75 blurb >= 4.5:1 AA.
+			// Owner PR #25: "swap the keybase and encryptor button colors" — the
+			// Encryptor card now wears the dark blue, Keybase the light blue.
+			"border-blue-900/40 bg-blue-800 text-white hover:bg-blue-800/90 dark:border-blue-700/60 dark:bg-blue-800 dark:hover:bg-blue-800/90",
 	},
 	{
 		id: "keybase",
@@ -110,8 +113,7 @@ const SOURCES: {
 		blurb: "Sign in with your Keybase account",
 		icon: Globe,
 		className:
-			// blue-800 in light mode too: keeps the white opacity-75 blurb >= 4.5:1 AA
-			"border-blue-900/40 bg-blue-800 text-white hover:bg-blue-800/90 dark:border-blue-700/60 dark:bg-blue-800 dark:hover:bg-blue-800/90",
+			"border-sky-300/60 bg-sky-200 text-sky-950 hover:bg-sky-200/80 dark:border-sky-700/60 dark:bg-sky-900/60 dark:text-sky-100 dark:hover:bg-sky-900/80",
 	},
 	{
 		id: "openpgp",
@@ -344,25 +346,28 @@ function RegistryDialog({
 	onOpenChange: (open: boolean) => void;
 	onUseKey: (config: PrivateKeyConfig) => void;
 }) {
-	const [mode, setMode] = useState<"restore" | "publish">("restore");
+	const [mode, setMode] = useState<"restore" | "publish" | "generate">("restore");
 	return (
 		<LoginDialog
 			open={open}
 			onOpenChange={onOpenChange}
 			title="Encryptor Registry"
-			description="Sign in by restoring your passphrase-protected backup — or publish a key so others can find it."
+			description="Sign in by restoring your passphrase-protected backup, publishing an existing key — or generating a brand-new one right here."
 		>
 			<div className="space-y-4">
 				<Segmented
 					value={mode}
-					onChange={(v) => setMode(v as "restore" | "publish")}
+					onChange={(v) => setMode(v as "restore" | "publish" | "generate")}
 					options={[
 						{ id: "restore", label: "Restore my key" },
 						{ id: "publish", label: "Publish a key" },
+						{ id: "generate", label: "Generate & publish" },
 					]}
 				/>
 				{mode === "restore" ? (
 					<RestoreForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} />
+				) : mode === "generate" ? (
+					<GenerateForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} initialPublish />
 				) : (
 					<PublishPasteForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} />
 				)}
@@ -753,8 +758,8 @@ function PublishPasteForm({
 
 					{!parsed && (
 						<p className="text-[11px] leading-relaxed text-muted-foreground">
-							No key yet? Pick <strong>Local keys</strong> on the login page, generate a pair, then
-							come back here to publish it.
+							No key yet? Switch to <strong>Generate &amp; publish</strong> above to create one
+							here, then publish it.
 						</p>
 					)}
 
@@ -1121,16 +1126,20 @@ function LocalDialog({
 function GenerateForm({
 	onUseKey,
 	onDone,
+	initialPublish = false,
 }: {
 	onUseKey: (config: PrivateKeyConfig) => void;
 	onDone: () => void;
+	/** Preset for the registry dialog: "Encryptor Registry → Generate &
+	 *  publish" implies the publish intent (the checkbox stays togglable). */
+	initialPublish?: boolean;
 }) {
 	const [name, setName] = useState("");
 	const [email, setEmail] = useState("");
 	const [passphrase, setPassphrase] = useState("");
 	const [showPass, setShowPass] = useState(false);
 	const [expiry, setExpiry] = useState("0");
-	const [publish, setPublish] = useState(false);
+	const [publish, setPublish] = useState(initialPublish);
 	const [escrow, setEscrow] = useState(true);
 	const [generating, setGenerating] = useState(false);
 	const [outcome, setOutcome] = useState<PublishOutcome | null>(null);

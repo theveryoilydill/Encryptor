@@ -17,14 +17,17 @@
  * "can't add keys" mystery from the review. The diagnostics below make the
  * mismatch (and the two owner-side fixes) explicit in the UI.
  *
- * Provisioning (production): set NEXT_PUBLIC_TURNSTILE_SITE_KEY at build
- * time (Workers Builds env) AND TURNSTILE_SECRET_KEY as a worker secret —
- * both halves must exist together or publishing is either blocked (secret
- * without site key) or ungated (site key without secret). For preview
- * branches, either add the *.workers.dev hostnames to the site key's
- * allowlist, or use Cloudflare's always-pass dummy keys (site
- * 1x00000000000000000000AA + secret 1x0000000000000000000000000000000AA)
- * so the flow is exercisable without weakening production.
+ * Provisioning (production): the PUBLIC site key is committed in
+ * `.env.production` (public by design — it ships in every visitor's HTML;
+ * owner created the widget in PR #25). ONLY TURNSTILE_SECRET_KEY remains
+ * owner-side (`wrangler secret put TURNSTILE_SECRET_KEY`): with the secret
+ * absent the server keeps Turnstile disabled, so both halves must exist
+ * together or publishing is either blocked (secret without site key) or
+ * ungated (site key without secret) — the health endpoint reports the
+ * active mode. The site key's hostname allowlist must include the exact
+ * hostnames that render it (no wildcards): the production workers.dev host,
+ * localhost for local tests, and each branch-preview hostname being tested;
+ * anything else fails with 110200, surfaced by the diagnostics below.
  *
  * The script is loaded ON DEMAND (explicit render, onload callback) so
  * challenges.cloudflare.com is only contacted when a publish form is

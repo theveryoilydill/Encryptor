@@ -496,6 +496,12 @@ function RestoreForm({
 	const [fingerprint, setFingerprint] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Identity lines for the match cards, parsed LOCALLY from each match's
+	// public armor (the lookup response includes it) — a picker full of
+	// 40-hex fingerprints is unreadable; “Alice — alice@example.com” is
+	// not. Fails soft: unparseable armor just hides the line (same rule as
+	// the revoke preview's identity).
+	const [idLines, setIdLines] = useState<Record<string, string | null>>({});
 	// Passphrase field (focused when the decrypt step appears) + the match
 	// cards (focus targets of the roving tabindex while arrow-browsing).
 	const passRef = useRef<HTMLInputElement | null>(null);
@@ -567,6 +573,23 @@ function RestoreForm({
 					);
 					return;
 				}
+				// Parse identity lines BEFORE the cards mount so the picker appears
+				// fully formed — no label pop-in after paint.
+				const pairs = await Promise.all(
+					live.map(async (m) => {
+						try {
+							const v = await validateArmoredKey(m.armored);
+							const u = v.info && "userIDs" in v.info ? v.info.userIDs[0] : undefined;
+							return [
+								m.fingerprint,
+								u ? [u.name, u.email].filter(Boolean).join(" — ") || null : null,
+							] as const;
+						} catch {
+							return [m.fingerprint, null] as const;
+						}
+					}),
+				);
+				setIdLines(Object.fromEntries(pairs));
 				setMatches(live);
 				// Single live key: preselect it so the passphrase step appears
 				// immediately — one less click on the primary sign-in path.
@@ -659,6 +682,14 @@ function RestoreForm({
 						placeholder="40-hex fingerprint or you@example.com"
 						autoComplete="off"
 						spellCheck={false}
+						onKeyDown={(e) => {
+							// Enter finds — the passphrase field's Enter already restores, so the
+							// whole lookup flow stays keyboard-first.
+							if (e.key === "Enter" && !busy && query.trim()) {
+								e.preventDefault();
+								void resolve();
+							}
+						}}
 					/>
 					<Button
 						type="button"
@@ -691,6 +722,9 @@ function RestoreForm({
 					>
 						{matches.map((m, i) => {
 							const selected = fingerprint === m.fingerprint;
+							const createdStr = new Date(m.createdAt * 1000).toLocaleDateString();
+							const updatedStr = new Date(m.updatedAt * 1000).toLocaleDateString();
+							const idLine = idLines[m.fingerprint] ?? null;
 							return (
 								<button
 									key={m.fingerprint}
@@ -719,9 +753,21 @@ function RestoreForm({
 										}`}
 									/>
 									<span className="min-w-0 flex-1">
-										<code className="font-mono">{formatFingerprint(m.fingerprint)}</code>
-										<span className="mt-0.5 block text-muted-foreground">
-											updated {new Date(m.updatedAt * 1000).toLocaleDateString()}
+										{idLine && (
+											<span className="block truncate text-[13px] font-medium leading-tight">
+												{idLine}
+											</span>
+										)}
+										<code
+											className={
+												idLine ? "font-mono text-[11px] text-muted-foreground" : "font-mono"
+											}
+										>
+											{formatFingerprint(m.fingerprint)}
+										</code>
+										<span className="mt-0.5 block text-[11px] text-muted-foreground">
+											created {createdStr}
+											{updatedStr !== createdStr ? ` · updated ${updatedStr}` : ""}
 										</span>
 									</span>
 								</button>

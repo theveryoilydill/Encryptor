@@ -16,8 +16,9 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+	Check,
 	ChevronDown,
 	Dice5,
 	Eye,
@@ -75,6 +76,34 @@ import { toast } from "@/hooks/use-toast";
 type SourceId = "registry" | "keybase" | "openpgp" | "ubuntu" | "local";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * localStorage key holding the last identity (fingerprint or email) this
+ * browser successfully restored with. Both are public-by-design registry
+ * data (a fingerprint is displayed on every lookup; the email is what the
+ * registry is searched by) — used ONLY to prefill the restore form so the
+ * next sign-in skips a retype. Never key material, never a passphrase.
+ */
+const LAST_RESTORE_QUERY_KEY = "encryptor.restore.lastQuery";
+
+/**
+ * WAI-ARIA radio arrow-key navigation, shared by the segmented control and
+ * the restore key-picker: Arrow/Home/End move both selection and focus;
+ * Enter/Space stay with the native button. Returns the id to select, or
+ * null for non-navigation keys.
+ */
+function radioNavId(e: React.KeyboardEvent, ids: string[], current: string | null): string | null {
+	const len = ids.length;
+	if (len === 0) return null;
+	const idx = current != null ? ids.indexOf(current) : -1;
+	let next = -1;
+	if (e.key === "ArrowRight" || e.key === "ArrowDown") next = idx < 0 ? 0 : (idx + 1) % len;
+	else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
+		next = idx < 0 ? len - 1 : (idx - 1 + len) % len;
+	else if (e.key === "Home") next = 0;
+	else if (e.key === "End") next = len - 1;
+	return next < 0 ? null : ids[next];
+}
 
 /** Inline destructive-tinted error panel. */
 function FormError({ message }: { message: string | null }) {
@@ -163,17 +192,13 @@ function Segmented({
 	// arrows to move, exactly like a native radio group.
 	const radioRefs = useRef<(HTMLButtonElement | null)[]>([]);
 	const onRadioKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-		const idx = options.findIndex((o) => o.id === value);
-		let next = -1;
-		if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (idx + 1) % options.length;
-		else if (e.key === "ArrowLeft" || e.key === "ArrowUp")
-			next = (idx - 1 + options.length) % options.length;
-		else if (e.key === "Home") next = 0;
-		else if (e.key === "End") next = options.length - 1;
-		if (next < 0) return;
+		const ids = options.map((o) => o.id);
+		const nextId = radioNavId(e, ids, value);
+		if (!nextId) return;
 		e.preventDefault();
-		onChange(options[next].id);
+		onChange(nextId);
 		// focus follows selection (after React commits the new tabIndex map)
+		const next = ids.indexOf(nextId);
 		requestAnimationFrame(() => radioRefs.current[next]?.focus());
 	};
 	return (
@@ -471,6 +496,45 @@ function RestoreForm({
 	const [fingerprint, setFingerprint] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Passphrase field (focused when the decrypt step appears) + the match
+	// cards (focus targets of the roving tabindex while arrow-browsing).
+	const passRef = useRef<HTMLInputElement | null>(null);
+	const matchRefs = useRef<(HTMLButtonElement | null)[]>([]);
+	// Set ONLY at the call sites where the passphrase field should take focus
+	// (card click / single-match auto-select) — never on arrow-key selection,
+	// which must keep focus on the cards while browsing the list.
+	const focusPassRef = useRef(false);
+
+	// Prefill the last identity this browser restored with, AFTER hydration so
+	// SSR markup stays deterministic (see LAST_RESTORE_QUERY_KEY).
+	useEffect(() => {
+		try {
+			const saved = window.localStorage.getItem(LAST_RESTORE_QUERY_KEY);
+			if (saved) setQuery(saved);
+		} catch {
+			/* storage unavailable (private mode) — skip the nicety */
+		}
+	}, []);
+
+	// Move focus into the passphrase field when the decrypt step appears via
+	// click or auto-select. The rAF waits one frame so the input is mounted.
+	useEffect(() => {
+		if (!focusPassRef.current || !fingerprint) return;
+		focusPassRef.current = false;
+		requestAnimationFrame(() => passRef.current?.focus());
+	}, [fingerprint]);
+
+	/** Arrow/Home/End browse the key cards (selection follows focus). */
+	const onMatchesKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+		if (!matches) return;
+		const ids = matches.map((m) => m.fingerprint);
+		const nextId = radioNavId(e, ids, fingerprint);
+		if (!nextId) return;
+		e.preventDefault();
+		setFingerprint(nextId);
+		const i = ids.indexOf(nextId);
+		requestAnimationFrame(() => matchRefs.current[i]?.focus());
+	};
 
 	const normalizeFpr = (raw: string) => raw.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
 	const isFpr = (raw: string) => /^[0-9A-F]{40}$/.test(normalizeFpr(raw));
@@ -504,7 +568,15 @@ function RestoreForm({
 					return;
 				}
 				setMatches(live);
-				setFingerprint(null);
+				// Single live key: preselect it so the passphrase step appears
+				// immediately — one less click on the primary sign-in path.
+				// Multiple keys still require an explicit pick below.
+				if (live.length === 1) {
+					focusPassRef.current = true;
+					setFingerprint(live[0].fingerprint);
+				} else {
+					setFingerprint(null);
+				}
 			} else {
 				setError("Enter a 40-character fingerprint or an email address.");
 				return;
@@ -539,6 +611,14 @@ function RestoreForm({
 			await openpgp.decryptKey({ privateKey: key as never, passphrase });
 			const info = await validateArmoredKey(escrow.encryptedPrivate);
 			if (!info.ok || !info.info) throw new Error("Escrowed key failed local validation.");
+			// This identity worked end-to-end on this device — remember it
+			// (public data only; see LAST_RESTORE_QUERY_KEY) so the next
+			// sign-in can prefill it.
+			try {
+				window.localStorage.setItem(LAST_RESTORE_QUERY_KEY, query.trim());
+			} catch {
+				/* storage unavailable */
+			}
 			const first = info.info.userIDs[0];
 			onUseKey({
 				source: "manual",
@@ -560,7 +640,7 @@ function RestoreForm({
 			restoreBusyRef.current = false;
 			setBusy(false);
 		}
-	}, [fingerprint, onDone, onUseKey, passphrase]);
+	}, [fingerprint, onDone, onUseKey, passphrase, query]);
 
 	return (
 		<div className="space-y-3" data-testid="restore-form">
@@ -597,26 +677,57 @@ function RestoreForm({
 			</div>
 
 			{matches && (
-				<div className="grid gap-1.5" role="radiogroup" aria-label="Matching keys">
-					{matches.map((m) => (
-						<button
-							key={m.fingerprint}
-							type="button"
-							role="radio"
-							aria-checked={fingerprint === m.fingerprint}
-							onClick={() => setFingerprint(m.fingerprint)}
-							className={`rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-								fingerprint === m.fingerprint
-									? "border-[#0055dc] bg-[#0055dc]/5"
-									: "border-border hover:bg-muted/50"
-							}`}
-						>
-							<code className="font-mono">{formatFingerprint(m.fingerprint)}</code>
-							<span className="mt-0.5 block text-muted-foreground">
-								updated {new Date(m.updatedAt * 1000).toLocaleDateString()}
-							</span>
-						</button>
-					))}
+				<div className="grid gap-1.5">
+					<p id="restore-matches-hint" role="status" className="text-xs text-muted-foreground">
+						{matches.length === 1
+							? "Found this key on the registry."
+							: `${matches.length} live keys on the registry — pick one to decrypt.`}
+					</p>
+					<div
+						role="radiogroup"
+						aria-labelledby="restore-matches-hint"
+						onKeyDown={onMatchesKeyDown}
+						className="grid gap-1.5"
+					>
+						{matches.map((m, i) => {
+							const selected = fingerprint === m.fingerprint;
+							return (
+								<button
+									key={m.fingerprint}
+									ref={(el) => {
+										matchRefs.current[i] = el;
+									}}
+									type="button"
+									role="radio"
+									aria-checked={selected}
+									tabIndex={fingerprint == null ? (i === 0 ? 0 : -1) : selected ? 0 : -1}
+									data-testid="restore-match"
+									onClick={() => {
+										focusPassRef.current = true;
+										setFingerprint(m.fingerprint);
+									}}
+									className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-xs transition-all duration-150 press-effect focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0055dc] ${
+										selected
+											? "border-[#0055dc] bg-[#0055dc]/5 ring-1 ring-[#0055dc]/30"
+											: "border-border hover:bg-muted/50"
+									}`}
+								>
+									<Check
+										aria-hidden
+										className={`mt-0.5 size-3.5 shrink-0 ${
+											selected ? "text-[#0055dc] dark:text-sky-300" : "invisible"
+										}`}
+									/>
+									<span className="min-w-0 flex-1">
+										<code className="font-mono">{formatFingerprint(m.fingerprint)}</code>
+										<span className="mt-0.5 block text-muted-foreground">
+											updated {new Date(m.updatedAt * 1000).toLocaleDateString()}
+										</span>
+									</span>
+								</button>
+							);
+						})}
+					</div>
 				</div>
 			)}
 
@@ -624,6 +735,7 @@ function RestoreForm({
 				<div className="grid gap-1.5">
 					<Label htmlFor="restore-pass">Backup passphrase</Label>
 					<Input
+						ref={passRef}
 						id="restore-pass"
 						type="password"
 						value={passphrase}
@@ -746,13 +858,13 @@ function PublishPasteForm({
 		try {
 			const publicArmored = await publicFromPrivate(sourceArmor);
 			const escrowArmor = escrow ? sourceArmor : undefined;
-			const result = await pub.publish({
+			const attempt = await pub.publish({
 				publicArmored,
 				...(escrowArmor ? { encryptedPrivate: escrowArmor } : {}),
 				signArmor: sourceArmor,
 			});
-			if (result) {
-				setOutcome(result);
+			if (attempt.status === "published") {
+				setOutcome(attempt.outcome);
 				setPassphrase("");
 			}
 		} catch (e) {
@@ -770,14 +882,14 @@ function PublishPasteForm({
 		try {
 			const publicArmored = await publicFromPrivate(sourceArmor);
 			const escrowArmor = escrow ? sourceArmor : undefined;
-			const result = await pub.confirmReplace({
+			const attempt = await pub.confirmReplace({
 				publicArmored,
 				...(escrowArmor ? { encryptedPrivate: escrowArmor } : {}),
 				signArmor: sourceArmor,
 				signPassphrase: proofPass,
 			});
-			if (result) {
-				setOutcome({ ...result, escrowLag: !escrow });
+			if (attempt.status === "published") {
+				setOutcome({ ...attempt.outcome, escrowLag: !escrow });
 				setReplacePass("");
 			}
 		} catch (e) {
@@ -1494,17 +1606,17 @@ function GenerateForm({
 				onDone();
 				return;
 			}
-			const result = await pub.publish({
+			const attempt = await pub.publish({
 				publicArmored: pair.publicKey,
 				...(escrow ? { encryptedPrivate: pair.privateKey } : {}),
 				signArmor: pair.privateKey,
 			});
-			if (result) {
+			if (attempt.status === "published") {
 				// Show the one-time token FIRST; commit the key when the
 				// user dismisses the outcome card (see "Start using Encryptor").
 				setPending(config);
-				setOutcome(result);
-			} else if (pub.replaceNeeded) {
+				setOutcome(attempt.outcome);
+			} else if (attempt.status === "replace-needed") {
 				// A freshly generated fingerprint colliding with an existing
 				// record is cryptographically impossible — treat it as an
 				// anomaly instead of offering a possession-proof panel that
@@ -1512,12 +1624,13 @@ function GenerateForm({
 				setError(
 					"The registry says this fingerprint already exists, which should be impossible for a fresh key — please retry.",
 				);
-			} else if (pub.error) {
-				setError(pub.error);
 			} else {
-				onUseKey(config);
-				toast({ title: "Signed in", description: `“${label}” is ready to use.` });
-				onDone();
+				// FAILURE — surface it and STAY on the form. (This used to fall
+				// through to a silent sign-in: `pub.error` state read inside
+				// this closure was stale-null after the awaited publish, so a
+				// 429/503/403 failure closed the dialog and configured the key
+				// anyway, dropping both the error and the outcome/token.)
+				setError(attempt.error);
 			}
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "Key generation failed.");

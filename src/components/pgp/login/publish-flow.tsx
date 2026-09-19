@@ -39,6 +39,19 @@ import {
 } from "@/lib/registry/client";
 import { formatFingerprint } from "@/lib/pgp/pgp";
 
+/**
+ * Synchronous record of one publish attempt. The hook ALSO mirrors the
+ * failure into state for render, but the RETURN VALUE is the only
+ * race-free channel for the caller: reading `error`/`replaceNeeded`
+ * state right after an awaited publish reads the PREVIOUS render's
+ * values (still null/false), which made GenerateForm treat failures as
+ * success and sign the user in anyway.
+ */
+export type PublishAttempt =
+	| { status: "published"; outcome: PublishOutcome }
+	| { status: "replace-needed" }
+	| { status: "failed"; error: string };
+
 /** Result of a successful publish (subset the UI needs). */
 export interface PublishOutcome {
 	fingerprint: string;
@@ -199,7 +212,7 @@ export function useRegistryPublish() {
 			encryptedPrivate?: string;
 			/** Private armor used to sign a replace challenge (possession proof). */
 			signArmor?: string;
-		}): Promise<PublishOutcome | null> => {
+		}): Promise<PublishAttempt> => {
 			setError(null);
 			setPublishing(true);
 			try {
@@ -209,12 +222,15 @@ export function useRegistryPublish() {
 					...(tsToken ? { turnstileToken: tsToken } : {}),
 				});
 				return {
-					fingerprint: result.fingerprint,
-					keyId: result.keyId,
-					emails: result.emails,
-					replaced: result.replaced,
-					revocationToken: result.revocationToken,
-					escrowed: Boolean(input.encryptedPrivate),
+					status: "published",
+					outcome: {
+						fingerprint: result.fingerprint,
+						keyId: result.keyId,
+						emails: result.emails,
+						replaced: result.replaced,
+						revocationToken: result.revocationToken,
+						escrowed: Boolean(input.encryptedPrivate),
+					},
 				};
 			} catch (e) {
 				if (
@@ -229,11 +245,12 @@ export function useRegistryPublish() {
 					setReplaceNeeded(true);
 					setError(null);
 					resetTs();
-					return null;
+					return { status: "replace-needed" };
 				}
-				setError(formatRegistryError(e, "Publishing failed"));
+				const message = formatRegistryError(e, "Publishing failed");
+				setError(message);
 				resetTs();
-				return null;
+				return { status: "failed", error: message };
 			} finally {
 				setPublishing(false);
 			}
@@ -248,7 +265,7 @@ export function useRegistryPublish() {
 			encryptedPrivate?: string;
 			signArmor: string;
 			signPassphrase: string;
-		}): Promise<PublishOutcome | null> => {
+		}): Promise<PublishAttempt> => {
 			setError(null);
 			setReplacing(true);
 			try {
@@ -271,24 +288,26 @@ export function useRegistryPublish() {
 				});
 				setReplaceNeeded(false);
 				return {
-					fingerprint: result.fingerprint,
-					keyId: result.keyId,
-					emails: result.emails,
-					replaced: true,
-					// A replace never mints a new token — the FIRST publish's
-					// token remains the only way to revoke this fingerprint.
-					revocationToken: result.revocationToken,
-					escrowed: Boolean(input.encryptedPrivate),
+					status: "published",
+					outcome: {
+						fingerprint: result.fingerprint,
+						keyId: result.keyId,
+						emails: result.emails,
+						replaced: true,
+						// A replace never mints a new token — the FIRST publish's
+						// token remains the only way to revoke this fingerprint.
+						revocationToken: result.revocationToken,
+						escrowed: Boolean(input.encryptedPrivate),
+					},
 				};
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
-				if (/passphrase|checksum|decrypt/i.test(msg)) {
-					setError("That passphrase doesn't unlock this key — possession proof requires it.");
-				} else {
-					setError(formatRegistryError(e, "Replace failed"));
-				}
+				const message = /passphrase|checksum|decrypt/i.test(msg)
+					? "That passphrase doesn't unlock this key — possession proof requires it."
+					: formatRegistryError(e, "Replace failed");
+				setError(message);
 				resetTs();
-				return null;
+				return { status: "failed", error: message };
 			} finally {
 				setReplacing(false);
 			}

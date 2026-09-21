@@ -8,6 +8,8 @@
  */
 import { getCloudflareContext } from "@opennextjs/cloudflare/cloudflare-context";
 
+import { ensureRegistrySchema } from "./migrate";
+
 /** Minimal structural typing for the D1 binding (no runtime dependency). */
 export interface D1Result<T = unknown> {
 	results?: T[];
@@ -25,6 +27,8 @@ export interface D1PreparedStatement {
 export interface D1DatabaseLike {
 	prepare(sql: string): D1PreparedStatement;
 	batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
+	/** Native D1 multi-statement execution (used by the self-migrator). */
+	exec?(sql: string): Promise<unknown>;
 }
 
 /** Env bindings + secrets the registry needs (set via wrangler/CF). */
@@ -32,11 +36,18 @@ export interface RegistryEnv {
 	REGISTRY_DB?: D1DatabaseLike;
 	RE_SALT?: string;
 	ADMIN_REVOKE_TOKEN?: string;
+	/** Cloudflare Turnstile server secret. Writes are captcha-gated ONLY
+	 *  when this is set, so local dev + seed scripts keep working and
+	 *  production opts in by provisioning the secret. */
+	TURNSTILE_SECRET_KEY?: string;
 }
 
 /** Fail with a stable HTTP status the routes can pass through. */
 export class RegistryError extends Error {
 	status: number;
+	/** For 429s: seconds until the rate-limit window rolls over. Emitted as
+	 *  the Retry-After response header so clients can back off precisely. */
+	retryAfterSeconds?: number;
 	constructor(message: string, status: number) {
 		super(message);
 		this.name = "RegistryError";
@@ -44,8 +55,37 @@ export class RegistryError extends Error {
 	}
 }
 
-/** Development-only fallback salt — NEVER used in production builds. */
-const DEV_SALT = "encryptor-registry-dev-salt";
+/**
+ * Build a 429 RegistryError carrying the retry horizon. The server turns
+ * this into a Retry-After header; the browser client surfaces it so users
+ * see "resets in 42s" instead of an opaque "try again later".
+ */
+export function tooManyRequests(message: string, retryAfterSeconds: number): RegistryError {
+	const err = new RegistryError(message, 429);
+	err.retryAfterSeconds = Math.max(1, Math.ceil(retryAfterSeconds));
+	return err;
+}
+
+/** Outcome of a rate-limit check, with the retry horizon when denied. */
+export interface RateLimitOutcome {
+	allowed: boolean;
+	/** Seconds until the current window rolls over (>=1 when denied). */
+	retryAfterSeconds: number;
+	/** True when the limiter itself could not reach D1 and the call was
+	 *  fail-closed. A denial in this state is an AVAILABILITY problem
+	 *  (503), not a client problem (429): "you sent too many requests"
+	 *  would be a lie, and a Retry-After horizon is unknowable. */
+	limiterDown?: boolean;
+}
+
+/**
+ * Where the deployment's rate-limit/privacy salt came from:
+ *  - "env": the RE_SALT worker secret, adopted on first boot and persisted;
+ *  - "generated": a random CSPRNG salt provisioned on first boot (the
+ *    default for previews and fresh recreations — no secrets needed).
+ * # Mr. AI Acting on s183173's Behalf
+ */
+export type SaltSource = "env" | "generated";
 
 /** Resolve the full Cloudflare env (bindings + secrets), or undefined. */
 export function getCloudflareEnv(): RegistryEnv | undefined {
@@ -65,18 +105,112 @@ export function getRegistryDB(): D1DatabaseLike {
 }
 
 /**
- * Resolve the rate-limit/privacy salt. In production a missing RE_SALT
- * fails CLOSED (503): a known constant salt would make rate buckets
- * brute-forceable from a DB dump, turning it into an IP-disclosure leak.
- * Local development supplies it via .dev.vars.
+ * Resolve the D1 binding AND guarantee the schema exists. Every registry
+ * route uses this instead of getRegistryDB so a freshly created (never
+ * migrated) remote D1 database self-heals on first request — Workers Builds
+ * CI deploys the worker without ever running `wrangler d1 migrations apply`,
+ * which is why production publishes previously failed with opaque 500s.
  */
-function getSalt(): string {
-	const salt = getCloudflareEnv()?.RE_SALT;
-	if (salt) return salt;
-	if (process.env.NODE_ENV === "production") {
-		throw new RegistryError("RE_SALT secret is not configured on this deployment", 503);
+export async function getRegistryDBReady(): Promise<D1DatabaseLike> {
+	const db = getRegistryDB();
+	try {
+		await ensureRegistrySchema(db);
+	} catch (e) {
+		console.error("[registry] schema initialization failed:", e);
+		throw new RegistryError(
+			"Registry schema is initializing or failed to migrate — retry shortly",
+			503,
+		);
 	}
-	return DEV_SALT;
+	return db;
+}
+
+/**
+ * Resolve the rate-limit/privacy salt — self-provisioning, fail-safe.
+ *
+ * HISTORY: this used to read the RE_SALT worker secret and fail CLOSED
+ * (503) on every mutation when it was missing. That secret vanished twice
+ * on PR #25's deployments (worker recreation/relink drops secrets), and
+ * every publish 503'd while reads kept working — the owner's "can't add
+ * keys" report. The salt is now provisioned on first DB access and stored
+ * in registry_meta (migration 0004):
+ *
+ *  1. A stored salt always wins — the value NEVER changes for a database,
+ *     so bucket hashing stays stable across isolates and deploys.
+ *  2. On a fresh database, RE_SALT (when the secret exists) is adopted and
+ *     persisted — source "env", the strongest option.
+ *  3. Otherwise a random 32-byte CSPRNG salt is generated and persisted —
+ *     source "generated". Every deployment (preview branches, recreated
+ *     workers, local dev) works out of the box with zero manual secrets.
+ *
+ * Rate buckets are per-window and hold nothing but the hashed
+ * action|ip|window tuple, so nothing persistent depends on the value.
+ * Memoized per isolate: one read after the first request.
+ */
+let saltPromise: Promise<string> | null = null;
+let saltSourceSeen: SaltSource | null = null;
+
+/** Source of the resolved salt — null until getOrCreateSalt has run once. */
+export function lastSaltSource(): SaltSource | null {
+	return saltSourceSeen;
+}
+
+/** Test/isolate helper: forget the memoized salt (next call re-resolves). */
+export function resetSaltCache(): void {
+	saltPromise = null;
+	saltSourceSeen = null;
+}
+
+async function resolveSalt(db: D1DatabaseLike): Promise<string> {
+	const existing = await db
+		.prepare("SELECT value FROM registry_meta WHERE key = 'salt'")
+		.first<{ value: string }>();
+	if (existing?.value) {
+		// The stored salt always wins — never regenerate, never overwrite.
+		// Report how it was originally provisioned (recorded on first boot;
+		// rows written before this column existed report as "generated").
+		const src = await db
+			.prepare("SELECT value FROM registry_meta WHERE key = 'salt_source'")
+			.first<{ value: string }>();
+		saltSourceSeen = src?.value === "env" ? "env" : "generated";
+		return existing.value;
+	}
+	const envSalt = getCloudflareEnv()?.RE_SALT;
+	const useEnv = typeof envSalt === "string" && envSalt.length >= 16;
+	const candidate = useEnv ? (envSalt as string) : randomHex(32);
+	const source: SaltSource = useEnv ? "env" : "generated";
+	// INSERT ... DO NOTHING: two isolates racing the same fresh database
+	// converge on the FIRST writer's salt; the loser re-reads below.
+	await db
+		.prepare(
+			"INSERT INTO registry_meta (key, value, updated_at) VALUES ('salt', ?1, ?2) ON CONFLICT (key) DO NOTHING",
+		)
+		.bind(candidate, nowSeconds())
+		.run();
+	await db
+		.prepare(
+			"INSERT INTO registry_meta (key, value, updated_at) VALUES ('salt_source', ?1, ?2) ON CONFLICT (key) DO NOTHING",
+		)
+		.bind(source, nowSeconds())
+		.run();
+	const row = await db
+		.prepare("SELECT value FROM registry_meta WHERE key = 'salt'")
+		.first<{ value: string }>();
+	const salt = row?.value ?? candidate;
+	saltSourceSeen = source;
+	return salt;
+}
+
+/** Get (or provision) the deployment salt for this database. Memoized. */
+export function getOrCreateSalt(db: D1DatabaseLike): Promise<string> {
+	if (!saltPromise) {
+		saltPromise = resolveSalt(db).catch((e) => {
+			// Never memoize a failure — the next request retries.
+			saltPromise = null;
+			throw e;
+		});
+	}
+	return saltPromise;
 }
 
 /** SHA-256 of a UTF-8 string, as lowercase hex. */
@@ -112,9 +246,11 @@ export function nowSeconds(): number {
 }
 
 /**
- * Fixed-window rate limiter backed by D1. Returns true when the action is
- * allowed. The bucket key is a salted hash of action+IP+window so raw IPs
- * never reach the database and buckets are unlinkable across windows.
+ * Fixed-window rate limiter backed by D1. Returns the outcome plus the
+ * retry horizon (seconds until the window rolls over) so 429 responses
+ * can carry an accurate Retry-After. The bucket key is a salted hash of
+ * action+IP+window so raw IPs never reach the database and buckets are
+ * unlinkable across windows.
  */
 export async function rateLimit(
 	db: D1DatabaseLike,
@@ -122,10 +258,12 @@ export async function rateLimit(
 	ip: string,
 	limit: number,
 	windowSeconds: number,
-): Promise<boolean> {
+): Promise<RateLimitOutcome> {
 	const window = Math.floor(Date.now() / 1000 / windowSeconds);
-	const bucket = await sha256Hex(`${getSalt()}|${action}|${ip}|${window}`);
+	const salt = await getOrCreateSalt(db);
+	const bucket = await sha256Hex(`${salt}|${action}|${ip}|${window}`);
 	const resetAt = (window + 1) * windowSeconds;
+	const retryAfter = Math.max(1, resetAt - nowSeconds());
 	// Read-first: over-limit requests cost one indexed read and ZERO
 	// writes, so abuse cannot exhaust the daily D1 write quota via the
 	// limiter itself.
@@ -133,7 +271,7 @@ export async function rateLimit(
 		.prepare("SELECT count FROM registry_rate WHERE bucket = ?1")
 		.bind(bucket)
 		.first<{ count: number }>();
-	if (existing && existing.count >= limit) return false;
+	if (existing && existing.count >= limit) return { allowed: false, retryAfterSeconds: retryAfter };
 	const stmt = db
 		.prepare(
 			`INSERT INTO registry_rate (bucket, count, reset_at) VALUES (?1, 1, ?2)
@@ -142,12 +280,12 @@ export async function rateLimit(
 		)
 		.bind(bucket, resetAt);
 	const row = await stmt.first<{ count: number }>();
-	if ((row?.count ?? 0) > limit) return false;
+	if ((row?.count ?? 0) > limit) return { allowed: false, retryAfterSeconds: retryAfter };
 	// Opportunistic cleanup: ~2% of calls purge expired windows (indexed).
 	if (Math.random() < 0.02) {
 		await db.prepare("DELETE FROM registry_rate WHERE reset_at < ?1").bind(nowSeconds()).run();
 	}
-	return true;
+	return { allowed: true, retryAfterSeconds: 0 };
 }
 
 /**
@@ -163,12 +301,44 @@ export async function rateLimitSafe(
 	limit: number,
 	windowSeconds: number,
 	failOpen: boolean,
-): Promise<boolean> {
+): Promise<RateLimitOutcome> {
 	try {
 		return await rateLimit(db, action, ip, limit, windowSeconds);
 	} catch (e) {
 		console.error(`[registry] rate limiter unavailable (${action}):`, e);
-		return failOpen;
+		return { allowed: failOpen, retryAfterSeconds: 0, limiterDown: true };
+	}
+}
+
+/**
+ * Enforce a mutation/read rate limit and throw the RIGHT error on denial:
+ *
+ * - over-limit with a healthy limiter → 429 + Retry-After so clients can
+ *   back off precisely ("resets in 42s");
+ * - limiter outage on a fail-closed call (D1 unreachable, write quota
+ *   exhausted) → 503 with NO Retry-After, because the outage horizon is
+ *   unknowable and "too many requests" would blame the client for a
+ *   server-side condition (observed live: preview D1 hiccup returned a
+ *   misleading 429 with Retry-After: 1, causing immediate retry storms).
+ *
+ * Shared by every route so the distinction cannot drift site-by-site.
+ */
+export async function enforceRateLimit(
+	db: D1DatabaseLike,
+	action: string,
+	ip: string,
+	limit: number,
+	windowSeconds: number,
+	tooManyMessage: string,
+	failOpen = false,
+): Promise<void> {
+	const gate = await rateLimitSafe(db, action, ip, limit, windowSeconds, failOpen);
+	if (gate.limiterDown) {
+		if (failOpen) return; // availability first: public reads proceed unthrottled
+		throw new RegistryError("Registry is temporarily unavailable — please try again shortly", 503);
+	}
+	if (!gate.allowed) {
+		throw tooManyRequests(tooManyMessage, gate.retryAfterSeconds);
 	}
 }
 

@@ -4,13 +4,13 @@ import { LIMITS } from "@/lib/constants";
 import {
 	RegistryError,
 	auditSafe,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
 	randomHex,
-	rateLimitSafe,
+	enforceRateLimit,
 } from "@/lib/registry/db";
 import { challengeMessage, normalizeFingerprint } from "@/lib/registry/keys";
-import { clientIP, registryErrorResponse } from "@/lib/registry/routes";
+import { assertWriteOrigin, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,19 +26,19 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"challenge",
-				clientIP(req),
-				LIMITS.registryChallengeLimit,
-				LIMITS.registryChallengeWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many challenge requests — try again later", 429);
-		}
+		// Challenges INSERT a nonce row — that is a D1 write, so the origin
+		// write-lock applies here too (a locked preview must not stage nonces
+		// into the production database).
+		assertWriteOrigin(req);
+		const db = await getRegistryDBReady();
+		await enforceRateLimit(
+			db,
+			"challenge",
+			clientIP(req),
+			LIMITS.registryChallengeLimit,
+			LIMITS.registryChallengeWindowSec,
+			"Too many challenge requests — try again later",
+		);
 
 		const url = new URL(req.url);
 		const raw = url.searchParams.get("fingerprint");

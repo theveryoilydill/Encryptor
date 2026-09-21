@@ -5,14 +5,15 @@ import {
 	RegistryError,
 	auditSafe,
 	getCloudflareEnv,
-	getRegistryDB,
+	getRegistryDBReady,
 	nowSeconds,
-	rateLimitSafe,
+	enforceRateLimit,
 	sha256Hex,
 	timingSafeHexEqual,
 } from "@/lib/registry/db";
 import { normalizeFingerprint, verifyChallengeSignature } from "@/lib/registry/keys";
 import {
+	assertWriteOrigin,
 	clientIP,
 	readJsonBody,
 	registryErrorResponse,
@@ -48,19 +49,16 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
 	try {
-		const db = getRegistryDB();
-		if (
-			!(await rateLimitSafe(
-				db,
-				"revoke",
-				clientIP(req),
-				LIMITS.registryRevokeLimit,
-				LIMITS.registryRevokeWindowSec,
-				false,
-			))
-		) {
-			throw new RegistryError("Too many revoke requests — try again later", 429);
-		}
+		assertWriteOrigin(req); // origin write-lock BEFORE any D1 access
+		const db = await getRegistryDBReady();
+		await enforceRateLimit(
+			db,
+			"revoke",
+			clientIP(req),
+			LIMITS.registryRevokeLimit,
+			LIMITS.registryRevokeWindowSec,
+			"Too many revoke requests — try again later",
+		);
 
 		const body = await readJsonBody(req);
 		const rawFpr = stringField(body, "fingerprint", 64);
@@ -102,7 +100,7 @@ export async function POST(req: NextRequest) {
 type RevokeResult = NextResponse | null;
 
 async function revokeByToken(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	body: Record<string, unknown>,
 	tokenHash: string,
 	fingerprint: string,
@@ -123,7 +121,7 @@ async function revokeByToken(
 }
 
 async function revokeBySignature(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	body: Record<string, unknown>,
 	fingerprint: string,
 	reason: string | null,
@@ -163,7 +161,7 @@ async function revokeBySignature(
 }
 
 async function revokeByAdmin(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	body: Record<string, unknown>,
 	fingerprint: string,
 	reason: string | null,
@@ -189,20 +187,22 @@ async function revokeByAdmin(
 }
 
 /**
- * Flip the revoked flag permanently, drop any live challenge nonces, and
- * RELEASE the email + subkey indexes. Revocation stays visible by
- * fingerprint lookup; releasing the indexes frees scarce namespaces
- * (email claims, 64-bit key IDs) so revoked keys cannot squat them.
+ * Flip the revoked flag permanently, drop any live challenge nonces, purge
+ * the escrowed encrypted private key, and RELEASE the email + subkey
+ * indexes. Revocation stays visible by fingerprint lookup; releasing the
+ * indexes frees scarce namespaces (email claims, 64-bit key IDs). A revoked
+ * record keeps only its public revocation information — escrowed private
+ * material must not outlive an active key.
  */
 async function markRevoked(
-	db: ReturnType<typeof getRegistryDB>,
+	db: Awaited<ReturnType<typeof getRegistryDBReady>>,
 	fingerprint: string,
 	reason: string | null,
 ): Promise<void> {
 	await db.batch([
 		db
 			.prepare(
-				"UPDATE registry_keys SET revoked = 1, revoked_at = ?2, revoke_reason = ?3, updated_at = ?2 WHERE fingerprint = ?1",
+				"UPDATE registry_keys SET revoked = 1, revoked_at = ?2, revoke_reason = ?3, encrypted_private = NULL, private_updated_at = NULL, updated_at = ?2 WHERE fingerprint = ?1",
 			)
 			.bind(fingerprint, nowSeconds(), reason),
 		db.prepare("DELETE FROM registry_challenges WHERE fingerprint = ?1").bind(fingerprint),

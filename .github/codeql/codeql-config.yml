@@ -1,0 +1,15 @@
+# CodeQL configuration for the Encryptor repo.
+# # Mr. AI Acting on s183173's Behalf
+#
+# NO query exclusions are active. The previously-excluded js/xss-through-dom
+# finding was FIXED at the sink instead: every user-derived URL that reaches
+# an <img src> is now regex-guarded AT the sink with SAFE_DATA_IMAGE_RE
+# (charset-enforced data:image/*;base64 allow-list, see
+# src/lib/pgp/envelope.ts) AND passes the canonical isSafeImageUrl /
+# isLocalImageUrl allow-lists. The explicit RegExp.test barrier on the same
+# tainted string lets CodeQL verify the sanitization itself, so the query
+# runs unexcluded and stays green:
+#   - src/components/pgp/InteractiveMessagePreview.tsx  (compose-side previews)
+#   - src/components/pgp/shared.tsx                     (viewer, attachment
+#     previews, decrypted-message renderer, file thumbnails)
+name: "Encryptor CodeQL config"

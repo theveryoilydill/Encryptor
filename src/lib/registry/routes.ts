@@ -11,6 +11,53 @@ import { NextRequest, NextResponse } from "next/server";
 import { LIMITS } from "@/lib/constants";
 import { RegistryError } from "./db";
 
+/**
+ * Lock registry MUTATIONS to the production origin (owner's PR #25 ask:
+ * "make sure that only main can actually do stuff to the db").
+ *
+ * Cloudflare Workers Builds gives every pushed branch a preview Worker that
+ * shares the PRODUCTION D1 binding — so any branch (owner's or a trusted
+ * collaborator's) can write to production data. Setting REGISTRY_PROD_ORIGIN
+ * (e.g. "https://encryptor.example.workers.dev") flips every preview
+ * deployment to read-only: mutation routes reject non-matching hosts 403
+ * BEFORE touching D1 (no migrations check, no limiter write burn), while
+ * the matching production host and local dev stay writable. Unset = writes
+ * allowed everywhere (previous behavior, and what previews need while the
+ * owner tests publish flows on them).
+ */
+export function isLocalDevHost(host: string): boolean {
+	const bare = host.toLowerCase();
+	// Strip a trailing :port, but never inside an IPv6 literal: "::1" ends
+	// in ":1" which would otherwise be mistaken for a port. Bracketed
+	// IPv6 ("[::1]:3000") strips the "]:port" tail; unbracketed literals
+	// (more than one colon) are left untouched.
+	const h = bare.startsWith("[")
+		? bare.replace(/\]:\d+$/, "]")
+		: (bare.match(/:/g)?.length ?? 0) === 1
+			? bare.replace(/:\d+$/, "")
+			: bare;
+	return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]" || h === "0.0.0.0";
+}
+
+export function assertWriteOrigin(req: NextRequest): void {
+	const allowed = process.env.REGISTRY_PROD_ORIGIN?.trim();
+	if (!allowed) return;
+	const host = (req.headers.get("host") ?? new URL(req.url).hostname).toLowerCase();
+	if (process.env.NODE_ENV !== "production" || isLocalDevHost(host)) return;
+	let allowedHost = allowed.toLowerCase();
+	try {
+		allowedHost = new URL(allowed).host.toLowerCase();
+	} catch {
+		/* configured as a bare host — use as-is */
+	}
+	if (host !== allowedHost) {
+		throw new RegistryError(
+			"Registry writes are locked to the production origin on this deployment (REGISTRY_PROD_ORIGIN)",
+			403,
+		);
+	}
+}
+
 /** Cache header for public read endpoints (safe to cache short bursts). */
 export const REGISTRY_CACHE_PUBLIC = "public, max-age=60, s-maxage=300";
 
@@ -34,6 +81,15 @@ export function registryErrorResponse(e: unknown, cors = false): NextResponse {
 	const headers: Record<string, string> = { "Cache-Control": "no-store" };
 	if (cors) headers["Access-Control-Allow-Origin"] = "*";
 	if (e instanceof RegistryError) {
+		// 429s carry an accurate Retry-After so well-behaved clients can
+		// back off until the window actually rolls over (RFC 9110 §10.2.3).
+		if (e.status === 429 && e.retryAfterSeconds && e.retryAfterSeconds > 0) {
+			headers["Retry-After"] = String(Math.ceil(e.retryAfterSeconds));
+			return NextResponse.json(
+				{ error: e.message, retryAfter: Math.ceil(e.retryAfterSeconds) },
+				{ status: e.status, headers },
+			);
+		}
 		return NextResponse.json({ error: e.message }, { status: e.status, headers });
 	}
 	// Unexpected errors must be observable — log before the generic 500.

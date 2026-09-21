@@ -11,7 +11,7 @@ import {
 	SCALE_STEP_NORMAL,
 	type InlineImageMarker,
 } from "@/lib/pgp/inline-image";
-import { isSafeImageUrl, type EnvelopeFile } from "@/lib/pgp/envelope";
+import { isSafeImageUrl, SAFE_DATA_IMAGE_RE, type EnvelopeFile } from "@/lib/pgp/envelope";
 
 /**
  * InteractiveMessagePreview — renders a message with inline images and lets
@@ -265,9 +265,15 @@ export function InteractiveMessagePreview({
 					}
 					const { marker, markerIndex } = seg;
 					const file = fileMap.get(marker.filename);
-					// Guard the <img src> URL sink (isSafeImageUrl) so a crafted
-					// message can never put a non-image URL into an <img>.
-					const src = file ? isSafeImageUrl(`data:${file.type};base64,${file.data}`) : null;
+					// Guard the <img src> URL sink so a crafted message can never put
+					// a non-image URL into an <img>: the tainted data URL must pass
+					// the charset allow-list (explicit barrier for static analysis)
+					// AND the canonical URL parse in isSafeImageUrl.
+					const dataUrl = file ? `data:${file.type};base64,${file.data}` : null;
+					const src =
+						dataUrl !== null && SAFE_DATA_IMAGE_RE.test(dataUrl) && isSafeImageUrl(dataUrl) !== null
+							? dataUrl
+							: null;
 					const isSelected = selectedIndex === markerIndex && !readOnly;
 
 					if (!src) {

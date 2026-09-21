@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
 import { RegistryError, getRegistryDBReady, enforceRateLimit } from "@/lib/registry/db";
-import { normalizeEmail, normalizeFingerprint, normalizeKeyID, normalizeName } from "@/lib/registry/keys";
+import {
+	normalizeEmail,
+	normalizeFingerprint,
+	normalizeKeyID,
+	normalizeName,
+} from "@/lib/registry/keys";
 import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import { REGISTRY_CACHE_PUBLIC, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 

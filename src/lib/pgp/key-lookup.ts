@@ -156,9 +156,9 @@ export async function fetchKeysFromAllSources(
 		const upper = id.toUpperCase();
 		return !registryFound.has(upper) && !registryFound.has(upper.toLowerCase());
 	});
-	const keybaseResults = (
-		await fetchKeyByKeyIDClient(notOnRegistry, keybaseProxy).catch(() => [])
-	) as VerificationKeyLookupResult[];
+	const keybaseResults = (await fetchKeyByKeyIDClient(notOnRegistry, keybaseProxy).catch(
+		() => [],
+	)) as VerificationKeyLookupResult[];
 	for (const k of keybaseResults) k.resolvedFrom = "keybase";
 
 	// 3. keys.openpgp.org for the rest.

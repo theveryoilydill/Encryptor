@@ -226,8 +226,7 @@ export function PassphrasePrompt({
 						)}
 						{!isKeybase && autoCache && (
 							<p className="text-[11px] leading-snug text-muted-foreground">
-								Remembered for this session (browser memory only) — auto-locks per
-								your settings.
+								Remembered for this session (browser memory only) — auto-locks per your settings.
 							</p>
 						)}
 						<div className="flex gap-2 pt-1">

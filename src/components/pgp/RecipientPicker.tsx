@@ -157,10 +157,7 @@ export function RecipientPicker({
 	 *  key search must not drift). Public armor comes back with the lookup,
 	 *  so the add path needs no second fetch; revoked keys are never
 	 *  suggested. Non-matching query shapes resolve to []. */
-	const registrySuggest = useCallback(
-		(q: string) => registrySuggestResults(q),
-		[],
-	);
+	const registrySuggest = useCallback((q: string) => registrySuggestResults(q), []);
 
 	// Debounced multi-source search
 	useEffect(() => {

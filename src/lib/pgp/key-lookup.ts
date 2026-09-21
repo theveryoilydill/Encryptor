@@ -5,8 +5,8 @@
  *
  * Lookup order (owner feedback: Encryptor Registry results FIRST for
  * everything):
- *   1. The Encryptor Registry (built-in, exact key-ID index, armor included
- *      in the response — no second fetch).
+ *   1. The Encryptor Registry (built-in, exact email / name / key-ID
+ *      indexes, armor included in the response — no second fetch).
  *   2. Keybase (returns the owning username).
  *   3. keys.openpgp.org (fallback without usernames).
  *
@@ -22,6 +22,7 @@ import {
 	type KeySearchResult,
 } from "./keybase";
 import { registryLookup, type RegistryLookupKey } from "@/lib/registry/client";
+import { normalizeDisplayName } from "@/lib/registry/name";
 import { validateArmoredKey } from "@/lib/pgp/pgp";
 
 /**
@@ -88,10 +89,11 @@ async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchR
 	};
 }
 
-/** Query the Encryptor Registry for email / 40-hex / 16-hex queries and map
- *  live keys to suggestion results (owner feedback: surface Encryptor keys
- *  in the recipients box like the other key directories, so keys published
- *  on Encryptor are discoverable). Revoked keys are never suggested.
+/** Query the Encryptor Registry for email / name / 40-hex / 16-hex queries
+ *  and map live keys to suggestion results (owner feedback: surface
+ *  Encryptor keys in the recipients box like the other key directories —
+ *  INCLUDING by display name, so searching "john smith" finds the key
+ *  published as "John Smith"). Revoked keys are never suggested.
  *  Non-matching query shapes resolve to []. */
 export async function registrySuggestResults(q: string): Promise<KeySearchResult[]> {
 	const trimmed = q.trim();
@@ -104,7 +106,12 @@ export async function registrySuggestResults(q: string): Promise<KeySearchResult
 	} else if (/^(0x)?[0-9A-Fa-f]{16}$/.test(flat)) {
 		keys = await registryLookup({ keyId: flat.replace(/^0x/i, "").toUpperCase() });
 	} else {
-		return [];
+		// Anything else is a display-name candidate — validated with the SAME
+		// normalization the registry index uses (shared module), so garbage
+		// queries never reach the network and valid ones always match.
+		const name = normalizeDisplayName(trimmed);
+		if (!name) return [];
+		keys = await registryLookup({ name });
 	}
 	const live = keys.filter((k) => !k.revoked).slice(0, 5);
 	return Promise.all(live.map(registryKeyToSuggestion));

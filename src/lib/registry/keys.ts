@@ -8,6 +8,7 @@
 import * as openpgp from "openpgp";
 
 import { RegistryError } from "./db";
+import { normalizeDisplayName } from "./name";
 
 /** Email grammar for registry indexing (strict, lowercase-normalized). */
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
@@ -340,21 +341,11 @@ export function maxNames(): number {
 }
 
 /** Valid normalized name: printable, no angle brackets (they delimit the
- *  email part), 1–64 chars after normalization. */
+ *  email part), 1–64 chars after normalization. The implementation lives in
+ *  the client-safe shared module (./name) so server indexing and client
+ *  search can never drift apart. */
 export function normalizeName(raw: string): string | null {
-	const name = raw
-		.replace(/\s+/g, " ")
-		.trim()
-		.replace(/^["']+|["']+$/g, "")
-		.toLowerCase();
-	if (!name || name.length > 64) return null;
-	if (!/^[^<>]+$/.test(name)) return null;
-	// Reject C0 control characters and DEL without embedding them in a regex.
-	for (const ch of name) {
-		const code = ch.codePointAt(0) ?? 0;
-		if (code < 0x20 || code === 0x7f) return null;
-	}
-	return name;
+	return normalizeDisplayName(raw);
 }
 
 /**

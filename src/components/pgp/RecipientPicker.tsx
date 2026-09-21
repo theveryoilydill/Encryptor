@@ -151,7 +151,7 @@ export function RecipientPicker({
 	// # Mr. AI Acting on s183173's Behalf
 	const visibleSuggestions = input.trim() === "" ? [] : suggestions;
 
-	/** Query the Encryptor Registry for email / 40-hex / 16-hex queries and
+	/** Query the Encryptor Registry for email / name / 40-hex / 16-hex queries and
 	 *  map live keys to suggestion results — the SHARED implementation lives
 	 *  in key-lookup.ts (owner DRY requirement: recipient search and verify's
 	 *  key search must not drift). Public armor comes back with the lookup,

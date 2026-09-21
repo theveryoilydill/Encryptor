@@ -613,12 +613,12 @@ console.log("== quantum-seal public keys (pqSealPk) ==");
 	);
 	check("publish with pqSealPk -> 201", pub.status === 201, `got ${pub.status}`);
 	const look = await api(`/api/registry/lookup?fingerprint=${pqFpr}`, { headers: IP(91) });
-	check(
-		"lookup returns pqSealPk verbatim",
-		look.body?.keys?.[0]?.pqSealPk === pqPkA,
-	);
+	check("lookup returns pqSealPk verbatim", look.body?.keys?.[0]?.pqSealPk === pqPkA);
 	const lookNoWords = look.body?.keys?.[0] ?? {};
-	check("lookup keys carry armored + pqSealPk fields", "armored" in lookNoWords && "pqSealPk" in lookNoWords);
+	check(
+		"lookup keys carry armored + pqSealPk fields",
+		"armored" in lookNoWords && "pqSealPk" in lookNoWords,
+	);
 
 	// Invalid: wrong byte length must reject BEFORE any write.
 	const shortPk = Buffer.alloc(1183, 7).toString("base64");
@@ -642,7 +642,11 @@ console.log("== quantum-seal public keys (pqSealPk) ==");
 	// Publish WITHOUT pqSealPk: the column reads back null (optional stays optional).
 	const bare = await makeKey("PQ Bare", `pqbare.${RUN}@example.com`);
 	const bareFpr = bare.publicKey.getFingerprint().toUpperCase();
-	const barePub = await jsonPost("/api/registry/publish", { armored: bare.publicKey.armor() }, IP(94));
+	const barePub = await jsonPost(
+		"/api/registry/publish",
+		{ armored: bare.publicKey.armor() },
+		IP(94),
+	);
 	check("publish without pqSealPk -> 201", barePub.status === 201, `got ${barePub.status}`);
 	const bareLook = await api(`/api/registry/lookup?fingerprint=${bareFpr}`, { headers: IP(95) });
 	check("lookup pqSealPk null when not published", bareLook.body?.keys?.[0]?.pqSealPk === null);

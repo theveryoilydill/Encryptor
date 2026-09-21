@@ -187,6 +187,22 @@ to any lookup call and each key gains a `words: string[20]` field.
 Without the parameter the field is omitted entirely, keeping default
 responses small.
 
+## Quantum-seal public keys (`pqSealPk`, migration 0005)
+
+Publishers may attach the PUBLIC half of an ML-KEM-768 (FIPS 203)
+quantum-seal pair to their key: `POST /api/registry/publish` accepts an
+optional **`pqSealPk`** field — base64 of the raw 1184-byte public key,
+validated server-side (wrong byte length or non-base64 → 400). The secret
+half never leaves the owner's device; the public half only ever
+ENCAPSULATES (seals) archive copies to this key, so publishing it leaks
+nothing. Lookups return it per key as **`pqSealPk`** (or `null` when the
+owner published without one). An authorized replacement may update it by
+sending a new value; replaces WITHOUT the field keep the stored value
+(same policy as the armored key). In the app, "Generate & publish" mints
+the quantum-seal pair alongside the key whenever a passphrase is present
+(the secret is wrapped with that passphrase) and publishes the public
+half automatically.
+
 ## UI surface — the login gate
 
 The Keys tab is GONE (PR #25 review round: "remove that new key tab", "keep

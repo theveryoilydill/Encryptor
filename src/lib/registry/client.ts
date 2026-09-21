@@ -25,6 +25,9 @@ export interface RegistryLookupKey {
 	revokeReason: string | null;
 	createdAt: number;
 	updatedAt: number;
+	/** Base64 ML-KEM-768 public key when the owner published a quantum-seal
+	 *  pair — lets correspondents seal archive copies to this key. */
+	pqSealPk?: string | null;
 }
 
 /** Response of POST /api/registry/publish. */
@@ -149,6 +152,8 @@ export async function registryLookup(query: {
 export async function registryPublish(input: {
 	armored: string;
 	encryptedPrivate?: string;
+	/** ML-KEM-768 public key (base64) stored with the record (optional). */
+	pqSealPk?: string;
 	/** Cloudflare Turnstile token; required on deployments that enforce it. */
 	turnstileToken?: string;
 	/** Possession proof for REPLACING an already-published fingerprint:
@@ -163,6 +168,7 @@ export async function registryPublish(input: {
 		body: JSON.stringify({
 			armored: input.armored,
 			...(input.encryptedPrivate ? { encryptedPrivate: input.encryptedPrivate } : {}),
+			...(input.pqSealPk ? { pqSealPk: input.pqSealPk } : {}),
 			...(input.turnstileToken ? { turnstileToken: input.turnstileToken } : {}),
 			...(input.nonce && input.signature ? { nonce: input.nonce, signature: input.signature } : {}),
 		}),

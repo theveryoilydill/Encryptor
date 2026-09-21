@@ -20,12 +20,17 @@ import {
 	type KeySearchResult,
 } from "@/lib/pgp/keybase";
 import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
+import { registryLookup } from "@/lib/registry/client";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
 import { STORAGE_KEYS } from "@/lib/constants";
 
 const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
+
+/** Loose email shape — enough to decide when a recipient query should ALSO
+ *  hit the Encryptor Registry's exact-match email index. */
+const EMAIL_SUGGEST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Chip tooltip text (R10): label, then the key's algorithm when known
@@ -150,6 +155,49 @@ export function RecipientPicker({
 	// # Mr. AI Acting on s183173's Behalf
 	const visibleSuggestions = input.trim() === "" ? [] : suggestions;
 
+	/** Query the Encryptor Registry for email / 40-hex / 16-hex queries and map
+	 *  live keys to suggestion results (owner feedback: surface Encryptor keys
+	 *  in the recipients box like the other key directories, so keys published
+	 *  on Encryptor are discoverable). Public armor comes back with the
+	 *  lookup, so the add path needs no second fetch; revoked keys are never
+	 *  suggested. Non-matching query shapes resolve to []. */
+	const registrySuggest = useCallback(async (q: string): Promise<KeySearchResult[]> => {
+		const trimmed = q.trim();
+		let keys: Awaited<ReturnType<typeof registryLookup>> = [];
+		const flat = trimmed.replace(/\s+/g, "");
+		if (EMAIL_SUGGEST_RE.test(trimmed)) {
+			keys = await registryLookup({ email: trimmed.toLowerCase() });
+		} else if (/^[0-9A-Fa-f]{40}$/.test(flat)) {
+			keys = await registryLookup({ fingerprint: flat.toUpperCase() });
+		} else if (/^(0x)?[0-9A-Fa-f]{16}$/.test(flat)) {
+			keys = await registryLookup({ keyId: flat.replace(/^0x/i, "").toUpperCase() });
+		} else {
+			return [];
+		}
+		const live = keys.filter((k) => !k.revoked).slice(0, 5);
+		return Promise.all(
+			live.map(async (k) => {
+				let label = k.fingerprint;
+				try {
+					const described = await validateArmoredKey(k.armored);
+					const first = described.info?.userIDs?.[0];
+					if (first?.name && first?.email) label = `${first.name} <${first.email}>`;
+					else if (first?.email) label = first.email;
+					else if (first?.name) label = first.name;
+				} catch {
+					// label falls back to the fingerprint
+				}
+				return {
+					source: "encryptor" as const,
+					label,
+					fingerprint: k.fingerprint,
+					keyID: k.fingerprint.slice(-16),
+					armored: k.armored,
+				};
+			}),
+		);
+	}, []);
+
 	// Debounced multi-source search
 	useEffect(() => {
 		if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -161,8 +209,23 @@ export function RecipientPicker({
 			}
 			setBusy(true);
 			try {
-				const results = await searchAllKeyserversClient(q, PROXIES.searchAllProxy);
-				setSuggestions(results);
+				// Encryptor Registry results first, then the classic keyservers —
+				// each source fails independently so one outage never blanks the
+				// dropdown.
+				const [registryResults, keyserverResults] = await Promise.all([
+					registrySuggest(q).catch(() => [] as KeySearchResult[]),
+					searchAllKeyserversClient(q, PROXIES.searchAllProxy).catch(() => [] as KeySearchResult[]),
+				]);
+				// Dedupe by fingerprint (registry entries win ties).
+				const seen = new Set<string>();
+				const merged: KeySearchResult[] = [];
+				for (const r of [...registryResults, ...keyserverResults]) {
+					const key = r.fingerprint || `nb-${r.source}-${r.label}`;
+					if (seen.has(key)) continue;
+					seen.add(key);
+					merged.push(r);
+				}
+				setSuggestions(merged);
 				setShowSuggestions(true);
 			} catch {
 				setSuggestions([]);
@@ -191,7 +254,56 @@ export function RecipientPicker({
 			setError(null);
 			setAdding(true);
 			try {
-				if (result.source === "keybase" && result.username) {
+				if (result.source === "encryptor") {
+					// The registry lookup already returned the public armor.
+					let armoredKey = result.armored;
+					if (!armoredKey && result.fingerprint) {
+						const again = await registryLookup({ fingerprint: result.fingerprint });
+						armoredKey = again.find((k) => !k.revoked)?.armored;
+					}
+					if (!armoredKey || !result.fingerprint) {
+						setError("Could not fetch that key from the Encryptor Registry.");
+						return;
+					}
+					// Narrowed once (TS cannot keep narrowing an optional property
+					// inside the setRecipients closure below).
+					const fpr = result.fingerprint;
+					if (recipients.some((p) => p.fingerprint === fpr)) {
+						setInput("");
+						setSuggestions([]);
+						setShowSuggestions(false);
+						return;
+					}
+					// Expiry + algorithm backfill — the same describe-once pattern as
+					// the keyserver path (never blocks the add on failure).
+					let expiresAt: number | null = null;
+					let algorithm = "Unknown";
+					try {
+						const described = await validateArmoredKey(armoredKey);
+						const exp = described.info?.expirationTime;
+						if (exp instanceof Date && Number.isFinite(exp.getTime())) {
+							expiresAt = exp.getTime();
+						}
+						if (described.info?.algorithm) {
+							algorithm = described.info.algorithm;
+						}
+					} catch {
+						expiresAt = null;
+					}
+					setRecipients((prev) => [
+						...prev,
+						{
+							source: "local",
+							label: result.label,
+							armored: armoredKey,
+							fingerprint: fpr,
+							keyID: result.keyID ?? fpr.slice(-16),
+							algorithm,
+							expiresAt,
+						},
+					]);
+					rememberRecentRecipient({ label: result.label, fingerprint: fpr });
+				} else if (result.source === "keybase" && result.username) {
 					// Fetch the full public key from Keybase
 					const r = await lookupKeybaseUsersClient([result.username], PROXIES.keybaseProxy);
 					if (r.found.length === 0) {
@@ -340,6 +452,7 @@ export function RecipientPicker({
 	);
 
 	const sourceColors: Record<string, string> = {
+		encryptor: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
 		keybase: `bg-[#0055dc]/10 ${ACCENT_TEXT}`,
 		ubuntu: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400",
 		"openpgp.org": "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-400",
@@ -453,12 +566,12 @@ export function RecipientPicker({
 					onFocus={() => visibleSuggestions.length > 0 && setShowSuggestions(true)}
 					placeholder={
 						recipients.length === 0
-							? "Search by name, email, or Keybase username…"
+							? "Search by name, email, Keybase username, or fingerprint…"
 							: "Add another recipient…"
 					}
 					className="min-h-11 pr-8 sm:min-h-0 sm:py-2"
 					disabled={adding}
-					aria-label="Search recipients by name, email, or Keybase username"
+					aria-label="Search recipients by name, email, Keybase username, or fingerprint"
 					autoComplete="off"
 				/>
 				{busy && (

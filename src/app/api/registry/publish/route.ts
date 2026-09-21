@@ -13,6 +13,7 @@ import {
 } from "@/lib/registry/db";
 import {
 	parseEncryptedPrivateArmored,
+	parsePqSealPk,
 	parsePublicArmored,
 	verifyChallengeSignature,
 } from "@/lib/registry/keys";
@@ -39,6 +40,10 @@ export const dynamic = "force-dynamic";
  *                database never holds usable private key bytes.
  *     optional: { "dropEncryptedPrivate": true } — remove a previously
  *                escrowed private key during an authorized replacement.
+ *     optional: { "pqSealPk": "<base64 ML-KEM-768 public key>" } — store the
+ *                owner's quantum-seal PUBLIC half so correspondents can seal
+ *                archive copies to this key. The secret half never leaves the
+ *                owner's device; the server validates the byte length.
  *     optional: { "turnstileToken": "..." } — Cloudflare Turnstile token;
  *                required when the deployment enforces Turnstile (see
  *                src/lib/registry/turnstile.ts).
@@ -105,6 +110,14 @@ export async function POST(req: NextRequest) {
 				)
 			: null;
 
+		// Optional quantum-seal public half (ML-KEM-768). Validated BEFORE any
+		// write: an invalid value rejects the publish rather than storing junk.
+		const rawPqSealPk = stringField(body, "pqSealPk", 2048);
+		const pqSealPk = rawPqSealPk ? parsePqSealPk(rawPqSealPk) : null;
+		if (rawPqSealPk && !pqSealPk) {
+			throw new RegistryError("pqSealPk must be base64 of a 1184-byte ML-KEM-768 public key", 400);
+		}
+
 		const existing = await db
 			.prepare("SELECT revoked, armored FROM registry_keys WHERE fingerprint = ?1")
 			.bind(parsed.fingerprint)
@@ -161,7 +174,7 @@ export async function POST(req: NextRequest) {
 			if (!ok) {
 				throw new RegistryError("Challenge signature is invalid", 403);
 			}
-			await replaceKeyRecord(db, parsed, escrow, dropEscrow);
+			await replaceKeyRecord(db, parsed, escrow, dropEscrow, pqSealPk);
 			await auditSafe(
 				db,
 				"replace",
@@ -216,8 +229,8 @@ export async function POST(req: NextRequest) {
 				db
 					.prepare(
 						`INSERT INTO registry_keys
-                                 (fingerprint, key_id, armored, encrypted_private, private_updated_at, revoked, token_hash, created_at, updated_at)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?7)`,
+                                 (fingerprint, key_id, armored, encrypted_private, private_updated_at, pq_seal_pk, revoked, token_hash, created_at, updated_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?8)`,
 					)
 					.bind(
 						parsed.fingerprint,
@@ -225,6 +238,7 @@ export async function POST(req: NextRequest) {
 						parsed.armored,
 						escrow?.armored ?? null,
 						escrow ? now : null,
+						pqSealPk,
 						tokenHash,
 						now,
 					),
@@ -291,6 +305,7 @@ async function replaceKeyRecord(
 	parsed: Awaited<ReturnType<typeof parsePublicArmored>>,
 	escrow: Awaited<ReturnType<typeof parseEncryptedPrivateArmored>> | null,
 	dropEscrow: boolean,
+	pqSealPk: string | null,
 ) {
 	const now = nowSeconds();
 	// The status UPDATE runs FIRST and alone, gated on `AND revoked = 0` so a
@@ -331,6 +346,15 @@ async function replaceKeyRecord(
 	}
 	if (!updated.meta || Number(updated.meta.changes ?? 0) === 0) {
 		throw new RegistryError("Key was revoked concurrently — replacement refused", 409);
+	}
+	// Quantum-seal public half is independent of escrow: a provided value
+	// replaces, an absent one keeps whatever is stored (same policy as the
+	// armored key itself).
+	if (pqSealPk) {
+		await db
+			.prepare("UPDATE registry_keys SET pq_seal_pk = ?2 WHERE fingerprint = ?1 AND revoked = 0")
+			.bind(parsed.fingerprint, pqSealPk)
+			.run();
 	}
 	await db.batch([
 		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(parsed.fingerprint),

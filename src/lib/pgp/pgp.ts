@@ -34,10 +34,14 @@ export interface GenerateKeyOptions {
 	email?: string;
 	passphrase?: string;
 	/**
-	 * "ecc" uses modern Edwards-curve keys (recommended, default).
+	 * "curve25519" generates the modern (non-legacy) Ed25519 + X25519 pair —
+	 * the default for new Encryptor keys (owner feedback: generated keys must
+	 * not show up as "EdDSA (legacy)"). Still v4 packets, so fingerprints stay
+	 * 40-hex and every registry/word-list/UI surface works unchanged.
+	 * "ecc" is the older v4 Edwards-curve path (kept for explicit opt-in);
 	 * "rsa" is older but widely compatible.
 	 */
-	type?: "ecc" | "rsa";
+	type?: "ecc" | "curve25519" | "rsa";
 	/** For ECC: see openpgp.EllipticCurveName */
 	curve?:
 		| "ed25519Legacy"
@@ -388,7 +392,10 @@ export async function generateKeyPair(opts: GenerateKeyOptions): Promise<Generat
 		format: "armored",
 		...(type === "ecc"
 			? { curve: opts.curve ?? "ed25519Legacy" }
-			: { rsaBits: opts.rsaBits ?? 4096 }),
+			: type === "curve25519"
+				? // Modern Ed25519 (sign) + X25519 (encrypt) — no curve option.
+					{}
+				: { rsaBits: opts.rsaBits ?? 4096 }),
 		...(keyExpirationTime ? { keyExpirationTime } : {}),
 	});
 

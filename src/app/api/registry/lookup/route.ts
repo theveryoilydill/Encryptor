@@ -35,10 +35,11 @@ interface RegistryRow {
 	revoke_reason: string | null;
 	created_at: number;
 	updated_at: number;
+	pq_seal_pk: string | null;
 }
 
 const SELECT_COLUMNS =
-	"fingerprint, armored, revoked, revoked_at, revoke_reason, created_at, updated_at";
+	"fingerprint, armored, revoked, revoked_at, revoke_reason, created_at, updated_at, pq_seal_pk";
 
 function toPublic(row: RegistryRow) {
 	return {
@@ -49,6 +50,7 @@ function toPublic(row: RegistryRow) {
 		revokeReason: row.revoke_reason,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
+		pqSealPk: row.pq_seal_pk,
 	};
 }
 

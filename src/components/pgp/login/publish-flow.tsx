@@ -210,6 +210,8 @@ export function useRegistryPublish() {
 		async (input: {
 			publicArmored: string;
 			encryptedPrivate?: string;
+			/** ML-KEM-768 public key (base64) to store alongside the key. */
+			pqSealPk?: string;
 			/** Private armor used to sign a replace challenge (possession proof). */
 			signArmor?: string;
 		}): Promise<PublishAttempt> => {
@@ -219,6 +221,7 @@ export function useRegistryPublish() {
 				const result = await registryPublish({
 					armored: input.publicArmored,
 					...(input.encryptedPrivate ? { encryptedPrivate: input.encryptedPrivate } : {}),
+					...(input.pqSealPk ? { pqSealPk: input.pqSealPk } : {}),
 					...(tsToken ? { turnstileToken: tsToken } : {}),
 				});
 				return {
@@ -263,6 +266,7 @@ export function useRegistryPublish() {
 		async (input: {
 			publicArmored: string;
 			encryptedPrivate?: string;
+			pqSealPk?: string;
 			signArmor: string;
 			signPassphrase: string;
 		}): Promise<PublishAttempt> => {
@@ -282,6 +286,7 @@ export function useRegistryPublish() {
 				const result = await registryPublish({
 					armored: input.publicArmored,
 					...(input.encryptedPrivate ? { encryptedPrivate: input.encryptedPrivate } : {}),
+					...(input.pqSealPk ? { pqSealPk: input.pqSealPk } : {}),
 					...(tsToken ? { turnstileToken: tsToken } : {}),
 					nonce: challenge.nonce,
 					signature,

@@ -37,6 +37,28 @@ export function normalizeEmail(raw: string): string | null {
 	return EMAIL_RE.test(email) ? email : null;
 }
 
+/**
+ * Quantum-seal public key: base64 of a raw ML-KEM-768 (FIPS 203) public
+ * key — exactly 1184 bytes. Stored as an OPTIONAL public column: the
+ * secret half never leaves the owner's device, and the public half is
+ * only ever used to ENCAPSULATE (seal) archive copies to this key.
+ * Returns the trimmed value, or null when malformed.
+ */
+export const MLKEM768_PUBLIC_KEY_BYTES = 1184;
+
+const PQ_SEAL_PK_B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+export function parsePqSealPk(raw: string): string | null {
+	const value = raw.trim();
+	if (value.length < 100 || value.length > 2048 || !PQ_SEAL_PK_B64_RE.test(value)) return null;
+	try {
+		if (atob(value).length !== MLKEM768_PUBLIC_KEY_BYTES) return null;
+		return value;
+	} catch {
+		return null;
+	}
+}
+
 /** A public key fully derived server-side from the armored input. */
 export interface ParsedPublicKey {
 	fingerprint: string;

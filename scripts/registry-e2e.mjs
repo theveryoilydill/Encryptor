@@ -600,6 +600,86 @@ console.log("== subkey squatting + structural validation (review regressions) ==
 	check("tampered armor rejected -> 400", tamperedRes.status === 400, `got ${tamperedRes.status}`);
 }
 
+console.log("== quantum-seal public keys (pqSealPk) ==");
+{
+	// Valid publish: base64 of 1184 raw bytes (ML-KEM-768 public key size).
+	const pqPkA = Buffer.alloc(1184, 7).toString("base64");
+	const pqUser = await makeKey("PQ User", `pq.${RUN}@example.com`);
+	const pqFpr = pqUser.publicKey.getFingerprint().toUpperCase();
+	const pub = await jsonPost(
+		"/api/registry/publish",
+		{ armored: pqUser.publicKey.armor(), pqSealPk: pqPkA },
+		IP(90),
+	);
+	check("publish with pqSealPk -> 201", pub.status === 201, `got ${pub.status}`);
+	const look = await api(`/api/registry/lookup?fingerprint=${pqFpr}`, { headers: IP(91) });
+	check(
+		"lookup returns pqSealPk verbatim",
+		look.body?.keys?.[0]?.pqSealPk === pqPkA,
+	);
+	const lookNoWords = look.body?.keys?.[0] ?? {};
+	check("lookup keys carry armored + pqSealPk fields", "armored" in lookNoWords && "pqSealPk" in lookNoWords);
+
+	// Invalid: wrong byte length must reject BEFORE any write.
+	const shortPk = Buffer.alloc(1183, 7).toString("base64");
+	const pqBad = await makeKey("PQ Bad", `pqbad.${RUN}@example.com`);
+	const bad = await jsonPost(
+		"/api/registry/publish",
+		{ armored: pqBad.publicKey.armor(), pqSealPk: shortPk },
+		IP(92),
+	);
+	check("publish with wrong-length pqSealPk -> 400", bad.status === 400, `got ${bad.status}`);
+
+	// Invalid: not base64.
+	const pqBad2 = await makeKey("PQ Bad2", `pqbad2.${RUN}@example.com`);
+	const bad2 = await jsonPost(
+		"/api/registry/publish",
+		{ armored: pqBad2.publicKey.armor(), pqSealPk: "definitely not base64!!!" },
+		IP(93),
+	);
+	check("publish with non-base64 pqSealPk -> 400", bad2.status === 400, `got ${bad2.status}`);
+
+	// Publish WITHOUT pqSealPk: the column reads back null (optional stays optional).
+	const bare = await makeKey("PQ Bare", `pqbare.${RUN}@example.com`);
+	const bareFpr = bare.publicKey.getFingerprint().toUpperCase();
+	const barePub = await jsonPost("/api/registry/publish", { armored: bare.publicKey.armor() }, IP(94));
+	check("publish without pqSealPk -> 201", barePub.status === 201, `got ${barePub.status}`);
+	const bareLook = await api(`/api/registry/lookup?fingerprint=${bareFpr}`, { headers: IP(95) });
+	check("lookup pqSealPk null when not published", bareLook.body?.keys?.[0]?.pqSealPk === null);
+
+	// Authorized replace can UPDATE the quantum-seal public half.
+	const pqPkB = Buffer.alloc(1184, 9).toString("base64");
+	const chP = await challengeFor(pqFpr, 96);
+	const rep = await jsonPost(
+		"/api/registry/publish",
+		{
+			armored: pqUser.publicKey.armor(),
+			pqSealPk: pqPkB,
+			nonce: chP.body.nonce,
+			signature: await signChallenge(pqUser.privateKey, pqFpr, chP.body.nonce),
+		},
+		IP(97),
+	);
+	check("replace with new pqSealPk -> 200", rep.status === 200, `got ${rep.status}`);
+	const lookB = await api(`/api/registry/lookup?fingerprint=${pqFpr}`, { headers: IP(98) });
+	check("lookup shows replaced pqSealPk", lookB.body?.keys?.[0]?.pqSealPk === pqPkB);
+
+	// A replace WITHOUT pqSealPk KEEPS the stored value (same policy as armor).
+	const chQ = await challengeFor(pqFpr, 99);
+	const keep = await jsonPost(
+		"/api/registry/publish",
+		{
+			armored: pqUser.publicKey.armor(),
+			nonce: chQ.body.nonce,
+			signature: await signChallenge(pqUser.privateKey, pqFpr, chQ.body.nonce),
+		},
+		IP(100),
+	);
+	check("replace without pqSealPk -> 200", keep.status === 200, `got ${keep.status}`);
+	const lookC = await api(`/api/registry/lookup?fingerprint=${pqFpr}`, { headers: IP(101) });
+	check("replace without pqSealPk keeps stored value", lookC.body?.keys?.[0]?.pqSealPk === pqPkB);
+}
+
 console.log("== encrypted private key escrow ==");
 {
 	// escrowUser publishes WITH a passphrase-encrypted private key.

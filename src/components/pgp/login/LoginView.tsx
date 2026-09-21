@@ -29,6 +29,7 @@ import {
 	Loader2,
 	Lock,
 	Search,
+	TriangleAlert,
 	Upload,
 } from "lucide-react";
 
@@ -58,6 +59,7 @@ import {
 } from "@/components/pgp/login/publish-flow";
 import { PROXIES, type PrivateKeyConfig } from "@/components/pgp/contracts";
 import { generatePassphrase } from "@/lib/pgp/passphrase";
+import { generateSealKeyPair, wrapSealSecret, type QuantumSealConfig } from "@/lib/pgp/pq";
 import {
 	formatFingerprint,
 	generateKeyPair,
@@ -1624,8 +1626,12 @@ function GenerateForm({
 	const pub = useRegistryPublish();
 	const writesLocked = useWritesLocked();
 
-	const canGenerate =
-		passphrase.length >= 8 && !generating && (email.trim() === "" || EMAIL_RE.test(email.trim()));
+	// Passphrase is OPTIONAL (owner feedback: "Don't require password for
+	// local keys, but warn") — an empty passphrase generates an unprotected
+	// key, surfaced by the inline warning + escrow gating below. The inline
+	// warning and the escrow/quantum-seal gating react to hasPassphrase.
+	const hasPassphrase = passphrase.length > 0;
+	const canGenerate = !generating && (email.trim() === "" || EMAIL_RE.test(email.trim()));
 
 	const submit = useCallback(async () => {
 		setGenerating(true);
@@ -1636,15 +1642,32 @@ function GenerateForm({
 				...(name.trim() ? { name: name.trim() } : {}),
 				...(email.trim() ? { email: email.trim().toLowerCase() } : {}),
 				passphrase,
-				type: "ecc",
+				// Modern Ed25519 + X25519 (owner feedback: generated keys must not
+				// be "EdDSA (legacy)"). Still v4 packets — 40-hex fingerprints, so
+				// every registry/PGP-words/QR surface works unchanged.
+				type: "curve25519",
 				expirationSeconds: seconds > 0 ? seconds : undefined,
 			});
-			const label = name.trim() || email.trim() || "ECC key";
+			const label = name.trim() || email.trim() || "Ed25519 key";
+			// Quantum-seal pair (ML-KEM-768) — generated alongside when a
+			// passphrase exists so the secret half is wrapped by it. The PUBLIC
+			// half publishes with the key (pqSealPk) so correspondents can seal
+			// archive copies to it; the secret half stays on this device.
+			let seal: QuantumSealConfig | null = null;
+			if (hasPassphrase) {
+				try {
+					const sealPair = generateSealKeyPair();
+					seal = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
+				} catch {
+					seal = null; // PQ is additive — never block key generation
+				}
+			}
 			const config: PrivateKeyConfig = {
 				source: "generated",
 				label,
 				encryptedArmored: pair.privateKey,
 				info: pair.info,
+				...(seal ? { pq: seal } : {}),
 			};
 			if (!publish) {
 				onUseKey(config);
@@ -1654,7 +1677,10 @@ function GenerateForm({
 			}
 			const attempt = await pub.publish({
 				publicArmored: pair.publicKey,
-				...(escrow ? { encryptedPrivate: pair.privateKey } : {}),
+				// Escrow needs a passphrase (the server only accepts fully
+				// passphrase-encrypted private keys) — gated on hasPassphrase.
+				...(hasPassphrase && escrow ? { encryptedPrivate: pair.privateKey } : {}),
+				...(seal ? { pqSealPk: seal.pk } : {}),
 				signArmor: pair.privateKey,
 			});
 			if (attempt.status === "published") {
@@ -1731,7 +1757,9 @@ function GenerateForm({
 						</div>
 					</div>
 					<div className="grid gap-1.5">
-						<Label htmlFor="gen-pass">Passphrase (protects the key on this device)</Label>
+						<Label htmlFor="gen-pass">
+							Passphrase (optional — protects the key on this device)
+						</Label>
 						<div className="flex gap-2">
 							<Input
 								id="gen-pass"
@@ -1765,6 +1793,15 @@ function GenerateForm({
 							</Button>
 						</div>
 						<PassphraseStrengthMeter passphrase={passphrase} idPrefix="gen-pass" />
+						{!hasPassphrase && (
+							<p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+								<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+								<span>
+									No passphrase — the private key will be stored unencrypted on this device. Anyone
+									using this browser profile can read your messages.
+								</span>
+							</p>
+						)}
 					</div>
 					<div className="grid gap-1.5">
 						<Label htmlFor="gen-expiry">Expires</Label>
@@ -1801,8 +1838,9 @@ function GenerateForm({
 							<div className="flex items-start gap-2 pl-6">
 								<Checkbox
 									id="gen-escrow"
-									checked={escrow}
+									checked={escrow && hasPassphrase}
 									onCheckedChange={(v) => setEscrow(v === true)}
+									disabled={!hasPassphrase}
 									className="mt-0.5"
 								/>
 								<div className="grid gap-0.5">
@@ -1811,6 +1849,7 @@ function GenerateForm({
 									</Label>
 									<p className="text-[11px] leading-relaxed text-muted-foreground">
 										Restore from any device with fingerprint + passphrase.
+										{!hasPassphrase && " Needs a passphrase — add one above."}
 									</p>
 								</div>
 							</div>

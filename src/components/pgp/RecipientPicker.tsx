@@ -19,7 +19,7 @@ import {
 	searchAllKeyserversClient,
 	type KeySearchResult,
 } from "@/lib/pgp/keybase";
-import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
+import { fetchKeysFromAllSources, registrySuggestResults } from "@/lib/pgp/key-lookup";
 import { registryLookup } from "@/lib/registry/client";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
@@ -27,10 +27,6 @@ import { PROXIES, type Recipient } from "@/components/pgp/contracts";
 import { STORAGE_KEYS } from "@/lib/constants";
 
 const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
-
-/** Loose email shape — enough to decide when a recipient query should ALSO
- *  hit the Encryptor Registry's exact-match email index. */
-const EMAIL_SUGGEST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Chip tooltip text (R10): label, then the key's algorithm when known
@@ -155,48 +151,16 @@ export function RecipientPicker({
 	// # Mr. AI Acting on s183173's Behalf
 	const visibleSuggestions = input.trim() === "" ? [] : suggestions;
 
-	/** Query the Encryptor Registry for email / 40-hex / 16-hex queries and map
-	 *  live keys to suggestion results (owner feedback: surface Encryptor keys
-	 *  in the recipients box like the other key directories, so keys published
-	 *  on Encryptor are discoverable). Public armor comes back with the
-	 *  lookup, so the add path needs no second fetch; revoked keys are never
+	/** Query the Encryptor Registry for email / 40-hex / 16-hex queries and
+	 *  map live keys to suggestion results — the SHARED implementation lives
+	 *  in key-lookup.ts (owner DRY requirement: recipient search and verify's
+	 *  key search must not drift). Public armor comes back with the lookup,
+	 *  so the add path needs no second fetch; revoked keys are never
 	 *  suggested. Non-matching query shapes resolve to []. */
-	const registrySuggest = useCallback(async (q: string): Promise<KeySearchResult[]> => {
-		const trimmed = q.trim();
-		let keys: Awaited<ReturnType<typeof registryLookup>> = [];
-		const flat = trimmed.replace(/\s+/g, "");
-		if (EMAIL_SUGGEST_RE.test(trimmed)) {
-			keys = await registryLookup({ email: trimmed.toLowerCase() });
-		} else if (/^[0-9A-Fa-f]{40}$/.test(flat)) {
-			keys = await registryLookup({ fingerprint: flat.toUpperCase() });
-		} else if (/^(0x)?[0-9A-Fa-f]{16}$/.test(flat)) {
-			keys = await registryLookup({ keyId: flat.replace(/^0x/i, "").toUpperCase() });
-		} else {
-			return [];
-		}
-		const live = keys.filter((k) => !k.revoked).slice(0, 5);
-		return Promise.all(
-			live.map(async (k) => {
-				let label = k.fingerprint;
-				try {
-					const described = await validateArmoredKey(k.armored);
-					const first = described.info?.userIDs?.[0];
-					if (first?.name && first?.email) label = `${first.name} <${first.email}>`;
-					else if (first?.email) label = first.email;
-					else if (first?.name) label = first.name;
-				} catch {
-					// label falls back to the fingerprint
-				}
-				return {
-					source: "encryptor" as const,
-					label,
-					fingerprint: k.fingerprint,
-					keyID: k.fingerprint.slice(-16),
-					armored: k.armored,
-				};
-			}),
-		);
-	}, []);
+	const registrySuggest = useCallback(
+		(q: string) => registrySuggestResults(q),
+		[],
+	);
 
 	// Debounced multi-source search
 	useEffect(() => {
@@ -611,8 +575,8 @@ export function RecipientPicker({
 										}`}
 									>
 										{/* No avatar here — person photos/initials in the key
-                        picker were noise (and a privacy leak of profile
-                        pictures); results are identified by their labels. */}
+			picker were noise (and a privacy leak of profile
+			pictures); results are identified by their labels. */}
 										<div className="min-w-0 flex-1">
 											<div className="truncate font-medium">{s.label}</div>
 											{s.fullName && s.username && (

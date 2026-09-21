@@ -1,11 +1,14 @@
 /**
  * Client-side helper that fetches public keys for signature verification
- * from BOTH Keybase and keys.openpgp.org, merging the results. (DRY: shared
- * by the RecipientPicker, DecryptTab and VerifyTab flows.)
+ * and recipient picking, merging results from EVERY directory (DRY: shared
+ * by the RecipientPicker, DecryptTab and VerifyTab flows).
  *
- * Keybase is tried first because it returns the owning username. If a key
- * isn't found on Keybase, we fall back to keys.openpgp.org (which doesn't
- * have usernames but still allows signature verification).
+ * Lookup order (owner feedback: Encryptor Registry results FIRST for
+ * everything):
+ *   1. The Encryptor Registry (built-in, exact key-ID index, armor included
+ *      in the response — no second fetch).
+ *   2. Keybase (returns the owning username).
+ *   3. keys.openpgp.org (fallback without usernames).
  *
  * Results are deduplicated by fingerprint.
  */
@@ -16,7 +19,10 @@ import {
 	fetchKeyByKeyIDClient,
 	fetchKeyFromOpenPGP_orgClient,
 	type KeybaseKeyByIDResult,
+	type KeySearchResult,
 } from "./keybase";
+import { registryLookup, type RegistryLookupKey } from "@/lib/registry/client";
+import { validateArmoredKey } from "@/lib/pgp/pgp";
 
 /**
  * A locally-configured key that can be tried for signature verification
@@ -55,25 +61,115 @@ function normalizeKeyID(id: string): string {
 	return id.replace(/^0x/i, "").toUpperCase();
 }
 
+/** Loose email shape — enough to decide when a query should ALSO hit the
+ *  Encryptor Registry's exact-match email index. */
+const EMAIL_SUGGEST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Map a live registry record to a recipient-suggestion result. The armor
+ *  ships with the lookup, so adding a recipient needs no second fetch.
+ *  Shared by every registry-backed search (owner DRY requirement). */
+async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchResult> {
+	let label = k.fingerprint;
+	try {
+		const described = await validateArmoredKey(k.armored);
+		const first = described.info?.userIDs?.[0];
+		if (first?.name && first?.email) label = `${first.name} <${first.email}>`;
+		else if (first?.email) label = first.email;
+		else if (first?.name) label = first.name;
+	} catch {
+		// label falls back to the fingerprint
+	}
+	return {
+		source: "encryptor" as const,
+		label,
+		fingerprint: k.fingerprint,
+		keyID: k.fingerprint.slice(-16),
+		armored: k.armored,
+	};
+}
+
+/** Query the Encryptor Registry for email / 40-hex / 16-hex queries and map
+ *  live keys to suggestion results (owner feedback: surface Encryptor keys
+ *  in the recipients box like the other key directories, so keys published
+ *  on Encryptor are discoverable). Revoked keys are never suggested.
+ *  Non-matching query shapes resolve to []. */
+export async function registrySuggestResults(q: string): Promise<KeySearchResult[]> {
+	const trimmed = q.trim();
+	let keys: Awaited<ReturnType<typeof registryLookup>> = [];
+	const flat = trimmed.replace(/\s+/g, "");
+	if (EMAIL_SUGGEST_RE.test(trimmed)) {
+		keys = await registryLookup({ email: trimmed.toLowerCase() });
+	} else if (/^[0-9A-Fa-f]{40}$/.test(flat)) {
+		keys = await registryLookup({ fingerprint: flat.toUpperCase() });
+	} else if (/^(0x)?[0-9A-Fa-f]{16}$/.test(flat)) {
+		keys = await registryLookup({ keyId: flat.replace(/^0x/i, "").toUpperCase() });
+	} else {
+		return [];
+	}
+	const live = keys.filter((k) => !k.revoked).slice(0, 5);
+	return Promise.all(live.map(registryKeyToSuggestion));
+}
+
+/** Resolve signature key IDs against the Encryptor Registry (owner feedback:
+ *  verify must search the registry too — same directory the recipient search
+ *  uses, through this one shared module). One lookup per requested ID;
+ *  revoked keys never satisfy a verification. Best-effort: failures resolve
+ *  to nothing and never block the other sources. */
+async function registryVerificationResults(
+	keyIDs: string[],
+): Promise<VerificationKeyLookupResult[]> {
+	const found = await Promise.all(
+		keyIDs.map(async (rawID): Promise<VerificationKeyLookupResult | null> => {
+			const id = normalizeKeyID(rawID);
+			try {
+				const keys = await registryLookup({ keyId: id });
+				const live = keys.find((k) => !k.revoked);
+				if (!live) return null;
+				return {
+					armored: live.armored,
+					keyID: id,
+					fingerprint: live.fingerprint.toUpperCase(),
+					allKeyIDs: [id],
+					resolvedFrom: "encryptor" as const,
+				};
+			} catch {
+				return null;
+			}
+		}),
+	);
+	return found.filter((r): r is VerificationKeyLookupResult => r !== null);
+}
+
 export async function fetchKeysFromAllSources(
 	keyIDs: string[],
 	keybaseProxy: string,
 	opgProxy: string,
 ): Promise<VerificationKeyLookupResult[]> {
-	// Try Keybase first.
-	const keybaseResults = (await fetchKeyByKeyIDClient(keyIDs, keybaseProxy).catch(
-		() => [],
-	)) as VerificationKeyLookupResult[];
+	// 1. The Encryptor Registry FIRST (owner feedback) — its exact key-ID
+	//    index answers in one request and returns the armor directly.
+	const registryResults = await registryVerificationResults(keyIDs).catch(() => []);
+	for (const k of registryResults) k.resolvedFrom = "encryptor";
+
+	// 2. Keybase for the IDs the registry didn't resolve.
+	const registryFound = new Set(registryResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]));
+	const notOnRegistry = keyIDs.filter((id) => {
+		const upper = id.toUpperCase();
+		return !registryFound.has(upper) && !registryFound.has(upper.toLowerCase());
+	});
+	const keybaseResults = (
+		await fetchKeyByKeyIDClient(notOnRegistry, keybaseProxy).catch(() => [])
+	) as VerificationKeyLookupResult[];
 	for (const k of keybaseResults) k.resolvedFrom = "keybase";
 
-	// Find key IDs that Keybase didn't resolve.
-	const foundKeyIDs = new Set(keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]));
-	const missingKeyIDs = keyIDs.filter((id) => {
+	// 3. keys.openpgp.org for the rest.
+	const foundKeyIDs = new Set([
+		...registryFound,
+		...keybaseResults.flatMap((k) => k.allKeyIDs ?? [k.keyID]),
+	]);
+	const missingKeyIDs = notOnRegistry.filter((id) => {
 		const upper = id.toUpperCase();
 		return !foundKeyIDs.has(upper) && !foundKeyIDs.has(upper.toLowerCase());
 	});
-
-	// Try keys.openpgp.org for the missing ones.
 	const opgResults =
 		missingKeyIDs.length > 0
 			? ((await fetchKeyFromOpenPGP_orgClient(missingKeyIDs, opgProxy).catch(
@@ -82,10 +178,10 @@ export async function fetchKeysFromAllSources(
 			: [];
 	for (const k of opgResults) k.resolvedFrom = "openpgp.org";
 
-	// Merge and deduplicate by fingerprint.
+	// Merge registry-first and deduplicate by fingerprint.
 	const seen = new Set<string>();
 	const merged: VerificationKeyLookupResult[] = [];
-	for (const k of [...keybaseResults, ...opgResults]) {
+	for (const k of [...registryResults, ...keybaseResults, ...opgResults]) {
 		const fp = k.fingerprint.toUpperCase();
 		if (!seen.has(fp)) {
 			seen.add(fp);

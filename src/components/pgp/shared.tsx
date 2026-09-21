@@ -60,6 +60,7 @@ const KEY_SOURCE_LABELS: Readonly<Record<KeySource, string>> = {
 	local: "key from your configured key",
 	keybase: "key from Keybase",
 	"openpgp.org": "key from keys.openpgp.org",
+	encryptor: "key from the Encryptor Registry",
 };
 
 /** Small muted pill naming where the signer's public key was resolved from.
@@ -514,16 +515,16 @@ export function OutputBlock({
 							className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
 						/>
 						{/* Section-label family (R11-b): the tab input cards and the
-                Decrypt-tab result rows both render their Label as
-                text-xs uppercase tracking-wide muted — the OutputBlock title
-                is the same kind of section label, so it joins the family. */}
+		Decrypt-tab result rows both render their Label as
+		text-xs uppercase tracking-wide muted — the OutputBlock title
+		is the same kind of section label, so it joins the family. */}
 						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 							{title}
 						</Label>
 						{/* R8: armor stats — quiet mono detail next to the section label.
-                Armor is ASCII so string length ≈ byte length; lines from the
-                raw split. Hidden on the smallest screens to keep the row
-                uncluttered. */}
+		Armor is ASCII so string length ≈ byte length; lines from the
+		raw split. Hidden on the smallest screens to keep the row
+		uncluttered. */}
 						{output && (
 							<span
 								aria-hidden="true"

@@ -590,6 +590,9 @@ export default function PgpApp() {
 						},
 					}}
 					onKeyUpdated={handleSetPrivateKey}
+					/* Owner feedback: never ask to remember — the auto-lock
+                                           preference decides silently. */
+					autoCache={settings.autoLockMinutes > 0}
 					onPassphraseCached={() => {
 						setPassphraseCached(true);
 						setPassphraseCachedUntil(
@@ -786,9 +789,9 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 					>
 						{t.label}
 						{/* Alt+N hint chip — decorative (aria-hidden; the shortcut is
-                announced by the title tooltip and documented in the shortcuts
-                dialog). Hidden below sm so mobile touch targets stay clean;
-                at 16px tall it never grows the button's 20px label line box. */}
+		announced by the title tooltip and documented in the shortcuts
+		dialog). Hidden below sm so mobile touch targets stay clean;
+		at 16px tall it never grows the button's 20px label line box. */}
 						<kbd
 							aria-hidden="true"
 							className={`hidden items-center rounded border px-1 py-0.5 font-mono text-[10px] leading-none transition-colors duration-150 sm:inline-flex ${
@@ -800,10 +803,10 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 							{n}
 						</kbd>
 						{/* Animated accent underline — replaces the static active border
-                (kept transparent below so the 2px layout slot is stable) and
-                scales/fades in on activation. Sits inside the button's 2px
-                border slot, flush with the nav divider; the focus-visible
-                outline lives outside the button bounds, so no overlap. */}
+		(kept transparent below so the 2px layout slot is stable) and
+		scales/fades in on activation. Sits inside the button's 2px
+		border slot, flush with the nav divider; the focus-visible
+		outline lives outside the button bounds, so no overlap. */}
 						<span
 							aria-hidden="true"
 							className={`pointer-events-none absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-[#0055dc] transition-all duration-200 dark:bg-[#5e94ff] motion-reduce:scale-x-100 motion-reduce:transition-none ${

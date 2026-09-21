@@ -65,6 +65,8 @@ export interface ParsedPublicKey {
 	keyId: string;
 	subkeyIds: string[];
 	emails: string[];
+	/** Normalized self-reported User ID display names (see extractNames). */
+	names: string[];
 	/** Canonicalized armor produced by re-serializing the parsed key. */
 	armored: string;
 	createdAt: number;
@@ -153,6 +155,8 @@ export async function parsePublicArmored(
 
 	// Extract and normalize self-reported User ID emails (deduped, capped).
 	const emails = extractEmails(key, maxEmails());
+	// Same for display names — the registry indexes them for name lookups.
+	const names = extractNames(key, maxNames());
 
 	// Best-effort creation time (epoch seconds); 0 when unavailable.
 	const creation = key.getCreationTime();
@@ -176,6 +180,7 @@ export async function parsePublicArmored(
 		keyId: primary,
 		subkeyIds: allIds.slice(1),
 		emails,
+		names,
 		armored,
 		createdAt,
 	};
@@ -326,4 +331,50 @@ export function maxSubkeys(): number {
 /** Maximum self-reported emails indexed per key (single source of truth). */
 export function maxEmails(): number {
 	return 10;
+}
+
+/** Maximum self-reported display names indexed per key. Names come from the
+ *  same User IDs as the emails, so the same cap keeps the batches bounded. */
+export function maxNames(): number {
+	return 10;
+}
+
+/** Valid normalized name: printable, no angle brackets (they delimit the
+ *  email part), 1–64 chars after normalization. */
+export function normalizeName(raw: string): string | null {
+	const name = raw
+		.replace(/\s+/g, " ")
+		.trim()
+		.replace(/^["']+|["']+$/g, "")
+		.toLowerCase();
+	if (!name || name.length > 64) return null;
+	if (!/^[^<>]+$/.test(name)) return null;
+	// Reject C0 control characters and DEL without embedding them in a regex.
+	for (const ch of name) {
+		const code = ch.codePointAt(0) ?? 0;
+		if (code < 0x20 || code === 0x7f) return null;
+	}
+	return name;
+}
+
+/**
+ * Extract self-reported User ID display names from a parsed key — the part
+ * of "Name <email>" before the email (owner feedback: restore with
+ * "fingerprint, email, or name"). Normalized via normalizeName (lowercased,
+ * whitespace-collapsed) and deduped; names are NOT unique across keys.
+ */
+export function extractNames(key: openpgp.Key, cap: number): string[] {
+	const names: string[] = [];
+	const users = key.users ?? [];
+	for (const user of users) {
+		const userID = user?.userID;
+		if (!userID) continue;
+		// Prefer the packet-parsed name; fall back to the raw userid string
+		// minus the <email> tail.
+		const candidate = userID.name || userID.userID?.replace(/<[^<>]*>.*$/, "") || "";
+		const name = normalizeName(candidate);
+		if (name && !names.includes(name)) names.push(name);
+		if (names.length >= cap) break;
+	}
+	return names;
 }

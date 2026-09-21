@@ -256,6 +256,14 @@ export async function POST(req: NextRequest) {
 						)
 						.bind(email, parsed.fingerprint),
 				),
+				// Names are NOT unique (no collision policy) — plain inserts.
+				...parsed.names.map((name) =>
+					db
+						.prepare(
+							"INSERT INTO registry_names (name, fingerprint) VALUES (?1, ?2) ON CONFLICT (name, fingerprint) DO NOTHING",
+						)
+						.bind(name, parsed.fingerprint),
+				),
 			]);
 		} catch (e) {
 			// Concurrent first-publish of the same fingerprint loses the PK
@@ -273,7 +281,7 @@ export async function POST(req: NextRequest) {
 			db,
 			"publish",
 			parsed.fingerprint,
-			`emails:${parsed.emails.length} subkeys:${parsed.subkeyIds.length}`,
+			`emails:${parsed.emails.length} names:${parsed.names.length} subkeys:${parsed.subkeyIds.length}`,
 		);
 
 		return NextResponse.json(
@@ -359,6 +367,7 @@ async function replaceKeyRecord(
 	await db.batch([
 		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(parsed.fingerprint),
 		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(parsed.fingerprint),
+		db.prepare("DELETE FROM registry_names WHERE fingerprint = ?1").bind(parsed.fingerprint),
 		...parsed.subkeyIds.map((id) =>
 			db
 				.prepare(
@@ -372,6 +381,13 @@ async function replaceKeyRecord(
 					"INSERT INTO registry_emails (email, fingerprint) VALUES (?1, ?2) ON CONFLICT (email, fingerprint) DO NOTHING",
 				)
 				.bind(email, parsed.fingerprint),
+		),
+		...parsed.names.map((name) =>
+			db
+				.prepare(
+					"INSERT INTO registry_names (name, fingerprint) VALUES (?1, ?2) ON CONFLICT (name, fingerprint) DO NOTHING",
+				)
+				.bind(name, parsed.fingerprint),
 		),
 	]);
 }

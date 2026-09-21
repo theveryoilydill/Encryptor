@@ -133,16 +133,20 @@ export async function registryHealth(): Promise<RegistryHealth> {
 	return parseJson(res) as unknown as Promise<RegistryHealth>;
 }
 
-/** GET /api/registry/lookup — accepts fingerprint, key ID, or email. */
+/** GET /api/registry/lookup — accepts fingerprint, key ID, email, or name. */
 export async function registryLookup(query: {
 	fingerprint?: string;
 	keyId?: string;
 	email?: string;
+	/** Exact-match User ID display name (owner feedback: restore with
+	 *  fingerprint, email, or name). Names are NOT unique server-side. */
+	name?: string;
 }): Promise<RegistryLookupKey[]> {
 	const params = new URLSearchParams();
 	if (query.fingerprint) params.set("fingerprint", query.fingerprint);
 	else if (query.keyId) params.set("key_id", query.keyId);
 	else if (query.email) params.set("email", query.email);
+	else if (query.name) params.set("name", query.name);
 	const res = await fetch(`/api/registry/lookup?${params.toString()}`);
 	const body = await expectOk(res, "Lookup failed");
 	return (body.keys as RegistryLookupKey[]) ?? [];

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { LIMITS } from "@/lib/constants";
 import { RegistryError, getRegistryDBReady, enforceRateLimit } from "@/lib/registry/db";
-import { normalizeEmail, normalizeFingerprint, normalizeKeyID } from "@/lib/registry/keys";
+import { normalizeEmail, normalizeFingerprint, normalizeKeyID, normalizeName } from "@/lib/registry/keys";
 import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import { REGISTRY_CACHE_PUBLIC, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 
@@ -16,6 +16,8 @@ export const dynamic = "force-dynamic";
  *   ?fingerprint=<40 hex>   — primary key fingerprint
  *   ?key_id=<16 hex>        — primary OR subkey long key ID
  *   ?email=<address>        — exact-match email (as published)
+ *   ?name=<display name>    — exact-match User ID display name (lowercased;
+ *                             names are NOT unique — several keys may match)
  *
  * Returns { keys: [...] } so callers can iterate uniformly. Revoked keys
  * are returned WITH their revocation status — hiding them would let an
@@ -66,6 +68,7 @@ export async function GET(req: NextRequest) {
 		const fingerprint = url.searchParams.get("fingerprint");
 		const keyID = url.searchParams.get("key_id");
 		const email = url.searchParams.get("email");
+		const name = url.searchParams.get("name");
 		const includeWords = wantsWords(url);
 
 		const db = await getRegistryDBReady();
@@ -125,8 +128,24 @@ export async function GET(req: NextRequest) {
 				.bind(normalized, LIMITS.registryMaxLookupResults)
 				.all<RegistryRow>();
 			rows = result.results ?? [];
+		} else if (name) {
+			const normalized = normalizeName(name);
+			if (!normalized) throw new RegistryError("name is not a valid display name", 400);
+			// Names are NOT unique — the same bounded-subquery shape as
+			// the email branch keeps one common name from flooding results.
+			const result = await db
+				.prepare(
+					`SELECT ${SELECT_COLUMNS} FROM registry_keys
+                                         WHERE fingerprint IN
+                                         (SELECT fingerprint FROM registry_names WHERE name = ?1 LIMIT ?2)
+                                         ORDER BY created_at
+                                         LIMIT ?2`,
+				)
+				.bind(normalized, LIMITS.registryMaxLookupResults)
+				.all<RegistryRow>();
+			rows = result.results ?? [];
 		} else {
-			throw new RegistryError("Provide exactly one of: fingerprint, key_id, or email", 400);
+			throw new RegistryError("Provide exactly one of: fingerprint, key_id, email, or name", 400);
 		}
 
 		return NextResponse.json(

@@ -410,7 +410,11 @@ function LoginDialog({
 
 /* --------------------------- Encryptor Registry ---------------------------- */
 
-/** Restore an escrowed key — or publish a new/rotated one. */
+/** Sign up (generate a key + publish) — or log in by restoring the escrowed
+ *  backup. Owner feedback ordering: SIGN UP is the first thing new users see;
+ *  login comes second; "sign up with an already generated key" hangs off the
+ *  bottom of the signup panel instead of being a third tab. Language stays
+ *  simple on purpose — anyone should be able to navigate. */
 function RegistryDialog({
 	open,
 	onOpenChange,
@@ -420,7 +424,7 @@ function RegistryDialog({
 	onOpenChange: (open: boolean) => void;
 	onUseKey: (config: PrivateKeyConfig) => void;
 }) {
-	const [mode, setMode] = useState<"restore" | "publish" | "generate">("restore");
+	const [mode, setMode] = useState<"generate" | "restore" | "publish">("generate");
 	// Self-service revocation lives behind a quiet disclosure (not a fourth
 	// segment): it is the rare emergency-brake path, and the owner asked the
 	// gate stay minimal. It completes the lifecycle the publish outcome card
@@ -433,24 +437,47 @@ function RegistryDialog({
 			open={open}
 			onOpenChange={onOpenChange}
 			title="Encryptor Registry"
-			description="Sign in by restoring your passphrase-protected backup, publishing an existing key — or generating a brand-new one right here."
+			description="Sign up with a new key, or log in with your backup."
 		>
 			<div className="space-y-4">
 				<Segmented
 					value={mode}
-					onChange={(v) => setMode(v as "restore" | "publish" | "generate")}
+					onChange={(v) => setMode(v as "generate" | "restore" | "publish")}
 					options={[
-						{ id: "restore", label: "Restore my key" },
-						{ id: "publish", label: "Publish a key" },
-						{ id: "generate", label: "Generate & publish" },
+						{ id: "generate", label: "Sign up" },
+						{ id: "restore", label: "Login" },
 					]}
 				/>
-				{mode === "restore" ? (
+				{mode === "generate" ? (
+					<div className="space-y-3">
+						<GenerateForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} initialPublish />
+						<div className="border-t border-border/60 pt-3 text-center">
+							<button
+								type="button"
+								data-testid="signup-with-existing"
+								onClick={() => setMode("publish")}
+								className="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+							>
+								Already have a generated key? Sign up with it
+							</button>
+						</div>
+					</div>
+				) : mode === "restore" ? (
 					<RestoreForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} />
-				) : mode === "generate" ? (
-					<GenerateForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} initialPublish />
 				) : (
-					<PublishPasteForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} />
+					<div className="space-y-3">
+						<PublishPasteForm onUseKey={onUseKey} onDone={() => onOpenChange(false)} />
+						<div className="border-t border-border/60 pt-3 text-center">
+							<button
+								type="button"
+								data-testid="signup-back"
+								onClick={() => setMode("generate")}
+								className="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+							>
+								Back to sign up
+							</button>
+						</div>
+					</div>
 				)}
 				<div className="border-t border-border/60 pt-3">
 					<button
@@ -547,6 +574,46 @@ function RestoreForm({
 	const normalizeFpr = (raw: string) => raw.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
 	const isFpr = (raw: string) => /^[0-9A-F]{40}$/.test(normalizeFpr(raw));
 
+	/** Shared match acceptance for email/name lookups (DRY): filter live
+	 *  keys, pre-parse identity lines so the picker appears fully formed,
+	 *  and auto-select a single live match. */
+	const acceptMatches = useCallback(async (found: RegistryLookupKey[], noun: string) => {
+		const live = found.filter((k) => !k.revoked);
+		if (live.length === 0) {
+			setError(
+				found.length > 0
+					? `That ${noun} only has revoked keys on the registry.`
+					: `No keys found for that ${noun} on the registry.`,
+			);
+			return;
+		}
+		const pairs = await Promise.all(
+			live.map(async (m) => {
+				try {
+					const v = await validateArmoredKey(m.armored);
+					const u = v.info && "userIDs" in v.info ? v.info.userIDs[0] : undefined;
+					return [
+						m.fingerprint,
+						u ? [u.name, u.email].filter(Boolean).join(" — ") || null : null,
+					] as const;
+				} catch {
+					return [m.fingerprint, null] as const;
+				}
+			}),
+		);
+		setIdLines(Object.fromEntries(pairs));
+		setMatches(live);
+		// Single live key: preselect it so the passphrase step appears
+		// immediately — one less click on the primary sign-in path.
+		// Multiple keys still require an explicit pick below.
+		if (live.length === 1) {
+			focusPassRef.current = true;
+			setFingerprint(live[0].fingerprint);
+		} else {
+			setFingerprint(null);
+		}
+	}, []);
+
 	const resolve = useCallback(async () => {
 		setError(null);
 		const raw = query.trim();
@@ -558,52 +625,24 @@ function RestoreForm({
 				const escrow = await registryFetchEscrow(fpr);
 				if (!escrow.encryptedPrivate) {
 					setError(
-						"No encrypted backup is escrowed for this fingerprint. Use “Publish a key” instead.",
+						"No encrypted backup is escrowed for this fingerprint. Sign up with an already generated key instead.",
 					);
 					return;
 				}
 				setFingerprint(fpr);
 				setMatches(null);
 			} else if (EMAIL_RE.test(raw)) {
-				const found = await registryLookup({ email: raw.toLowerCase() });
-				const live = found.filter((k) => !k.revoked);
-				if (live.length === 0) {
-					setError(
-						found.length > 0
-							? "That email only has revoked keys on the registry."
-							: "No keys found for that email on the registry.",
-					);
-					return;
-				}
-				// Parse identity lines BEFORE the cards mount so the picker appears
-				// fully formed — no label pop-in after paint.
-				const pairs = await Promise.all(
-					live.map(async (m) => {
-						try {
-							const v = await validateArmoredKey(m.armored);
-							const u = v.info && "userIDs" in v.info ? v.info.userIDs[0] : undefined;
-							return [
-								m.fingerprint,
-								u ? [u.name, u.email].filter(Boolean).join(" — ") || null : null,
-							] as const;
-						} catch {
-							return [m.fingerprint, null] as const;
-						}
-					}),
+				await acceptMatches(await registryLookup({ email: raw.toLowerCase() }), "email");
+			} else if (raw.length >= 2) {
+				// Name search (owner feedback: restore with fingerprint, email,
+				// or name). Exact match server-side; names are not unique, so
+				// multiple matches land in the same picker as email lookups.
+				await acceptMatches(
+					await registryLookup({ name: raw.replace(/\s+/g, " ").toLowerCase() }),
+					"name",
 				);
-				setIdLines(Object.fromEntries(pairs));
-				setMatches(live);
-				// Single live key: preselect it so the passphrase step appears
-				// immediately — one less click on the primary sign-in path.
-				// Multiple keys still require an explicit pick below.
-				if (live.length === 1) {
-					focusPassRef.current = true;
-					setFingerprint(live[0].fingerprint);
-				} else {
-					setFingerprint(null);
-				}
 			} else {
-				setError("Enter a 40-character fingerprint or an email address.");
+				setError("Enter a 40-character fingerprint, an email, or a name.");
 				return;
 			}
 		} catch (e) {
@@ -611,7 +650,7 @@ function RestoreForm({
 		} finally {
 			setBusy(false);
 		}
-	}, [query]);
+	}, [query, acceptMatches]);
 
 	const restoreBusyRef = useRef(false);
 	const restore = useCallback(async () => {
@@ -670,7 +709,7 @@ function RestoreForm({
 	return (
 		<div className="space-y-3" data-testid="restore-form">
 			<div className="grid gap-1.5">
-				<Label htmlFor="restore-query">Fingerprint or email</Label>
+				<Label htmlFor="restore-query">Fingerprint, email, or name</Label>
 				<div className="flex gap-2">
 					<Input
 						id="restore-query"
@@ -681,7 +720,7 @@ function RestoreForm({
 							setFingerprint(null);
 							setError(null);
 						}}
-						placeholder="40-hex fingerprint or you@example.com"
+						placeholder="40-hex fingerprint, you@example.com, or your name"
 						autoComplete="off"
 						spellCheck={false}
 						onKeyDown={(e) => {

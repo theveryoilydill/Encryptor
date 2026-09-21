@@ -52,7 +52,7 @@ export interface PrivateKeyConfig {
 /** Where the signer's public key was resolved from (drives the source pill
  *  on signature cards): the user's own configured key, Keybase, or
  *  keys.openpgp.org. Undefined = not determined (verification never ran). */
-export type KeySource = "local" | "keybase" | "openpgp.org";
+export type KeySource = "local" | "keybase" | "openpgp.org" | "encryptor";
 
 /** Rich signer info extracted from a verified signature. */
 export interface SignatureInfo {

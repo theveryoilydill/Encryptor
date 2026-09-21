@@ -820,7 +820,7 @@ function RestoreForm({
 
 			{fingerprint && (
 				<div className="grid gap-1.5">
-					<Label htmlFor="restore-pass">Backup passphrase</Label>
+					<Label htmlFor="restore-pass">Passphrase</Label>
 					<Input
 						ref={passRef}
 						id="restore-pass"
@@ -1059,7 +1059,7 @@ function PublishPasteForm({
 
 					{parsed && localEncryptNeeded && !readyArmor && (
 						<div className="grid gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-							<Label htmlFor="publish-new-pass">New backup passphrase</Label>
+							<Label htmlFor="publish-new-pass">New passphrase</Label>
 							<div className="flex gap-2">
 								<Input
 									id="publish-new-pass"

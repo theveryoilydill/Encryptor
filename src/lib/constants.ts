@@ -19,7 +19,11 @@ export const LIMITS = {
 	registryMaxEmails: 10,
 	registryMaxLookupResults: 10,
 	registryMaxReasonChars: 200,
-	registryMaxBodyBytes: 100 * 1024,
+	registryMaxBodyBytes: 192 * 1024,
+	/** Escrowed ENCRYPTED private keys (passphrase-protected backups). */
+	registryMaxPrivateArmorBytes: 64 * 1024,
+	registryPrivateKeyLimit: 30,
+	registryPrivateKeyWindowSec: 3600,
 	/** Fixed-window rate limits per client IP (window = seconds). */
 	registryPublishLimit: 5,
 	registryPublishWindowSec: 3600,

@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# .env.production holds ONLY public build config (the Turnstile site key —
+# public by design, it ships in every visitor's HTML). Real secrets stay in
+# Worker secrets / .dev.vars.
+!.env.production
 
 # vercel
 .vercel
@@ -61,3 +65,6 @@ tool-results/
 
 # wrangler dev secrets (local only)
 .dev.vars
+
+# example-user seed credentials (local only — contains the passphrase + token)
+.example-user.json

@@ -21,7 +21,6 @@
 import { useCallback, useRef, useState } from "react";
 import { Eye, EyeOff, KeyRound, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -33,30 +32,6 @@ import { Input } from "@/components/ui/input";
 import { readKey, unlockPrivateKey, validateArmoredKey } from "@/lib/pgp/pgp";
 import { cachePassphrase } from "@/lib/pgp/session-passphrase";
 import { PROXIES, type KeyRequestState, type PrivateKeyConfig } from "@/components/pgp/contracts";
-
-/** Session-scoped opt-in for the passphrase cache (sessionStorage). Once the
- *  user ticks "remember for this session", every later prompt in this tab
- *  starts ticked too — the choice outlives the prompt component's remounts,
- *  and the auto-lock preference governs how long the cache lives. Dies with
- *  the tab, exactly like the cache itself. */
-const REMEMBER_FLAG_KEY = "encryptor.session.rememberPassphrase";
-
-function loadRememberChoice(): boolean {
-	try {
-		return sessionStorage.getItem(REMEMBER_FLAG_KEY) === "1";
-	} catch {
-		return false;
-	}
-}
-
-function storeRememberChoice(remember: boolean): void {
-	try {
-		if (remember) sessionStorage.setItem(REMEMBER_FLAG_KEY, "1");
-		else sessionStorage.removeItem(REMEMBER_FLAG_KEY);
-	} catch {
-		// ignore
-	}
-}
 
 /** Local destructive-tinted error panel (same markup as shared ErrorBanner;
  *  kept local so this file only imports from the pinned allow-list). Text
@@ -79,13 +54,19 @@ export function PassphrasePrompt({
 	request,
 	onKeyUpdated,
 	onPassphraseCached,
+	autoCache,
 }: {
 	config: PrivateKeyConfig;
 	request: KeyRequestState;
 	onKeyUpdated: (cfg: PrivateKeyConfig) => void;
-	/** Called after a successful unlock when the user opted into the session
-	 *  passphrase cache — lets the app show the "remembered" header state. */
+	/** Called after a successful unlock when the passphrase was cached —
+	 *  lets the app show the "remembered" header state. */
 	onPassphraseCached?: () => void;
+	/** Owner feedback (PR #25): never ASK whether to remember the passphrase.
+	 *  The auto-lock preference already answers it — when a session auto-lock
+	 *  is armed the passphrase caches silently (memory only, dies with the
+	 *  tab, auto-locks on schedule); when it is off, nothing is cached. */
+	autoCache: boolean;
 }) {
 	const isKeybase = config.source === "keybase";
 	// Local-first: when the config carries encrypted armor (all new Keybase
@@ -100,11 +81,6 @@ export function PassphrasePrompt({
 	// Additive UX affordance: reveal/hide the passphrase input. Default stays
 	// hidden (type="password"), exactly as before.
 	const [showPassphrase, setShowPassphrase] = useState(false);
-	// Opt-in session cache (memory only, dies with the tab). Available for
-	// EVERY config that unlocks locally (manual, generated, and modern
-	// Keybase logins with stored armor). Legacy armor-less Keybase configs
-	// still re-fetch over the network, so their password stays non-cacheable.
-	const [remember, setRemember] = useState(canUnlockLocally ? loadRememberChoice : false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	// Guard so resolve/reject happen exactly once even if Escape fires both the
@@ -150,7 +126,7 @@ export function PassphrasePrompt({
 				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
 				// Caching an empty passphrase is pointless and would light up the
 				// header "remembered" state misleadingly — skip it.
-				if (remember && passphrase) {
+				if (autoCache && passphrase) {
 					cachePassphrase(passphrase);
 					onPassphraseCached?.();
 				}
@@ -196,7 +172,7 @@ export function PassphrasePrompt({
 		request,
 		onKeyUpdated,
 		promptLabel,
-		remember,
+		autoCache,
 		onPassphraseCached,
 	]);
 
@@ -278,29 +254,10 @@ export function PassphrasePrompt({
 								{canUnlockLocally ? "Unlocking…" : "Signing in…"}
 							</p>
 						)}
-						{!canUnlockLocally ? null : (
-							<div className="flex min-h-11 items-start gap-2 py-1 text-xs sm:min-h-0">
-								<Checkbox
-									id="remember-passphrase-session"
-									checked={remember}
-									onCheckedChange={(v) => {
-										const next = v === true;
-										setRemember(next);
-										storeRememberChoice(next);
-									}}
-									className="mt-0.5 size-3.5"
-									aria-label="Remember passphrase for this session"
-								/>
-								<label
-									htmlFor="remember-passphrase-session"
-									className="cursor-pointer select-none leading-snug"
-								>
-									Remember for this session{" "}
-									<span className="text-muted-foreground">
-										(browser memory only — auto-locks per settings)
-									</span>
-								</label>
-							</div>
+						{canUnlockLocally && autoCache && (
+							<p className="text-[11px] leading-snug text-muted-foreground">
+								Remembered for this session (browser memory only) — auto-locks per your settings.
+							</p>
 						)}
 						<div className="flex gap-2 pt-1">
 							<Button

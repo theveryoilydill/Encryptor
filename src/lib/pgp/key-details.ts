@@ -202,6 +202,8 @@ const ALGORITHM_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
 	["rsaencrypt", "RSA"],
 	["ecdh", "ECDH"],
 	["ecdhx25519", "ECDH (Curve25519)"],
+	["ed25519", "Ed25519"],
+	["x25519", "X25519"],
 	["ecdsanistp256", "ECDSA (NIST P-256)"],
 	["ecdsanistp384", "ECDSA (NIST P-384)"],
 	["ecdsanistp521", "ECDSA (NIST P-521)"],

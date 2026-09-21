@@ -257,26 +257,24 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 				</div>
 			)}
 
-			{showPlaintextField &&
-				plaintext.trim() &&
-				result?.verified === "valid" && (
-					// "Verify renders it": a successfully verified detached-signature
-					// message renders its plaintext as markdown (same renderer the
-					// Decrypt tab uses), so what was signed reads the way it was
-					// written. The raw text stays editable in the card above.
-					<div className="animate-fade-up rounded-xl border border-emerald-300/70 bg-card p-4 shadow-sm sm:p-6 dark:border-emerald-900/50">
-						<div className="mb-1.5 flex items-center gap-2">
-							<span
-								aria-hidden="true"
-								className="h-3.5 w-[3px] shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400"
-							/>
-							<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-								Verified message, rendered
-							</Label>
-						</div>
-						<DecryptedMessageView text={plaintext} files={[]} />
+			{showPlaintextField && plaintext.trim() && result?.verified === "valid" && (
+				// "Verify renders it": a successfully verified detached-signature
+				// message renders its plaintext as markdown (same renderer the
+				// Decrypt tab uses), so what was signed reads the way it was
+				// written. The raw text stays editable in the card above.
+				<div className="animate-fade-up rounded-xl border border-emerald-300/70 bg-card p-4 shadow-sm sm:p-6 dark:border-emerald-900/50">
+					<div className="mb-1.5 flex items-center gap-2">
+						<span
+							aria-hidden="true"
+							className="h-3.5 w-[3px] shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400"
+						/>
+						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+							Verified message, rendered
+						</Label>
 					</div>
-				)}
+					<DecryptedMessageView text={plaintext} files={[]} />
+				</div>
+			)}
 
 			{error && <ErrorBanner message={error} />}
 

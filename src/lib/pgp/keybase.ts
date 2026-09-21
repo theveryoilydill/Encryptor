@@ -519,8 +519,9 @@ export async function fetchKeyFromOpenPGP_orgClient(
 // (name <email>), which gives a similar "find by anything" experience.
 
 export interface KeySearchResult {
-	/** Where this result came from. */
-	source: "keybase" | "ubuntu" | "openpgp.org" | "mailvelope";
+	/** Where this result came from. "encryptor" = the built-in Encryptor
+	 *  Registry (its results carry the public armor directly). */
+	source: "keybase" | "ubuntu" | "openpgp.org" | "mailvelope" | "encryptor";
 	/** Display label — "@username" for Keybase, "Name <email>" for HKP. */
 	label: string;
 	/** Optional username (Keybase only). */
@@ -535,6 +536,10 @@ export interface KeySearchResult {
 	fingerprint?: string;
 	/** Short key ID (16-hex), if known. */
 	keyID?: string;
+	/** Public armored key — present ONLY on "encryptor" results (the registry
+	 *  lookup already returned it, so adding the recipient needs no second
+	 *  fetch). */
+	armored?: string;
 }
 
 /** Parse an HKP machine-readable index response. */

@@ -47,6 +47,7 @@ export const STORAGE_KEYS = {
 	lastTab: "encryptor.lastTab",
 	recentRecipients: "encryptor.recentRecipients",
 	settings: "encryptor.settings.v1",
+	tourDone: "encryptor.tour.done.v1",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

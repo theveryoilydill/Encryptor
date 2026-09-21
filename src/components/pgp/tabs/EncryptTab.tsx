@@ -410,15 +410,18 @@ export function EncryptTab({
 					</span>
 				</div>
 			)}
-			<RecipientPicker
-				recipients={recipients}
-				setRecipients={setRecipients}
-				selfRecipient={selfRecipient}
-				includeSelf={includeSelf}
-				onIncludeSelfChange={onIncludeSelfChange}
-			/>
+			{/* Guided-tour anchor: the recipient search lives here. */}
+			<div data-tour="recipients">
+				<RecipientPicker
+					recipients={recipients}
+					setRecipients={setRecipients}
+					selfRecipient={selfRecipient}
+					includeSelf={includeSelf}
+					onIncludeSelfChange={onIncludeSelfChange}
+				/>
+			</div>
 
-			<div className="rounded-xl">
+			<div className="rounded-xl" data-tour="composer">
 				<MessageEditor
 					value={plaintext}
 					onChange={setPlaintext}

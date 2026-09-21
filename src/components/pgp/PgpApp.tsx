@@ -27,6 +27,7 @@ import {
 import { ConfigureModal } from "@/components/pgp/ConfigureModal";
 import { LoginView } from "@/components/pgp/login/LoginView";
 import { ApiReferenceDialog } from "@/components/pgp/registry/ApiReferenceDialog";
+import { GuidedTour, isTourDone, markTourDone } from "@/components/pgp/onboarding/GuidedTour";
 import { PassphrasePrompt } from "@/components/pgp/PassphrasePrompt";
 import { SettingsDialog } from "@/components/pgp/SettingsDialog";
 import { ShortcutsDialog } from "@/components/pgp/ShortcutsDialog";
@@ -187,6 +188,10 @@ export default function PgpApp() {
 	// share a dialog with key/auth setup. Ctrl+, opens THIS dialog; the key
 	// dialog stays one click away on the key button.
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	// Guided tour (coach marks over the live UI). Auto-starts once, right
+	// after the first key of a session is set up — see the sign-in effect
+	// below. Replay lives in Settings → Help.
+	const [tourOpen, setTourOpen] = useState(false);
 	const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
 	// Own-key expiry banner dismissal (additive): keyed to
 	// "<fingerprint>:<status>" so a different key — or the same key crossing
@@ -348,9 +353,20 @@ export default function PgpApp() {
 	useEffect(() => {
 		if (!prevKeyRef.current && privateKey) {
 			setSignInAnnouncement(`Signed in as ${privateKey.label}. Keys are ready to use.`);
+			// Key setup just finished — this is the moment for the guided
+			// tour. Once ever: the done flag survives reloads, and Settings
+			// can always replay it.
+			if (!isTourDone()) setTourOpen(true);
 		}
 		prevKeyRef.current = privateKey;
 	}, [privateKey]);
+
+	// Closing the tour — by finishing OR skipping — records it as seen so
+	// it never re-appears unprompted.
+	const handleTourOpenChange = useCallback((next: boolean) => {
+		setTourOpen(next);
+		if (!next) markTourDone();
+	}, []);
 
 	// R9 auto-lock enforcement for the UI state: the freshness gate covers real
 	// unlock attempts; this lightweight interval covers the header indicator +
@@ -574,6 +590,12 @@ export default function PgpApp() {
 				settings={settings}
 				onSettingsChange={handleSetSettings}
 				privateKey={privateKey}
+				onReplayTour={() => {
+					// Close the settings dialog first so the tour's spotlight
+					// doesn't fight it for the screen.
+					setSettingsOpen(false);
+					setTourOpen(true);
+				}}
 			/>
 
 			{keyRequest && privateKey && (
@@ -603,6 +625,14 @@ export default function PgpApp() {
 			)}
 
 			<Toaster />
+
+			{/* Coach-mark walkthrough of the app; mounts over the main UI. */}
+			<GuidedTour
+				open={tourOpen}
+				onOpenChange={handleTourOpenChange}
+				tab={tab}
+				onTabChange={setTab}
+			/>
 		</div>
 	);
 }
@@ -684,6 +714,7 @@ function Header({
 							onClick={onOpenSettings}
 							title="Settings (Ctrl+,)"
 							aria-label="Settings"
+							data-tour="settings-button"
 							className="size-11 text-muted-foreground transition-colors hover:text-[#0055dc] press-effect sm:size-8 dark:hover:text-[#5e94ff]"
 						>
 							<Settings aria-hidden className="size-4" />
@@ -694,6 +725,7 @@ function Header({
 							variant="outline"
 							size="sm"
 							onClick={onConfigure}
+							data-tour="key-button"
 							className="h-11 gap-2 transition-colors duration-150 hover:border-[#0055dc] hover:text-[#0055dc] dark:hover:border-[#5e94ff] dark:hover:text-[#5e94ff] press-effect sm:h-8"
 						>
 							<KeyIcon />
@@ -767,7 +799,12 @@ function ThemeToggle() {
 
 function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 	return (
-		<nav className="flex gap-1 border-b border-border" role="tablist" aria-label="Mode">
+		<nav
+			className="flex gap-1 border-b border-border"
+			role="tablist"
+			aria-label="Mode"
+			data-tour="mode-tabs"
+		>
 			{TABS.map((t) => {
 				const active = t.id === value;
 				const n = TABS.indexOf(t) + 1;
@@ -789,9 +826,9 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 					>
 						{t.label}
 						{/* Alt+N hint chip — decorative (aria-hidden; the shortcut is
-		announced by the title tooltip and documented in the shortcuts
-		dialog). Hidden below sm so mobile touch targets stay clean;
-		at 16px tall it never grows the button's 20px label line box. */}
+                announced by the title tooltip and documented in the shortcuts
+                dialog). Hidden below sm so mobile touch targets stay clean;
+                at 16px tall it never grows the button's 20px label line box. */}
 						<kbd
 							aria-hidden="true"
 							className={`hidden items-center rounded border px-1 py-0.5 font-mono text-[10px] leading-none transition-colors duration-150 sm:inline-flex ${
@@ -803,10 +840,10 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 							{n}
 						</kbd>
 						{/* Animated accent underline — replaces the static active border
-		(kept transparent below so the 2px layout slot is stable) and
-		scales/fades in on activation. Sits inside the button's 2px
-		border slot, flush with the nav divider; the focus-visible
-		outline lives outside the button bounds, so no overlap. */}
+                (kept transparent below so the 2px layout slot is stable) and
+                scales/fades in on activation. Sits inside the button's 2px
+                border slot, flush with the nav divider; the focus-visible
+                outline lives outside the button bounds, so no overlap. */}
 						<span
 							aria-hidden="true"
 							className={`pointer-events-none absolute inset-x-3 -bottom-0.5 h-0.5 rounded-full bg-[#0055dc] transition-all duration-200 dark:bg-[#5e94ff] motion-reduce:scale-x-100 motion-reduce:transition-none ${

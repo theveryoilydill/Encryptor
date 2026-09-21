@@ -120,59 +120,46 @@ function FormError({ message }: { message: string | null }) {
 	);
 }
 
-/** The five sign-in sources, styled per the owner's hand-drawn mockup. */
-const SOURCES: {
+/**
+ * The "Already have a key?" routes. Copy is sign-in framed — the headline
+ * real estate above belongs to key generation now (owner feedback: the gate
+ * must open on the generate-key screen, with everything else one click away).
+ */
+const ALT_SOURCES: {
 	id: SourceId;
 	label: string;
-	note?: string;
 	blurb: string;
 	icon: typeof KeyRound;
-	className: string;
 }[] = [
 	{
 		id: "registry",
 		label: "Encryptor Registry",
-		blurb: "Restore an escrowed key, or publish one",
+		blurb: "Restore an escrowed backup with your fingerprint + passphrase",
 		icon: KeyRound,
-		className:
-			// blue-800 in light mode too: keeps the white opacity-75 blurb >= 4.5:1 AA.
-			// Owner PR #25: "swap the keybase and encryptor button colors" — the
-			// Encryptor card now wears the dark blue, Keybase the light blue.
-			"border-blue-900/40 bg-blue-800 text-white hover:bg-blue-800/90 dark:border-blue-700/60 dark:bg-blue-800 dark:hover:bg-blue-800/90",
 	},
 	{
 		id: "keybase",
-		label: "Keybase registry",
+		label: "Keybase",
 		blurb: "Sign in with your Keybase account",
 		icon: Globe,
-		className:
-			"border-sky-300/60 bg-sky-200 text-sky-950 hover:bg-sky-200/80 dark:border-sky-700/60 dark:bg-sky-900/60 dark:text-sky-100 dark:hover:bg-sky-900/80",
 	},
 	{
 		id: "openpgp",
 		label: "OpenPGP registry",
-		note: "needs private key",
 		blurb: "Paste the private key for your keys.openpgp.org entry",
 		icon: Lock,
-		className:
-			"border-emerald-300/60 bg-emerald-200 text-emerald-950 hover:bg-emerald-200/80 dark:border-emerald-700/60 dark:bg-emerald-900/60 dark:text-emerald-100 dark:hover:bg-emerald-900/80",
 	},
 	{
 		id: "ubuntu",
-		label: "Ubuntu Registry",
-		note: "needs private key",
+		label: "Ubuntu registry",
 		blurb: "Paste the private key for your keyserver.ubuntu.com entry",
 		icon: Upload,
-		className:
-			"border-rose-300/60 bg-rose-200 text-rose-950 hover:bg-rose-200/80 dark:border-rose-700/60 dark:bg-rose-900/60 dark:text-rose-100 dark:hover:bg-rose-900/80",
 	},
 	{
 		id: "local",
 		label: "Local keys",
-		blurb: "Generate a new pair, or paste one you manage locally",
+		blurb: "Paste a key you manage with your own tools",
 		icon: HardDrive,
-		className:
-			"border-slate-300/60 bg-slate-200 text-slate-900 hover:bg-slate-200/80 dark:border-slate-700/60 dark:bg-slate-800/80 dark:text-slate-100 dark:hover:bg-slate-800",
 	},
 ];
 
@@ -294,43 +281,78 @@ export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) =
 
 	const closeAndReset = useCallback(() => setOpen(null), []);
 
+	// "Already have a key?" disclosure state. Collapsed by default: a first
+	// visit should read as one clear action (create a key), not a menu.
+	const [showAlt, setShowAlt] = useState(false);
+
 	return (
 		<main className="flex flex-1 items-center justify-center px-4 py-10 sm:py-14">
 			<div className="w-full max-w-xl">
-				<div className="mb-8 text-center">
-					<h2 className="text-2xl font-semibold tracking-tight">Login/Get your keys</h2>
+				<div className="mb-6 text-center">
+					<h2 className="text-2xl font-semibold tracking-tight">Create your encryption key</h2>
 					<p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-						Pick how you want to sign in. Everything runs in this browser — private keys and
-						passphrases never touch the server.
+						One key covers encrypting, decrypting, signing and verifying. Generate it here — the
+						private key never leaves this browser.
 					</p>
 				</div>
-				<nav aria-label="Sign-in sources" className="grid gap-3">
-					{SOURCES.map((s) => {
-						const Icon = s.icon;
-						return (
-							<button
-								key={s.id}
-								type="button"
-								data-testid={`login-source-${s.id}`}
-								onClick={() => setOpen(s.id)}
-								className={`flex min-h-16 w-full items-center gap-3 rounded-2xl border px-5 py-4 text-left shadow-xs transition-all duration-150 press-effect focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0055dc] ${s.className}`}
-							>
-								<Icon aria-hidden="true" className="size-5 shrink-0 opacity-80" />
-								<span className="min-w-0 flex-1">
-									<span className="block text-base font-semibold leading-tight">
-										{s.label}
-										{s.note && (
-											<span className="ml-2 align-middle text-xs font-normal opacity-75">
-												({s.note})
-											</span>
-										)}
-									</span>
-									<span className="mt-0.5 block text-xs font-normal opacity-75">{s.blurb}</span>
-								</span>
-							</button>
-						);
-					})}
-				</nav>
+
+				{/* The generate-key screen, front and center (owner feedback): a new
+						user's first action is creating a key, so the form lives directly
+						on the gate instead of behind a source card + dialog hop. */}
+				<section
+					aria-label="Generate a new key"
+					className="rounded-2xl border bg-card/40 p-4 shadow-xs sm:p-5"
+				>
+					<GenerateForm
+						onUseKey={onUseKey}
+						onDone={closeAndReset}
+						initialPublish
+						idPrefix="firstrun"
+					/>
+				</section>
+
+				<div className="mt-5 text-center">
+					<button
+						type="button"
+						data-testid="login-alternatives"
+						aria-expanded={showAlt}
+						aria-controls="login-alternatives-panel"
+						onClick={() => setShowAlt((o) => !o)}
+						className="inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+					>
+						Already have a key? Sign in with it
+						<ChevronDown
+							aria-hidden
+							className={`size-3.5 shrink-0 transition-transform duration-150 ${showAlt ? "rotate-180" : ""}`}
+						/>
+					</button>
+					{showAlt && (
+						<nav
+							id="login-alternatives-panel"
+							aria-label="Sign-in sources"
+							className="mt-3 grid gap-2"
+						>
+							{ALT_SOURCES.map((s) => {
+								const Icon = s.icon;
+								return (
+									<button
+										key={s.id}
+										type="button"
+										data-testid={`login-source-${s.id}`}
+										onClick={() => setOpen(s.id)}
+										className="flex min-h-14 w-full items-center gap-3 rounded-xl border px-4 py-3 text-left shadow-xs transition-all duration-150 press-effect focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0055dc] hover:border-[#0055dc]/40 hover:bg-accent/5"
+									>
+										<Icon aria-hidden="true" className="size-4 shrink-0 opacity-80" />
+										<span className="min-w-0 flex-1">
+											<span className="block text-sm font-semibold leading-tight">{s.label}</span>
+											<span className="mt-0.5 block text-xs text-muted-foreground">{s.blurb}</span>
+										</span>
+									</button>
+								);
+							})}
+						</nav>
+					)}
+				</div>
 
 				<p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground">
 					All crypto runs locally. Only key <em>metadata</em> and passphrase-encrypted key backups
@@ -338,9 +360,12 @@ export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) =
 				</p>
 			</div>
 
-			{/* Sign-in dialogs — one per source, mounted on demand. */}
+			{/* Sign-in dialogs — one per source, mounted on demand. From this gate
+					the registry opens on Login (restore) and local keys on Paste,
+					matching the "already have a key" intent that reaches them. */}
 			<RegistryDialog
 				open={open === "registry"}
+				initialMode="restore"
 				onOpenChange={(o) => !o && closeAndReset()}
 				onUseKey={onUseKey}
 			/>
@@ -357,6 +382,7 @@ export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) =
 			/>
 			<LocalDialog
 				open={open === "local"}
+				initialMode="paste"
 				onOpenChange={(o) => !o && closeAndReset()}
 				onUseKey={onUseKey}
 			/>
@@ -419,12 +445,20 @@ function RegistryDialog({
 	open,
 	onOpenChange,
 	onUseKey,
+	initialMode = "generate",
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	onUseKey: (config: PrivateKeyConfig) => void;
+	/** Entry mode; re-applied on every open (state persists while mounted). */
+	initialMode?: "generate" | "restore" | "publish";
 }) {
-	const [mode, setMode] = useState<"generate" | "restore" | "publish">("generate");
+	const [mode, setMode] = useState<"generate" | "restore" | "publish">(initialMode);
+	// The gate opens this dialog on "restore"; re-apply on every open so a
+	// sign-up started inside doesn't pin the entry mode for next time.
+	useEffect(() => {
+		if (open) setMode(initialMode);
+	}, [open, initialMode]);
 	// Self-service revocation lives behind a quiet disclosure (not a fourth
 	// segment): it is the rare emergency-brake path, and the owner asked the
 	// gate stay minimal. It completes the lifecycle the publish outcome card
@@ -1602,12 +1636,20 @@ function LocalDialog({
 	open,
 	onOpenChange,
 	onUseKey,
+	initialMode = "generate",
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	onUseKey: (config: PrivateKeyConfig) => void;
+	/** Entry mode; re-applied on every open (state persists while mounted). */
+	initialMode?: "generate" | "paste";
 }) {
-	const [mode, setMode] = useState<"generate" | "paste">("generate");
+	const [mode, setMode] = useState<"generate" | "paste">(initialMode);
+	// Reached from "Already have a key?" → paste; re-apply on every open so
+	// the entry mode follows the intent that opened the dialog.
+	useEffect(() => {
+		if (open) setMode(initialMode);
+	}, [open, initialMode]);
 	return (
 		<LoginDialog
 			sourceId="local"
@@ -1640,12 +1682,17 @@ function GenerateForm({
 	onUseKey,
 	onDone,
 	initialPublish = false,
+	idPrefix = "gen",
 }: {
 	onUseKey: (config: PrivateKeyConfig) => void;
 	onDone: () => void;
 	/** Preset for the registry dialog: "Encryptor Registry → Generate &
 	 *  publish" implies the publish intent (the checkbox stays togglable). */
 	initialPublish?: boolean;
+	/** DOM id/testid prefix. The gate mounts one instance inline while the
+	 *  dialogs can mount another — unique prefixes keep every htmlFor /
+	 *  aria linkage valid when both exist in the document. */
+	idPrefix?: string;
 }) {
 	const [name, setName] = useState("");
 	const [email, setEmail] = useState("");
@@ -1751,7 +1798,7 @@ function GenerateForm({
 	}, [email, expiry, name, onDone, onUseKey, passphrase, pub, publish, escrow]);
 
 	return (
-		<div className="grid gap-3" data-testid="generate-form">
+		<div className="grid gap-3" data-testid={`${idPrefix}-generate-form`}>
 			{outcome ? (
 				<div className="space-y-3">
 					<span className="sr-only" role="status">
@@ -1775,18 +1822,18 @@ function GenerateForm({
 				<>
 					<div className="grid gap-3 sm:grid-cols-2">
 						<div className="grid gap-1.5">
-							<Label htmlFor="gen-name">Name (optional)</Label>
+							<Label htmlFor={`${idPrefix}-name`}>Name (optional)</Label>
 							<Input
-								id="gen-name"
+								id={`${idPrefix}-name`}
 								value={name}
 								onChange={(e) => setName(e.target.value)}
 								autoComplete="off"
 							/>
 						</div>
 						<div className="grid gap-1.5">
-							<Label htmlFor="gen-email">Email (optional)</Label>
+							<Label htmlFor={`${idPrefix}-email`}>Email (optional)</Label>
 							<Input
-								id="gen-email"
+								id={`${idPrefix}-email`}
 								type="email"
 								value={email}
 								onChange={(e) => setEmail(e.target.value)}
@@ -1796,12 +1843,12 @@ function GenerateForm({
 						</div>
 					</div>
 					<div className="grid gap-1.5">
-						<Label htmlFor="gen-pass">
+						<Label htmlFor={`${idPrefix}-pass`}>
 							Passphrase (optional — protects the key on this device)
 						</Label>
 						<div className="flex gap-2">
 							<Input
-								id="gen-pass"
+								id={`${idPrefix}-pass`}
 								type={showPass ? "text" : "password"}
 								value={passphrase}
 								onChange={(e) => setPassphrase(e.target.value)}
@@ -1831,7 +1878,7 @@ function GenerateForm({
 								<Dice5 aria-hidden className="size-4" />
 							</Button>
 						</div>
-						<PassphraseStrengthMeter passphrase={passphrase} idPrefix="gen-pass" />
+						<PassphraseStrengthMeter passphrase={passphrase} idPrefix={`${idPrefix}-pass`} />
 						{!hasPassphrase && (
 							<p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
 								<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
@@ -1843,9 +1890,9 @@ function GenerateForm({
 						)}
 					</div>
 					<div className="grid gap-1.5">
-						<Label htmlFor="gen-expiry">Expires</Label>
+						<Label htmlFor={`${idPrefix}-expiry`}>Expires</Label>
 						<select
-							id="gen-expiry"
+							id={`${idPrefix}-expiry`}
 							value={expiry}
 							onChange={(e) => setExpiry(e.target.value)}
 							className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
@@ -1859,13 +1906,13 @@ function GenerateForm({
 					<div className="space-y-2 rounded-lg border border-border p-3">
 						<div className="flex items-start gap-2">
 							<Checkbox
-								id="gen-publish"
+								id={`${idPrefix}-publish`}
 								checked={publish}
 								onCheckedChange={(v) => setPublish(v === true)}
 								className="mt-0.5"
 							/>
 							<div className="grid gap-0.5">
-								<Label htmlFor="gen-publish" className="text-xs font-medium">
+								<Label htmlFor={`${idPrefix}-publish`} className="text-xs font-medium">
 									Also publish to the Encryptor registry
 								</Label>
 								<p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -1876,14 +1923,14 @@ function GenerateForm({
 						{publish && (
 							<div className="flex items-start gap-2 pl-6">
 								<Checkbox
-									id="gen-escrow"
+									id={`${idPrefix}-escrow`}
 									checked={escrow && hasPassphrase}
 									onCheckedChange={(v) => setEscrow(v === true)}
 									disabled={!hasPassphrase}
 									className="mt-0.5"
 								/>
 								<div className="grid gap-0.5">
-									<Label htmlFor="gen-escrow" className="text-xs font-medium">
+									<Label htmlFor={`${idPrefix}-escrow`} className="text-xs font-medium">
 										Store encrypted backup (escrow)
 									</Label>
 									<p className="text-[11px] leading-relaxed text-muted-foreground">

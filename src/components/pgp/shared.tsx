@@ -926,24 +926,23 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
 							</div>
 							{/* Secondary info line: name + email + comment (if available and
                   not already used as the display name). */}
-							{(s.name || s.email || s.comment) &&
-								!s.username && (
-									// Wrap rhythm (R9-b): horizontal separation unchanged (8px);
-									// wrapped rows tighten to the 2px inter-row rhythm (mt-0.5)
-									// instead of the looser all-axis 8px gap on narrow widths.
-									<div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-										{s.name && <span>Name: {s.name}</span>}
-										{s.email && (
-											<span>
-												Email:{" "}
-												<a href={`mailto:${s.email}`} className={`${ACCENT_TEXT} hover:underline`}>
-													{s.email}
-												</a>
-											</span>
-										)}
-										{s.comment && <span>Comment: {s.comment}</span>}
-									</div>
-								)}
+							{(s.name || s.email || s.comment) && !s.username && (
+								// Wrap rhythm (R9-b): horizontal separation unchanged (8px);
+								// wrapped rows tighten to the 2px inter-row rhythm (mt-0.5)
+								// instead of the looser all-axis 8px gap on narrow widths.
+								<div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+									{s.name && <span>Name: {s.name}</span>}
+									{s.email && (
+										<span>
+											Email:{" "}
+											<a href={`mailto:${s.email}`} className={`${ACCENT_TEXT} hover:underline`}>
+												{s.email}
+											</a>
+										</span>
+									)}
+									{s.comment && <span>Comment: {s.comment}</span>}
+								</div>
+							)}
 							{/* All user IDs (if the key has more than one). */}
 							{s.allUserIDs && s.allUserIDs.length > 1 && (
 								<details className="mt-1">

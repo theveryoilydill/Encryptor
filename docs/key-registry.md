@@ -404,13 +404,10 @@ idempotent for manual setups).
 
 ## Bot protection (Cloudflare Turnstile)
 
-Registry WRITES — publishing (or replacing) a key and storing/deleting an
-escrowed private key — are gated by Cloudflare Turnstile whenever the
-deployment has a `TURNSTILE_SECRET_KEY` secret (delete/revoke stay
-signature- or token-gated and are not captcha'd). READS ARE NEVER
-CAPTCHA-GATED: key lookups (fingerprint / key ID / email / name), restores,
-and escrow fetches work with no token on every deployment — Turnstile gates
-creating keys, not reading them. Provisioning, both halves together:
+Registry WRITES — publishing a key and storing an escrowed private key —
+are gated by Cloudflare Turnstile whenever the deployment has a
+`TURNSTILE_SECRET_KEY` secret (delete/revoke stay signature- or
+token-gated and are not captcha'd). Provisioning, both halves together:
 
 ```bash
 npx wrangler secret put TURNSTILE_SECRET_KEY            # server half (Worker secret)
@@ -434,9 +431,8 @@ clear explainer.
 - Secret configured + missing/invalid/expired token → 403 with a clear
   message; the UI remounts the widget to mint a fresh single-use token.
 - Siteverify unreachable or secret invalid → writes fail CLOSED (503).
-- Secret NOT configured (local dev, seed scripts, or a deployment that has
-  not opted in yet) → verification disabled and NO widget mounts; creating
-  keys stays possible while the owner has not provisioned the secret.
+- Secret NOT configured (local dev, preview builds, seed scripts) →
+  verification disabled; the UI shows a subtle "not configured" note.
 
 `GET /api/registry/health` reports the active mode
 (`turnstile: "enforced" | "disabled"`).

@@ -18,13 +18,13 @@ into `develop` goes live immediately, exactly the behavior `main` used to have.
 1. GitHub check-runs posted by app `cloudflare-workers-and-pages`, name `Workers Builds: encryptor`,
    all pointing at `.../workers/services/view/encryptor/**production**/builds/...`:
 
-   | Commit | Branch | PR | Merge time (UTC) | WB build started (UTC) | Target |
-   |---|---|---|---|---|---|
-   | `c1a0f27` | develop | #54 | 2026-09-22 02:02:23 | 2026-09-22 02:03:19 | production |
-   | `e80ecbe` | develop | #53 | 2026-09-22 01:48:41 | 2026-09-22 02:02:18 | production |
-   | `ddd6a61` | develop | #52 | 2026-09-22 01:33:42 | 2026-09-22 02:01:17 | production |
-   | `6ecc155` | develop | #48 | 2026-09-22 00:51:55 | 2026-09-22 00:52:55 | production |
-   | `9ee690d` | main | — | direct push | 2026-09-12 22:07:46 | production |
+   | Commit    | Branch  | PR  | Merge time (UTC)    | WB build started (UTC) | Target     |
+   | --------- | ------- | --- | ------------------- | ---------------------- | ---------- |
+   | `c1a0f27` | develop | #54 | 2026-09-22 02:02:23 | 2026-09-22 02:03:19    | production |
+   | `e80ecbe` | develop | #53 | 2026-09-22 01:48:41 | 2026-09-22 02:02:18    | production |
+   | `ddd6a61` | develop | #52 | 2026-09-22 01:33:42 | 2026-09-22 02:01:17    | production |
+   | `6ecc155` | develop | #48 | 2026-09-22 00:51:55 | 2026-09-22 00:52:55    | production |
+   | `9ee690d` | main    | —   | direct push         | 2026-09-12 22:07:46    | production |
 
    Every merge to `develop` produced a production build ~1 minute later. Preview builds would
    show `/preview/builds/` in the dashboard URL; these all say `/production/builds/`.
@@ -68,5 +68,5 @@ No repo change is required for the fix itself; this document is the record.
   which this project abandoned, and it currently fails on every main push.
 - Consider branch protection on `main` and `develop` so only PR merges land there (Dependabot
   PR #41 currently targets `main` while everything else targets `develop` — worth aligning).
-- Note the irony for merge order: merging *this* PR into `develop` will itself trigger a
+- Note the irony for merge order: merging _this_ PR into `develop` will itself trigger a
   production deploy of the audit doc — flip the dashboard setting first, or merge last.

@@ -43,6 +43,7 @@ export function ShortcutsDialog() {
 				onClick={() => setOpen(true)}
 				aria-label="Keyboard shortcuts"
 				title="Keyboard shortcuts"
+				data-tour="shortcuts-button"
 				className="size-11 text-muted-foreground transition-colors hover:text-foreground press-effect sm:size-8"
 			>
 				<Keyboard className="size-4" aria-hidden />

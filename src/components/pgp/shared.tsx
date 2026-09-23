@@ -550,16 +550,16 @@ export function OutputBlock({
 							className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
 						/>
 						{/* Section-label family (R11-b): the tab input cards and the
-		Decrypt-tab result rows both render their Label as
-		text-xs uppercase tracking-wide muted — the OutputBlock title
-		is the same kind of section label, so it joins the family. */}
+                Decrypt-tab result rows both render their Label as
+                text-xs uppercase tracking-wide muted — the OutputBlock title
+                is the same kind of section label, so it joins the family. */}
 						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 							{title}
 						</Label>
 						{/* R8: armor stats — quiet mono detail next to the section label.
-		Armor is ASCII so string length ≈ byte length; lines from the
-		raw split. Hidden on the smallest screens to keep the row
-		uncluttered. */}
+                Armor is ASCII so string length ≈ byte length; lines from the
+                raw split. Hidden on the smallest screens to keep the row
+                uncluttered. */}
 						{output && (
 							<span
 								aria-hidden="true"
@@ -704,8 +704,8 @@ export function OutputBlock({
 						/>
 					)}
 					{/* Copy/Download act on whichever armor the box shows. The
-						label-swap (Copy -> Copied!) changes only the button's own
-						width — the nowrap row keeps every button on one line. */}
+                                                label-swap (Copy -> Copied!) changes only the button's own
+                                                width — the nowrap row keeps every button on one line. */}
 					<DownloadButton text={shownText} title={sealedActive ? "quantum-sealed copy" : title} />
 					<CopyButton text={shownText} />
 				</div>
@@ -724,11 +724,20 @@ export function OutputBlock({
 export function InputSizeCounter({ text }: { text: string }) {
 	const trimmed = text.trim();
 	const words = trimmed ? trimmed.split(/\s+/).length : 0;
+	// Size segment: bytes under 1 KB ("~420 B") — "~0.0 KB" reads like a
+	// broken counter; one decimal in KB from 1 KB up.
+	const bytes = new TextEncoder().encode(text).length;
+	const sizeLabel =
+		bytes === 0
+			? ""
+			: bytes < 1024
+				? ` · ~${bytes.toLocaleString()} B`
+				: ` · ~${(bytes / 1024).toFixed(1)} KB`;
 	return (
 		<div aria-live="off" className="mt-1 text-right text-[10px] tabular-nums text-muted-foreground">
 			{text.length.toLocaleString()} chars
 			{words > 0 && ` · ${words.toLocaleString()} ${words === 1 ? "word" : "words"}`}
-			{text.length > 0 && ` · ~${(text.length / 1024).toFixed(1)} KB`}
+			{sizeLabel}
 		</div>
 	);
 }
@@ -1129,7 +1138,7 @@ export function WordCompare({ words }: { words: string[] }) {
 				aria-label="The 20 words your contact read to you"
 			/>
 			{/* Per-position diff: expected word per slot; emerald = confirmed,
-				red = differs (a different key), muted = not yet provided. */}
+                                red = differs (a different key), muted = not yet provided. */}
 			<div className="mt-2 flex flex-wrap gap-1">
 				{slots.map((s, i) => (
 					<span
@@ -1376,8 +1385,8 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
 								</div>
 							)}
 							{/* Verify by voice: biometric words for the signer's
-								fingerprint — the out-of-band check against key swaps,
-								anchored to the hex line it spells. */}
+                                                                fingerprint — the out-of-band check against key swaps,
+                                                                anchored to the hex line it spells. */}
 							{s.fingerprint && <FingerprintWords fingerprint={s.fingerprint} className="mt-1" />}
 						</li>
 					);

@@ -89,6 +89,15 @@ export function DecryptTab({
 	// keyed to the input, mirroring the hint-dismissal pattern above.
 	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
 	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
+	// "Nothing recognizable" guidance (anti-dead-end): text that is not any
+	// PGP block never reaches auto-decrypt, which used to be a SILENT state —
+	// no hint, no error, no button. Once the input settles, say so honestly.
+	const [unknownDismissedFor, setUnknownDismissedFor] = useState<string | null>(null);
+	const [settledArmored, setSettledArmored] = useState(armored);
+	useEffect(() => {
+		const timer = setTimeout(() => setSettledArmored(armored), 1200);
+		return () => clearTimeout(timer);
+	}, [armored]);
 
 	// Drag & drop: load a .asc armor file onto the input card. Shared hook
 	// (ascii-drop.tsx) sniffs for a PGP armor header; a successful load also
@@ -285,6 +294,13 @@ export function DecryptTab({
 		detectedBlock !== null &&
 		detectedBlock !== "encrypted" &&
 		hintDismissedFor !== armored;
+	const showUnknownHint =
+		settledArmored.trim() !== "" &&
+		detectPgpBlock(settledArmored) === null &&
+		!isQuantumSealed(settledArmored) &&
+		!busy &&
+		!error &&
+		unknownDismissedFor !== settledArmored;
 
 	// Armor damage detection (cheap, render-time, same pattern as
 	// detectPgpBlock): offer the one-click repair only when the pasted
@@ -398,6 +414,12 @@ export function DecryptTab({
 						{detectedBlock === "signed"
 							? "This looks like a signed (not encrypted) message. The Verify tab is designed for that."
 							: "This looks like a PGP key rather than an encrypted message. Keys are managed in the key configuration dialog."}
+					</InputHint>
+				)}
+				{showUnknownHint && (
+					<InputHint tone="amber" onDismiss={() => setUnknownDismissedFor(settledArmored)}>
+						This doesn't look like a PGP-encrypted message. Paste the full block, including the
+						“-----BEGIN PGP MESSAGE-----” line — or seal one on the Encrypt tab.
 					</InputHint>
 				)}
 				{showRepairHint && (

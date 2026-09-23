@@ -1569,15 +1569,22 @@ export function EncryptTab({
 					</span>
 				</div>
 			)}
-			<RecipientPicker
-				recipients={recipients}
-				setRecipients={setRecipients}
-				selfRecipient={selfRecipient}
-				includeSelf={includeSelf}
-				onIncludeSelfChange={onIncludeSelfChange}
-			/>
+			{/* Guided-tour anchor: the recipient search lives here. */}
+			<div data-tour="recipients">
+				<RecipientPicker
+					recipients={recipients}
+					setRecipients={setRecipients}
+					selfRecipient={selfRecipient}
+					includeSelf={includeSelf}
+					onIncludeSelfChange={onIncludeSelfChange}
+				/>
+			</div>
 
-			{!composerExpanded && <div className="rounded-xl">{composerBody}</div>}
+			{!composerExpanded && (
+					<div className="rounded-xl" data-tour="composer">
+						{composerBody}
+					</div>
+				)}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
 			    dialog filling the viewport. Escape collapses it — EXCEPT when a
 			    Radix surface opened FROM the composer is on stage (template

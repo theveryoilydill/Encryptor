@@ -42,6 +42,9 @@ import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
+import { suggestTextFilename } from "@/lib/pgp/filename";
+import { downloadBlob } from "@/lib/pgp/zip-bundle";
+import { toast } from "@/hooks/use-toast";
 
 /** Debounce before auto-decrypting a pasted/typed message (ms). */
 const AUTO_DECRYPT_DEBOUNCE_MS = 600;
@@ -510,16 +513,24 @@ export function DecryptTab({
 							variant="outline"
 							onClick={() => {
 								// Save the decrypted message as a plain-text file (client-side
-								// only — the blob never touches a server).
-								const blob = new Blob([output.plaintext], {
-									type: "text/plain;charset=utf-8",
-								});
-								const url = URL.createObjectURL(blob);
-								const a = document.createElement("a");
-								a.href = url;
-								a.download = "decrypted-message.txt";
-								a.click();
-								URL.revokeObjectURL(url);
+								// only — the blob never touches a server). The name is derived from the
+								// text itself (first heading/subject line) so saves stay recognizable
+								// in the downloads folder; see lib/pgp/filename.ts. The shared
+								// downloadBlob helper keeps this row consistent with the app's
+								// other download buttons (appended anchor + deferred revoke).
+								try {
+									const blob = new Blob([output.plaintext], {
+										type: "text/plain;charset=utf-8",
+									});
+									downloadBlob(blob, suggestTextFilename(output.plaintext));
+									toast({ title: "Text file downloaded" });
+								} catch (e) {
+									toast({
+										title: "Download failed",
+										description: (e as Error)?.message || "Download unavailable",
+										variant: "destructive",
+									});
+								}
 							}}
 							className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
 							aria-label="Save decrypted message as a .txt file"

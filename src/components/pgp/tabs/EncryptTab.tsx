@@ -1581,10 +1581,10 @@ export function EncryptTab({
 			</div>
 
 			{!composerExpanded && (
-					<div className="rounded-xl" data-tour="composer">
-						{composerBody}
-					</div>
-				)}
+				<div className="rounded-xl" data-tour="composer">
+					{composerBody}
+				</div>
+			)}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
 			    dialog filling the viewport. Escape collapses it — EXCEPT when a
 			    Radix surface opened FROM the composer is on stage (template

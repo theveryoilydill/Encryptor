@@ -494,7 +494,7 @@ export function ConfigureModal({
 						</div>
 					)}
 
-{keyHistory.length > 0 && (
+					{keyHistory.length > 0 && (
 						<div className="mb-4">
 							<p className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
 								<History aria-hidden className="size-4 text-muted-foreground" />

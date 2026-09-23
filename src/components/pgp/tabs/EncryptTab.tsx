@@ -20,9 +20,11 @@ import {
 	Maximize2,
 	Minimize2,
 	Paperclip,
+	Pencil,
 	ShieldCheck,
 	ShieldX,
 	Sparkles,
+	StickyNote,
 	Trash2,
 	TriangleAlert,
 	X,
@@ -79,7 +81,9 @@ import {
 	importSealedEntries,
 	loadSealedHistory,
 	removeSealedEntry,
+	updateSealedEntryNote,
 	MAX_SEALED_ENTRIES,
+	MAX_SEALED_NOTE_CHARS,
 	parseVaultManifest,
 	type ParsedVaultManifest,
 	type SealedHistoryEntry,
@@ -647,6 +651,11 @@ export function EncryptTab({
 	// tab-level blue overlay stands down - a manifest drag must never read as
 	// an attachment drag.
 	const [vaultDragDepth, setVaultDragDepth] = useState(0);
+	// Per-row note editor (round 22): id of the entry whose note editor is
+	// open + the draft text. One editor at a time keeps the compact rows
+	// predictable; the draft is discarded on cancel/row-switch.
+	const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
+	const [noteDraft, setNoteDraft] = useState("");
 	// Smart-input hint dismissal, keyed to the exact message content: clearing
 	// the textarea (or typing different content) re-arms the hint without
 	// needing a state-reset effect.
@@ -1424,6 +1433,7 @@ export function EncryptTab({
 				signer: entry.signer,
 				signerFp: entry.signerFp,
 				files: entry.files,
+				note: entry.note,
 				armor: entry.armor,
 				sealedArmor: entry.sealedArmor,
 			})),
@@ -1437,6 +1447,24 @@ export function EncryptTab({
 			description: "Ciphertext only: the manifest carries armor + provenance, never plaintext.",
 		});
 	}, [sealedHistory, toast]);
+
+	// Save (or clear) a per-entry note: persisted through updateSealedEntryNote
+	// (which re-sanitizes on write) and mirrored into local state. An empty
+	// draft is a first-class clear — the toast says which.
+	const handleSaveNote = useCallback(
+		(id: string) => {
+			const updated = updateSealedEntryNote(id, noteDraft);
+			setSealedHistory(updated);
+			setNoteEditingId(null);
+			setNoteDraft("");
+			toast(
+				noteDraft.trim() === ""
+					? { title: "Note removed" }
+					: { title: "Note saved — it travels with exported vault manifests" },
+			);
+		},
+		[noteDraft, toast],
+	);
 
 	// Cheap substring detection on the MESSAGE textarea, computed during render
 	// (no effect needed). Hints never appear for empty input; signed input is
@@ -2096,6 +2124,71 @@ export function EncryptTab({
 													~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 												</span>
 											</span>
+											{/* User note line (round 22): basis-full drops it onto its own
+										    row under the auto chips. Annotation voice — amber accent +
+										    italic — deliberately distinct from the seal-time chip family.
+										    Clicking the note re-opens the editor. */}
+											{noteEditingId !== entry.id && entry.note && (
+												<button
+													type="button"
+													onClick={() => {
+														setNoteEditingId(entry.id);
+														setNoteDraft(entry.note ?? "");
+													}}
+													aria-label={`Edit the note on this entry: ${entry.note}`}
+													className="flex w-full basis-full cursor-pointer items-start gap-1.5 border-l-2 border-amber-400/60 pl-2 text-left"
+												>
+													<StickyNote
+														aria-hidden="true"
+														className="mt-0.5 size-3.5 shrink-0 text-amber-500 dark:text-amber-400/80"
+													/>
+													<span className="text-[11px] italic leading-snug text-muted-foreground">
+														{entry.note}
+													</span>
+												</button>
+											)}
+											{noteEditingId === entry.id && (
+												<span className="flex w-full basis-full flex-wrap items-center gap-1.5">
+													<Input
+														value={noteDraft}
+														onChange={(e) => setNoteDraft(e.target.value)}
+														onKeyDown={(e) => {
+															if (e.key === "Enter") {
+																e.preventDefault();
+																handleSaveNote(entry.id);
+															} else if (e.key === "Escape") {
+																e.preventDefault();
+																setNoteEditingId(null);
+																setNoteDraft("");
+															}
+														}}
+														maxLength={MAX_SEALED_NOTE_CHARS}
+														placeholder="e.g. Contract for Alice — emailed 9/23"
+														aria-label="Vault entry note"
+														className="h-8 min-w-0 flex-1 bg-background text-xs dark:bg-input/20"
+														autoFocus
+													/>
+													<Button
+														variant="outline"
+														size="sm"
+														onClick={() => handleSaveNote(entry.id)}
+														className="h-8 px-2.5 text-xs"
+													>
+														Save
+													</Button>
+													<Button
+														variant="ghost"
+														size="sm"
+														onClick={() => {
+															setNoteEditingId(null);
+															setNoteDraft("");
+														}}
+														className="h-8 px-2.5 text-xs"
+													>
+														Cancel
+													</Button>
+												</span>
+											)}
 											{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
 										    actions the group must wrap at narrow widths — nowrap plus the
 										    section's overflow-hidden silently clipped the trailing
@@ -2164,6 +2257,27 @@ export function EncryptTab({
 												<Button
 													variant="ghost"
 													size="icon"
+													onClick={() => {
+														setNoteEditingId(noteEditingId === entry.id ? null : entry.id);
+														setNoteDraft(entry.note ?? "");
+													}}
+													aria-label={
+														entry.note
+															? `Edit the note on this entry: ${entry.note}`
+															: "Add a note to this vault entry"
+													}
+													title={entry.note ? "Edit note" : "Add note"}
+													className={`size-7 ${
+														noteEditingId === entry.id
+															? "text-amber-600 dark:text-amber-400"
+															: "text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400"
+													}`}
+												>
+													<Pencil aria-hidden="true" className="size-3.5" />
+												</Button>
+												<Button
+													variant="ghost"
+													size="icon"
 													onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
 													aria-label="Remove this entry from the sealed-output history"
 													className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
@@ -2179,7 +2293,8 @@ export function EncryptTab({
 									never stored — Restore puts the armor back in the output box above, Open in
 									Decrypt re-opens it directly, and the violet button copies the quantum-sealed copy
 									when the entry has one. Health check tries every entry with your unlocked key
-									(verdict chips appear per row), Export downloads the whole vault as a
+									(verdict chips appear per row), the pencil annotates an entry with a private local
+									note that travels with exported manifests, Export downloads the whole vault as a
 									ciphertext-only JSON manifest, and Import merges (or replaces) it back — reviewed
 									in a dialog first. Dragging a manifest file onto the vault card opens the same
 									reviewed import.

@@ -49,6 +49,12 @@ export interface SealedHistoryEntry {
 	 *  row, the short key id on the strip. Optional so entries written
 	 *  before this field shipped still load. */
 	signerFp?: string;
+	/** User-entered note (optional): a free-form one-liner the user attaches
+	 *  to an entry ("Contract for Alice — emailed 9/23"). Same display-only
+	 *  treatment as labels/signer: control characters stripped, capped,
+	 *  garbage becomes undefined. Travels with exported manifests and is
+	 *  re-sanitized on import through the shared sanitizeHistoryRow. */
+	note?: string;
 }
 
 const HISTORY_KEY = "encryptor.sealed.history.v1";
@@ -64,6 +70,10 @@ export const MAX_SEALED_LABEL_CHARS = 48;
 /** Display-only cap for the signer label (same budget as one recipient
  *  label — it renders inside the same chip row). */
 export const MAX_SEALED_SIGNER_CHARS = 48;
+/** Display-only cap for the user note: a sentence fragment, not a field —
+ *  long enough to be useful ("Contract for Alice — emailed 9/23"), short
+ *  enough to render on one line of the vault row. */
+export const MAX_SEALED_NOTE_CHARS = 120;
 /** Upper bound for the per-entry attachment count; oversized values clamp
  *  here, garbage drops out entirely. */
 export const MAX_SEALED_FILES = 99;
@@ -86,6 +96,20 @@ function sanitizeSigner(input: unknown): string | undefined {
 		.replace(/[\u0000-\u001f\u007f]/g, "")
 		.trim()
 		.slice(0, MAX_SEALED_SIGNER_CHARS);
+	return cleaned === "" ? undefined : cleaned;
+}
+
+/** User note (optional): control characters stripped (the note renders on
+ *  one line inside the vault row — newlines would break the layout),
+ *  trimmed, capped at 120; empty or garbage becomes undefined so the row
+ *  simply shows no note. Same tolerance philosophy as sanitizeSigner. */
+function sanitizeNote(input: unknown): string | undefined {
+	if (typeof input !== "string") return undefined;
+	const cleaned = input
+		// eslint-disable-next-line no-control-regex -- stripping control characters IS the goal
+		.replace(/[\u0000-\u001f\u007f]/g, "")
+		.trim()
+		.slice(0, MAX_SEALED_NOTE_CHARS);
 	return cleaned === "" ? undefined : cleaned;
 }
 
@@ -145,6 +169,7 @@ export function sanitizeHistoryRow(raw: unknown): SealedHistoryEntry | null {
 		signer: sanitizeSigner(e.signer),
 		files: sanitizeFiles(e.files),
 		signerFp: sanitizeFingerprint(e.signerFp),
+		note: sanitizeNote(e.note),
 	};
 }
 
@@ -233,6 +258,22 @@ export function appendSealedOutput(input: {
 /** Remove one entry by id. Returns the refreshed list. */
 export function removeSealedEntry(id: string): SealedHistoryEntry[] {
 	const entries = loadSealedHistory().filter((e) => e.id !== id);
+	persist(entries);
+	return entries;
+}
+
+/** Set (or clear) a user note on one entry. Empty/whitespace-only notes
+ *  CLEAR the field — clearing is a first-class action, not a special case.
+ *  The input runs through sanitizeNote again on write, so the UI cannot
+ *  persist anything the load path would refuse. Returns the updated list
+ *  (same shape as removeSealedEntry); unknown ids leave storage untouched
+ *  and return the list unchanged. */
+export function updateSealedEntryNote(id: string, note: string): SealedHistoryEntry[] {
+	const entries = loadSealedHistory().map((e) => {
+		if (e.id !== id) return e;
+		const cleaned = sanitizeNote(note);
+		return cleaned === undefined ? { ...e, note: undefined } : { ...e, note: cleaned };
+	});
 	persist(entries);
 	return entries;
 }

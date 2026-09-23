@@ -1,72 +1,102 @@
-# Deploy Audit: why `develop` pushes land in Cloudflare production
+# Deploy Audit: why non-main branches land in Cloudflare production
 
 <!-- Mr. AI Acting on s183173's Behalf -->
 
-Status: **root cause identified — fix is a Cloudflare dashboard setting, not a repo change.**
+Status: **root cause corrected after dashboard screenshot (second pass); repo-side hardening applied in this PR.**
 
-## TL;DR
+## Correction vs first pass
 
-The repo contains **no** Cloudflare deploy workflow (checked all of `.github/workflows/`).
-Deploys are performed by Cloudflare's Git integration — the **Workers Builds** GitHub App
-(`cloudflare-workers-and-pages`), project `encryptor`, account `222a870054499e3a409b0387fd013fc2` —
-and that integration's **production branch is set to `develop`**. Workers Builds deploys the
-production branch straight to the worker's production environment on every push, so every merge
-into `develop` goes live immediately, exactly the behavior `main` used to have.
+The first version of this audit claimed the Workers Builds **production branch was set to
+`develop`**. The owner's dashboard screenshot disproved that: **Branch control = `main`**
+on the Production builds tab. The revised diagnosis below is based on the screenshot,
+additional check-run data from PR branches, and the Workers Builds documentation.
+
+## TL;DR (corrected)
+
+The Workers Builds Git integration runs **`bunx wrangler deploy`** for builds. Because
+`wrangler.json` defines **no environments**, `wrangler deploy` has exactly one target:
+the production worker `encryptor`. The command does not depend on the branch, so every
+branch build — `develop` merges, PR branches, even dependabot branches — promotes itself
+to the worker's **Active (production) Deployment** instead of saving as a preview version.
+Per Cloudflare's docs, builds only save as versions (without promotion) when the build
+runs `wrangler versions upload`.
 
 ## Evidence
 
-1. GitHub check-runs posted by app `cloudflare-workers-and-pages`, name `Workers Builds: encryptor`,
-   all pointing at `.../workers/services/view/encryptor/**production**/builds/...`:
+1. Dashboard screenshot (Production → Settings → Builds):
+   - Git repository: `theveryoilydill/Encryptor`
+   - Build command: `bun run build`, Deploy command: **`bunx wrangler deploy`**, Root: `/`
+   - Branch control: **`main`** ("Pushes to this branch will automatically trigger builds")
+   - Builds sub-tabs: **Production** / **Previews Base**
+2. GitHub check-runs (app `cloudflare-workers-and-pages`, name `Workers Builds: encryptor`)
+   — the dashboard URLs always land under `/production/builds/`, including for branches
+   that should never touch production:
 
-   | Commit    | Branch  | PR  | Merge time (UTC)    | WB build started (UTC) | Target     |
-   | --------- | ------- | --- | ------------------- | ---------------------- | ---------- |
-   | `c1a0f27` | develop | #54 | 2026-09-22 02:02:23 | 2026-09-22 02:03:19    | production |
-   | `e80ecbe` | develop | #53 | 2026-09-22 01:48:41 | 2026-09-22 02:02:18    | production |
-   | `ddd6a61` | develop | #52 | 2026-09-22 01:33:42 | 2026-09-22 02:01:17    | production |
-   | `6ecc155` | develop | #48 | 2026-09-22 00:51:55 | 2026-09-22 00:52:55    | production |
-   | `9ee690d` | main    | —   | direct push         | 2026-09-12 22:07:46    | production |
+   | Commit | Branch | Context | WB build started (UTC) |
+   |---|---|---|---|
+   | `c1a0f27` | develop | PR #54 merge | 2026-09-22 02:03:19 |
+   | `e80ecbe` | develop | PR #53 merge | 2026-09-22 02:02:18 |
+   | `ddd6a61` | develop | PR #52 merge | 2026-09-22 02:01:17 |
+   | `6ecc155` | develop | PR #48 merge | 2026-09-22 00:52:55 |
+   | `0ff3e13` | ai/postquantum-algos | open PR #47 | 2026-09-16 04:04:49 |
+   | `d3fa4e5` | ai/qol-features | open PR #46 | 2026-09-16 04:38:31 |
+   | `04502ca` | dependabot/npm_and_yarn/recharts | open PR #41 | 2026-09-18 22:08:17 |
+   | `9ed5d88` | dependabot/npm_and_yarn/oxfmt | open PR #38 | 2026-09-18 22:06:42 |
+   | `9ee690d` | main | direct push | 2026-09-12 22:07:46 |
 
-   Every merge to `develop` produced a production build ~1 minute later. Preview builds would
-   show `/preview/builds/` in the dashboard URL; these all say `/production/builds/`.
+   Every merge into `develop` produced a build ~1 minute after the merge.
 
-2. Repo-side elimination:
-   - `nextjs.yml` → GitHub Pages only, `main` only, and its builds fail (legacy leftover).
-   - `ci.yml` → typecheck/lint/format only.
-   - `AutoFormat.yml` → formatting only.
-   - `codeql.yml` → security scanning only.
-   - No `wrangler deploy` / `opennextjs-cloudflare deploy` call exists in any workflow,
-     so nothing on the GitHub side can deploy to Cloudflare.
+3. Repo-side elimination:
+   - `.github/workflows/`: `nextjs.yml` (legacy GitHub Pages, `main` only, build fails),
+     `ci.yml` (typecheck/lint/format), `AutoFormat.yml` (formatting), `codeql.yml`
+     (scanning) — **no Cloudflare deploy step exists on the GitHub side**.
+   - `wrangler.json` (before this PR): a single top-level worker (`name: "encryptor"`)
+     with **no `env` blocks**, so `wrangler deploy` from any context mutates production.
 
-3. `wrangler.json` defines a single top-level worker (`name: "encryptor"`) with **no `env`
-   blocks**. There is exactly one production deployment target and nothing else — whatever
-   deploys, deploys to production.
+## Mechanism (per Cloudflare docs)
 
-## Why this happened
+- Workers Builds docs (Workers → CI-CD → Builds): "Production branch builds create a new
+  version under Version History. If the build is configured to deploy, that version is
+  promoted to the Active Deployment." and "To disable automatic deployments while still
+  allowing builds to run automatically and save as versions (without promoting them to an
+  active deployment), update your deploy command to: `npx wrangler versions upload`."
+- With deploy command `bunx wrangler deploy` and no environments in `wrangler.json`,
+  every build that runs that command deploys the production worker — branch is irrelevant.
 
-Workers Builds decides which branch is "production" in the **Cloudflare dashboard**, not in the
-repo. At some point the `encryptor` Worker's Git integration was (re)connected with
-`develop` chosen as the production branch (the early-August commit history —
-"This is supposed to make deploy work", "I should probably stop using the cloudflare ai agent" —
-shows the deploy setup went through a rough patch where a reconnect was likely).
+## Fix
 
-## Fix (dashboard, ~1 minute)
+### Dashboard (owner, ~1 minute — the actual kill switch)
 
-1. Cloudflare Dashboard → **Workers & Pages** → `encryptor` → **Settings** → **Build** →
-   Git integration.
-2. Change **Production branch** from `develop` back to `main`.
-3. Optional but recommended: enable **non-production branch builds** so pushes to `develop`
-   and PR branches build to preview versions/URLs instead of being ignored.
+1. Workers & Pages → `encryptor` → Settings → Builds → **Previews Base** tab.
+2. Make sure the command non-production builds run is **`bunx wrangler versions upload`**
+   (not `wrangler deploy`). Then only `main` builds promote to Active Deployment; all
+   other branches produce versions/previews that never receive production traffic.
+3. Leave the Production tab's deploy command as `bunx wrangler deploy`.
 
-No repo change is required for the fix itself; this document is the record.
+### Repo-side hardening (applied in this PR)
 
-## Recommended hardening (follow-ups)
+- `wrangler.json`: new `env.preview` targeting a separate worker `encryptor-preview`
+  (explicit `main` + `assets` + `compatibility_*`; `name` overridden so it can never
+  collide with the production worker). Bindings are not inherited by wrangler
+  environments, so `env.preview` intentionally has **no `REGISTRY_DB` binding** — a
+  preview deploy cannot read or write the production registry D1. Verified with
+  `wrangler deploy --dry-run --env preview` (preview resolves to ASSETS only) and
+  `wrangler deploy --dry-run` (top-level still resolves to REGISTRY_DB + ASSETS).
+  Note: registry endpoints will error on preview until a dedicated preview D1 is
+  deliberately wired into `env.preview`.
+- `package.json`: new `deploy:preview` script —
+  `next build && opennextjs-cloudflare build --skipNextBuild && bunx wrangler deploy --env preview` —
+  so manual preview deploys have an explicit, safe target instead of reusing
+  `bun run deploy` (which stays production-only).
+- `.github/dependabot.yml`: `target-branch: "develop"` — Dependabot PRs were the odd ones
+  out (e.g. PR #41 targeted `main` while the team flow merges everything into `develop`).
 
-- `wrangler.json`: add an `env.preview` (separate worker name + preview bindings) and use
-  `opennextjs-cloudflare deploy` with explicit environments, so manual `bun run deploy` can
-  never silently hit production from an arbitrary branch.
-- Retire or repair `.github/workflows/nextjs.yml` — it deploys to GitHub Pages from `main`,
-  which this project abandoned, and it currently fails on every main push.
-- Consider branch protection on `main` and `develop` so only PR merges land there (Dependabot
-  PR #41 currently targets `main` while everything else targets `develop` — worth aligning).
-- Note the irony for merge order: merging _this_ PR into `develop` will itself trigger a
-  production deploy of the audit doc — flip the dashboard setting first, or merge last.
+## Recommended follow-ups
+
+- Retire or repair `.github/workflows/nextjs.yml` — dead GitHub Pages pipeline that fails
+  on every `main` push.
+- Optionally create `encryptor-registry-preview` (D1) and bind it in `env.preview` when
+  registry features are needed on preview deploys.
+- Consider branch protection on `main` and `develop` so only PR merges land there.
+- Merge-order note: merging this PR into `develop` will itself trigger a build — with the
+  dashboard fix from above applied first, that build will no longer promote to production.

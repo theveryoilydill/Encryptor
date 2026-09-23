@@ -13,6 +13,7 @@ import {
 	KeySourcePill,
 	SignerHashLegend,
 	DecryptedMessageView,
+	FingerprintWords,
 } from "@/components/pgp/shared";
 import type {
 	PrivateKeyConfig,
@@ -135,7 +136,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 		if (fileMode) {
 			if (detected !== "detached-signature") {
 				setError(
-					"File verification needs a detached signature — paste the .sig block that accompanied the file.",
+					"File verification needs a detached signature — paste the .sig block that accompanied the file, or press Reset to verify pasted text instead.",
 				);
 				return;
 			}
@@ -510,6 +511,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 								setResult(null);
 								setError(null);
 								setVerifyFile(null);
+								// Also drop back to Text mode: the Text/File toggle only
+								// renders inside the detached-signature card, so a user
+								// stuck in File mode with non-detached armor pasted would
+								// otherwise have no way back short of a reload.
+								setFileMode(false);
 							}}
 							className="transition-colors duration-150"
 						>
@@ -663,6 +669,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 													</span>
 													{s.fingerprint}
 												</div>
+											)}
+											{/* Verify by voice: biometric words for this signer
+												— compare aloud before trusting the channel. */}
+											{s.fingerprint && (
+												<FingerprintWords fingerprint={s.fingerprint} className="mt-1" />
 											)}
 										</li>
 									);

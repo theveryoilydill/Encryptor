@@ -7,21 +7,36 @@
  * (src/components/pgp/PgpApp.tsx in the audit tree) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ComponentProps,
+	type ReactNode,
+} from "react";
 import {
 	BadgeCheck,
 	Check,
+	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
 	Copy,
 	FileSignature,
 	FileText,
+	GitCompare,
+	History,
 	Lock,
+	Sparkles,
+	Volume2,
 	X,
 } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { rehypeSecureHtml } from "@/lib/pgp/safe-html";
+import { githubSlug } from "@/lib/pgp/github-slug";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -38,6 +53,7 @@ import {
 import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
+import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import {
 	base64ToUint8Array,
 	buildZipBundle,
@@ -233,6 +249,7 @@ export function CopyButton({
 	text,
 	label = "Copy",
 	ariaLabel = "Copy output to clipboard",
+	className,
 }: {
 	/** The string to copy. */
 	text: string;
@@ -240,6 +257,9 @@ export function CopyButton({
 	label?: string;
 	/** Accessible name (defaults to the original "Copy output to clipboard"). */
 	ariaLabel?: string;
+	/** Optional size/layout overrides merged onto the button (host cards
+	 *  render this at different scales — e.g. the words-reveal mini copy). */
+	className?: string;
 }) {
 	const [copied, setCopied] = useState(false);
 	const [showCheck, setShowCheck] = useState(false);
@@ -274,7 +294,7 @@ export function CopyButton({
 					});
 				}
 			}}
-			className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+			className={`h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8 ${className ?? ""}`}
 			title="Copy to clipboard"
 			aria-label={ariaLabel}
 		>
@@ -433,16 +453,18 @@ export function DownloadButton({ text, title }: { text: string; title: string })
 
 /* -------------------------------- OutputBlock ------------------------------- */
 
-/** Output section: rendered preview / raw text toggle, ZIP + copy actions,
- *  nuke-input panel, and a "Start over" reset. */
+/** Output section: rendered preview / raw text toggle, ZIP + copy actions.
+ *  When a quantum-sealed copy is provided (sealedCopy) it REPLACES the
+ *  (single) output box's content by default — a small in-box switch flips
+ *  between the sealed and the recipient armor; Copy/Download act on
+ *  whichever view is shown. # Mr. AI Acting on s183173's Behalf */
 export function OutputBlock({
 	title,
 	output,
 	files,
 	preview,
-	onNuke,
-	nukeLabel,
-	onReset,
+	sealedCopy,
+	sealedNote,
 	signers,
 	verificationResult,
 	operation,
@@ -460,9 +482,15 @@ export function OutputBlock({
 	 *  are resolved against the top-level `files`) or an object of the shape
 	 *  `{ text?/plaintext?, files? }`. */
 	preview?: string | { text?: string; plaintext?: string; files?: EnvelopeFile[] };
-	onNuke?: () => void;
-	nukeLabel?: string;
-	onReset: () => void;
+	/** Quantum-sealed armor (ML-KEM-768 outer layer) for the sender's own
+	 *  archive. When present it IS the output box by default — violet PQ
+	 *  treatment + an in-box `Sealed copy | Recipient copy` switch — and
+	 *  Copy/Download act on whichever view is shown. There is NO second
+	 *  output box anywhere. */
+	sealedCopy?: string;
+	/** Optional one-line context shown under the sealed label (why this copy
+	 *  exists / what opens it). Only rendered while the sealed view is up. */
+	sealedNote?: string;
 	signers?: SignatureInfo[];
 	verificationResult?: VerificationResult | string;
 	/** Operation tag used for the ZIP filename + metadata (e.g. "encrypt",
@@ -474,14 +502,16 @@ export function OutputBlock({
 	inputBytes?: number;
 }) {
 	const [showRaw, setShowRaw] = useState(false);
-	const [nuked, setNuked] = useState(false);
-
-	// Re-arm the nuke panel whenever a new output is produced — done via the
-	// render-time state adjustment pattern (no effect needed).
-	const [prevOutput, setPrevOutput] = useState(output);
-	if (prevOutput !== output) {
-		setPrevOutput(output);
-		setNuked(false);
+	// Which armor fills the box when a sealed copy exists — the sealed copy
+	// is the default ("if I said I wanted it in settings, I want it").
+	const [showSealed, setShowSealed] = useState(true);
+	// Re-arm the sealed default whenever a NEW sealed copy arrives (fresh
+	// encrypt or history restore) — render-time state adjustment pattern,
+	// no effect needed.
+	const [prevSealedCopy, setPrevSealedCopy] = useState(sealedCopy);
+	if (prevSealedCopy !== sealedCopy) {
+		setPrevSealedCopy(sealedCopy);
+		setShowSealed(true);
 	}
 
 	const previewText =
@@ -491,6 +521,11 @@ export function OutputBlock({
 
 	// Small status icon in the title row, derived from the title string only.
 	const statusIcon = outputStatusIcon(title);
+
+	// The sealed view drives the box accent, the in-box label, and what
+	// Copy/Download act on. Stats describe whichever armor is on screen.
+	const sealedActive = Boolean(sealedCopy) && showSealed;
+	const shownText = sealedActive ? (sealedCopy ?? "") : output;
 
 	return (
 		<div className={output ? "animate-scale-in glow-accent space-y-3" : "space-y-3"}>
@@ -530,19 +565,19 @@ export function OutputBlock({
 								aria-hidden="true"
 								className="ml-0.5 hidden font-mono text-[10px] font-normal normal-case tracking-normal text-muted-foreground sm:inline"
 							>
-								{output.split("\n").length.toLocaleString()} lines ·{" "}
-								{(output.length / 1024).toFixed(1)} KB
+								{shownText.split("\n").length.toLocaleString()} lines ·{" "}
+								{(shownText.length / 1024).toFixed(1)} KB
 								{/* Savings marker (R10): only when the caller reports the
                     input size and the armored output actually came out
                     smaller (small messages with per-recipient overhead stay
                     silent instead of showing a confusing negative). */}
-								{inputBytes !== undefined && output.length < inputBytes && (
+								{inputBytes !== undefined && shownText.length < inputBytes && (
 									<span
 										className="font-medium text-emerald-600 dark:text-emerald-400"
 										title="Armored output is smaller than the input — compression did the work"
 									>
 										{" "}
-										· {Math.max(1, Math.round((1 - output.length / inputBytes) * 100))}% smaller
+										· {Math.max(1, Math.round((1 - shownText.length / inputBytes) * 100))}% smaller
 									</span>
 								)}
 							</span>
@@ -568,6 +603,87 @@ export function OutputBlock({
 					<div className="min-h-[100px] rounded-xl border bg-card px-3.5 py-3 shadow-sm">
 						<DecryptedMessageView text={previewText} files={previewFiles} />
 					</div>
+				) : sealedCopy ? (
+					// ONE output box, two armors: the quantum-sealed copy REPLACES the
+					// recipient armor as the box content (violet PQ treatment) and a
+					// compact in-box switch flips between the two — no second box, and
+					// the action row below never reflows.
+					<div
+						className={
+							sealedActive
+								? "overflow-hidden rounded-xl border border-violet-500/40 bg-violet-50/40 shadow-sm dark:border-violet-400/30 dark:bg-violet-950/20"
+								: "overflow-hidden rounded-xl border border-border bg-card shadow-sm"
+						}
+					>
+						<div
+							className={
+								sealedActive
+									? "flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-violet-500/25 bg-violet-100/50 px-2.5 py-1.5 dark:border-violet-400/20 dark:bg-violet-900/20"
+									: "flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-border bg-muted/40 px-2.5 py-1.5"
+							}
+						>
+							{sealedActive ? (
+								<span className="flex min-w-0 flex-col">
+									<span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-violet-800 dark:text-violet-200">
+										<Sparkles
+											aria-hidden="true"
+											className="size-3 shrink-0 text-violet-600 dark:text-violet-300"
+										/>
+										Quantum-sealed copy (ML-KEM-768)
+										<span className="rounded-full bg-violet-600 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-white dark:bg-violet-500">
+											PQ
+										</span>
+									</span>
+									{sealedNote && (
+										<span className="text-[10px] leading-snug text-violet-700/80 dark:text-violet-300/70">
+											{sealedNote}
+										</span>
+									)}
+								</span>
+							) : (
+								<span className="text-[11px] font-medium text-muted-foreground">
+									Recipient copy
+								</span>
+							)}
+							<div
+								role="group"
+								aria-label="Choose which copy fills the output box"
+								className="flex shrink-0 items-center overflow-hidden rounded-md border border-border bg-background/60"
+							>
+								<button
+									type="button"
+									aria-pressed={sealedActive}
+									onClick={() => setShowSealed(true)}
+									className={
+										sealedActive
+											? "h-6 bg-foreground px-2 text-[10px] font-medium text-background transition-colors"
+											: "h-6 px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+									}
+								>
+									Sealed copy
+								</button>
+								<button
+									type="button"
+									aria-pressed={!sealedActive}
+									onClick={() => setShowSealed(false)}
+									className={
+										sealedActive
+											? "h-6 px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+											: "h-6 bg-foreground px-2 text-[10px] font-medium text-background transition-colors"
+									}
+								>
+									Recipient copy
+								</button>
+							</div>
+						</div>
+						<Textarea
+							value={shownText}
+							readOnly
+							rows={12}
+							className="field-sizing-fixed rounded-none border-0 bg-transparent font-mono shadow-none focus-visible:border-0 focus-visible:ring-0"
+							aria-label={sealedActive ? "Quantum-sealed copy (ML-KEM-768)" : title}
+						/>
+					</div>
 				) : (
 					<Textarea
 						value={output}
@@ -587,41 +703,12 @@ export function OutputBlock({
 							verificationResult={verificationResult}
 						/>
 					)}
-					<DownloadButton text={output} title={title} />
-					<CopyButton text={output} />
+					{/* Copy/Download act on whichever armor the box shows. The
+						label-swap (Copy -> Copied!) changes only the button's own
+						width — the nowrap row keeps every button on one line. */}
+					<DownloadButton text={shownText} title={sealedActive ? "quantum-sealed copy" : title} />
+					<CopyButton text={shownText} />
 				</div>
-			</div>
-
-			{onNuke && (
-				<div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/30">
-					{!nuked ? (
-						<div className="flex flex-col justify-between gap-2.5 sm:flex-row sm:items-center">
-							<p className="text-xs text-amber-800 dark:text-amber-300">
-								Your input is still in memory. Nuke it now to make sure only the output remains.
-							</p>
-							<Button
-								type="button"
-								onClick={() => {
-									onNuke();
-									setNuked(true);
-								}}
-								className="h-11 shrink-0 bg-amber-700 px-3 text-xs font-medium text-white transition-colors hover:bg-amber-800 sm:h-8 dark:bg-amber-500 dark:text-amber-950 dark:hover:bg-amber-400"
-							>
-								{nukeLabel ?? "Nuke input"}
-							</Button>
-						</div>
-					) : (
-						<p className="text-xs text-emerald-700 dark:text-emerald-400">
-							✓ Input nuked. Only the output remains in memory.
-						</p>
-					)}
-				</div>
-			)}
-
-			<div className="flex gap-2">
-				<Button type="button" variant="ghost" onClick={onReset} className="h-11 text-sm sm:h-9">
-					Start over
-				</Button>
 			</div>
 		</div>
 	);
@@ -631,15 +718,56 @@ export function OutputBlock({
 
 /** Right-aligned char/word/KB counter under composer inputs (Encrypt + Sign
  *  tabs share it). aria-live off on purpose — announcing every keystroke
- *  would be noisy for screen readers. */
+ *  would be noisy for screen readers. tabular-nums keeps every digit slot
+ *  the same width, so the row doesn't jitter while typing (each keystroke
+ *  changes the numbers but not the layout). */
 export function InputSizeCounter({ text }: { text: string }) {
 	const trimmed = text.trim();
 	const words = trimmed ? trimmed.split(/\s+/).length : 0;
 	return (
-		<div aria-live="off" className="mt-1 text-right text-[10px] text-muted-foreground">
+		<div aria-live="off" className="mt-1 text-right text-[10px] tabular-nums text-muted-foreground">
 			{text.length.toLocaleString()} chars
 			{words > 0 && ` · ${words.toLocaleString()} ${words === 1 ? "word" : "words"}`}
 			{text.length > 0 && ` · ~${(text.length / 1024).toFixed(1)} KB`}
+		</div>
+	);
+}
+
+/* ------------------------------ DraftRestoredNote --------------------------- */
+
+/** One-line "draft restored" note under a composer that rehydrated unsent
+ *  text from sessionStorage (see lib/pgp/drafts.ts). Offers an explicit
+ *  Discard so restoring never feels like a state change the user can't
+ *  undo. Neutral muted family — amber is reserved for expiry warnings, red
+ *  for errors; a draft is neither. Attachments-not-kept gets its own quiet
+ *  sentence because a restored message can legitimately reference images
+ *  the draft budget didn't carry. */
+export function DraftRestoredNote({
+	filesDropped,
+	onDiscard,
+}: {
+	/** True when attachments existed but exceeded the draft budget. */
+	filesDropped?: boolean;
+	/** Throw the draft away: clears storage and the composer text. */
+	onDiscard: () => void;
+}) {
+	return (
+		<div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+			<History aria-hidden="true" className="size-3.5 shrink-0" />
+			<span>
+				Draft restored — unsent text kept in this browser from your last visit
+				{filesDropped ? " (attachments exceeded the draft budget — re-attach before sending)" : ""}.
+			</span>
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				onClick={onDiscard}
+				className="ml-auto h-6 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+			>
+				<X aria-hidden="true" className="size-3" />
+				Discard
+			</Button>
 		</div>
 	);
 }
@@ -738,6 +866,40 @@ export function AttachmentList({
 
 /* --------------------------- DecryptedMessageView --------------------------- */
 
+/** Flatten React children to plain text (for slug derivation). */
+function flattenText(node: ReactNode): string {
+	if (node === null || node === undefined || typeof node === "boolean") return "";
+	if (typeof node === "string" || typeof node === "number") return String(node);
+	if (Array.isArray(node)) return node.map(flattenText).join("");
+	if (typeof node === "object" && "props" in (node as unknown as Record<string, unknown>)) {
+		return flattenText((node as { props: { children?: ReactNode } }).props?.children);
+	}
+	return "";
+}
+
+/** Heading renderer factory: emits the heading tag with a GitHub-style anchor
+ *  id derived from the heading's own text, so composer-generated TOC links
+ *  jump to the right heading in the rendered view. */
+function headingWithAnchor(Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+	return function Heading(props: ComponentProps<"h1"> & { node?: unknown }) {
+		const { node: _node, children, ...rest } = props;
+		const id = githubSlug(flattenText(children));
+		return (
+			<Tag {...rest} id={id || undefined}>
+				{children}
+			</Tag>
+		);
+	};
+}
+const headingAnchors = {
+	h1: headingWithAnchor("h1"),
+	h2: headingWithAnchor("h2"),
+	h3: headingWithAnchor("h3"),
+	h4: headingWithAnchor("h4"),
+	h5: headingWithAnchor("h5"),
+	h6: headingWithAnchor("h6"),
+};
+
 /** Render a decrypted message as markdown (GitHub-flavored), with inline
  *  envelope images.
  *
@@ -768,10 +930,15 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 	}, [files]);
 
 	return (
-		<div className="break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
+		<div className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
 			<Markdown
 				remarkPlugins={[remarkGfm, remarkBreaks]}
+				// Secure raw-HTML support: parse the HTML the sender wrote, then
+				// strip everything the strict schema disallows. Never renders
+				// scripts, styles, event handlers, or unsafe URLs.
+				rehypePlugins={rehypeSecureHtml}
 				components={{
+					...headingAnchors,
 					a: ({ node: _node, children, ...props }) => (
 						<a {...props} target="_blank" rel="noreferrer noopener" className={ACCENT_TEXT}>
 							{children}
@@ -841,6 +1008,242 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 				{text}
 			</Markdown>
 		</div>
+	);
+}
+
+/* ---------------------------- FingerprintWords ----------------------------- */
+
+/** Compute the 20 PGP words for a fingerprint, or null when the input is not
+ *  a valid 40-hex fingerprint (SignatureInfo.fingerprint is optional and
+ *  historically unvalidated — never throw from render). */
+export function pgpWordsFor(fingerprint: string): string[] | null {
+	try {
+		return fingerprintToPgpWords(fingerprint);
+	} catch {
+		return null;
+	}
+}
+
+/** The 20 words, alternating shading on odd positions to mirror the even/odd
+ *  word lists — comparing position-by-position over a call is the point. */
+export function PgpWordLine({ words, className = "" }: { words: string[]; className?: string }) {
+	return (
+		<p className={`font-mono text-[11px] leading-relaxed break-words ${className}`}>
+			{words.map((w, i) => (
+				<span key={i} className={i % 2 === 1 ? "text-muted-foreground" : "text-foreground"}>
+					{w}
+					{i < words.length - 1 ? " " : ""}
+				</span>
+			))}
+		</p>
+	);
+}
+
+/* ------------------------------- WordCompare ------------------------------- */
+
+/** Normalize one spoken/pasted word for comparison: lowercase, strip
+ *  punctuation the caller may have transcribed ("Orlando." / "Orlando," /
+ *  '"Orlando"' all compare equal to the canonical form). */
+const normalizeSpokenWord = (w: string) => w.toLowerCase().replace(/[^a-z]/g, "");
+
+const HEXISH_RE = /^[0-9a-f]{2,}$/i;
+
+/** Interactive half of "Verify by voice": your contact reads THEIR screen's
+ *  20 words aloud (or pastes them); this diffs them position-by-position
+ *  against THIS key's words and renders a per-position verdict.
+ *
+ *  The comparison is deliberately case- and punctuation-insensitive — a
+ *  phone call does not transmit capitalization, and transcription quirks
+ *  ("orlando," with a comma) must never mask a real difference. Position is
+ *  everything: even a single mismatched slot means a different key. */
+export function WordCompare({ words }: { words: string[] }) {
+	const [open, setOpen] = useState(false);
+	const [input, setInput] = useState("");
+
+	const tokens = useMemo(() => {
+		if (!open) return [] as string[];
+		return input
+			.split(/[\s,;·]+/)
+			.map((t) => t.trim())
+			.filter(Boolean);
+	}, [input, open]);
+
+	const normed = useMemo(() => tokens.map(normalizeSpokenWord), [tokens]);
+	// Hex detection runs on the RAW tokens: normalization strips digits
+	// (letters-only comparison), which would turn "B464" into "b" and
+	// defeat the fingerprint-vs-words hint below.
+	const allHexish = tokens.length > 0 && tokens.every((t) => HEXISH_RE.test(t));
+
+	const slots = words.map((expected, i) => {
+		const got = normed[i];
+		if (got === undefined) return { expected, got: null, status: "missing" as const };
+		if (got === normalizeSpokenWord(expected)) return { expected, got, status: "match" as const };
+		return { expected, got, status: "mismatch" as const };
+	});
+	const matches = slots.filter((s) => s.status === "match").length;
+	const mismatches = slots.filter((s) => s.status === "mismatch");
+	const missing = slots.filter((s) => s.status === "missing").length;
+	const complete = tokens.length >= words.length;
+
+	if (!open) {
+		return (
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				onClick={() => setOpen(true)}
+				className="mt-1.5 h-7 gap-1.5 px-2 text-[11px]"
+				aria-expanded={false}
+			>
+				<GitCompare aria-hidden="true" className="size-3.5" />
+				Compare with your contact
+			</Button>
+		);
+	}
+
+	return (
+		<div className="mt-1.5 rounded-lg border border-border/60 bg-background p-2.5">
+			<div className="flex items-center justify-between gap-2">
+				<Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+					Paste or type the words your contact read to you
+				</Label>
+				<button
+					type="button"
+					onClick={() => {
+						setOpen(false);
+						setInput("");
+					}}
+					className="shrink-0 rounded px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+					aria-label="Close the word comparison"
+				>
+					<X aria-hidden="true" className="size-3.5" />
+				</button>
+			</div>
+			<Textarea
+				value={input}
+				onChange={(e) => setInput(e.target.value)}
+				placeholder="e.g. kickoff Medusa playhouse Istanbul …"
+				rows={2}
+				spellCheck={false}
+				className="mt-1 text-[11px] leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
+				aria-label="The 20 words your contact read to you"
+			/>
+			{/* Per-position diff: expected word per slot; emerald = confirmed,
+				red = differs (a different key), muted = not yet provided. */}
+			<div className="mt-2 flex flex-wrap gap-1">
+				{slots.map((s, i) => (
+					<span
+						key={i}
+						title={
+							s.status === "mismatch"
+								? `Position ${i + 1}: expected "${s.expected}", got "${s.got}"`
+								: s.status === "match"
+									? `Position ${i + 1}: confirmed`
+									: `Position ${i + 1}: not provided yet`
+						}
+						className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+							s.status === "match"
+								? "border-emerald-300/60 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+								: s.status === "mismatch"
+									? "border-red-300/70 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+									: "border-border bg-muted/40 text-muted-foreground"
+						}`}
+					>
+						<span className="mr-0.5 text-[9px] opacity-60">{i % 2 === 0 ? "E" : "O"}</span>
+						{s.expected}
+						{s.status === "mismatch" && <X aria-hidden="true" className="size-3" />}
+					</span>
+				))}
+			</div>
+			<div role="status" aria-live="polite">
+				{allHexish ? (
+					<p className="mt-2 rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+						That looks like a hex fingerprint — paste the 20 words instead (they are the ones shown
+						above).
+					</p>
+				) : mismatches.length > 0 ? (
+					<p className="mt-2 rounded-md bg-red-100 px-2 py-1 text-[11px] font-medium text-red-800 dark:bg-red-950/50 dark:text-red-300">
+						{mismatches.length === 1
+							? "1 position differs"
+							: `${mismatches.length} positions differ`}
+						{" — "}this is a different key. Do not trust it.{" "}
+						<span className="font-normal">
+							{mismatches
+								.slice(0, 3)
+								.map(
+									(m) =>
+										`#${words.indexOf(m.expected) + 1} expected "${m.expected}", got "${m.got}"`,
+								)
+								.join("; ")}
+							{mismatches.length > 3 ? "; …" : ""}
+						</span>
+					</p>
+				) : complete && missing === 0 ? (
+					<p className="mt-2 rounded-md bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+						All 20 words match — this is the same key. Verified by voice.
+					</p>
+				) : tokens.length > 0 ? (
+					<p className="mt-2 rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+						{matches} of 20 positions confirmed so far — {missing} more word
+						{missing === 1 ? "" : "s"} to go.
+					</p>
+				) : null}
+				{tokens.length > words.length && (
+					<p className="mt-1 text-[10px] text-muted-foreground">
+						{tokens.length - words.length} extra word{tokens.length - words.length === 1 ? "" : "s"}{" "}
+						ignored.
+					</p>
+				)}
+			</div>
+		</div>
+	);
+}
+
+/** "Verify by voice" — the PGP biometric word list for one fingerprint.
+ *
+ *  Hex fingerprints are a hostile medium for humans: 40 characters where one
+ *  misread byte silently accepts a swapped key. The biometric word list is
+ *  the fix — read the words aloud over a call and both sides detect any
+ *  difference (transposition, duplication, omission) by ear.
+ *
+ *  Renders nothing when the fingerprint is absent/invalid. Collapsed by
+ *  default so the reveal never pushes layout until asked for. */
+export function FingerprintWords({
+	fingerprint,
+	className = "",
+}: {
+	fingerprint: string;
+	/** Extra spacing classes from the host card (the reveal itself is
+	 *  width-neutral and inherits the host's type scale). */
+	className?: string;
+}) {
+	const words = useMemo(() => pgpWordsFor(fingerprint), [fingerprint]);
+	if (!words) return null;
+	return (
+		<details className={`group/fp ${className}`}>
+			<summary className="inline-flex cursor-pointer select-none items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+				<Volume2 aria-hidden="true" className="size-3.5" />
+				Verify by voice
+				<ChevronDown
+					aria-hidden="true"
+					className="size-3 transition-transform group-open/fp:rotate-180"
+				/>
+			</summary>
+			<div className="mt-1.5 rounded-lg border border-border/60 bg-muted/40 p-2.5">
+				<PgpWordLine words={words} />
+				<p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+					Read these 20 words to your contact over a call — every word must match on both screens.
+					Shading alternates even/odd positions.
+				</p>
+				<CopyButton
+					text={words.join(" ")}
+					label="Copy words"
+					ariaLabel="Copy the 20 fingerprint verification words"
+					className="mt-1.5 h-7 px-2 text-[11px]"
+				/>
+				<WordCompare words={words} />
+			</div>
+		</details>
 	);
 }
 
@@ -972,6 +1375,10 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
 									{s.fingerprint}
 								</div>
 							)}
+							{/* Verify by voice: biometric words for the signer's
+								fingerprint — the out-of-band check against key swaps,
+								anchored to the hex line it spells. */}
+							{s.fingerprint && <FingerprintWords fingerprint={s.fingerprint} className="mt-1" />}
 						</li>
 					);
 				})}

@@ -59,7 +59,7 @@ import {
 } from "@/components/pgp/login/publish-flow";
 import { PROXIES, type PrivateKeyConfig } from "@/components/pgp/contracts";
 import { generatePassphrase } from "@/lib/pgp/passphrase";
-import { generateSealKeyPair, wrapSealSecret, type QuantumSealConfig } from "@/lib/pgp/pq";
+import { generateSealKeyPair, wrapSealSecretAuto, type QuantumSealConfig } from "@/lib/pgp/pq";
 import {
 	formatFingerprint,
 	generateKeyPair,
@@ -1735,18 +1735,18 @@ function GenerateForm({
 				expirationSeconds: seconds > 0 ? seconds : undefined,
 			});
 			const label = name.trim() || email.trim() || "Ed25519 key";
-			// Quantum-seal pair (ML-KEM-768) — generated alongside when a
-			// passphrase exists so the secret half is wrapped by it. The PUBLIC
-			// half publishes with the key (pqSealPk) so correspondents can seal
-			// archive copies to it; the secret half stays on this device.
+			// Quantum-seal pair (ML-KEM-768) — generated alongside every key.
+			// The PUBLIC half publishes with the key (pqSealPk) so
+			// correspondents can seal archive copies to it; the secret half
+			// stays on this device, wrapped by the passphrase when one exists
+			// and by a random device key otherwise (wrapSealSecretAuto —
+			// passphrase-less keys used to silently lose the PQ layer here).
 			let seal: QuantumSealConfig | null = null;
-			if (hasPassphrase) {
-				try {
-					const sealPair = generateSealKeyPair();
-					seal = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
-				} catch {
-					seal = null; // PQ is additive — never block key generation
-				}
+			try {
+				const sealPair = generateSealKeyPair();
+				seal = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, passphrase);
+			} catch {
+				seal = null; // PQ is additive — never block key generation
 			}
 			const config: PrivateKeyConfig = {
 				source: "generated",

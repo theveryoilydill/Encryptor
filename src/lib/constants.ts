@@ -43,11 +43,25 @@ export const LIMITS = {
 
 export const STORAGE_KEYS = {
 	config: "encryptor.config.v1",
+	/** Ring of previously configured keys (metadata + encrypted armor) for
+	 *  one-click switching — see lib/pgp/key-history.ts. */
+	keyHistory: "encryptor.keyHistory.v1",
+	/** Per-fingerprint dismissal of the post-quantum onboarding banner. */
+	pqBannerDismissed: "encryptor.pq-banner-dismissed",
+	/** Per-fingerprint dismissal of the unencrypted-own-key banner. */
+	unprotectedKeyBannerDismissed: "encryptor.unprotected-key-banner-dismissed",
 	includeSelf: "encryptor.include-self.v1",
 	lastTab: "encryptor.lastTab",
 	recentRecipients: "encryptor.recentRecipients",
 	settings: "encryptor.settings.v1",
+	/** Full-screen first-run onboarding dismissal ("skip the entire thing").
+	 *  Persisted so a user who skipped the takeover is never nagged again. */
+	onboardingDismissed: "encryptor.onboarding-dismissed.v1",
+	/** Coach-mark guided tour completion flag. */
 	tourDone: "encryptor.tour.done.v1",
+	/** Unsent-composer drafts (sessionStorage — see lib/pgp/drafts.ts). */
+	draftEncrypt: "encryptor.draft.encrypt.v1",
+	draftSign: "encryptor.draft.sign.v1",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

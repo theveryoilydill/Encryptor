@@ -22,6 +22,16 @@ export const PROXIES = {
 
 export type Tab = "encrypt" | "decrypt" | "sign" | "verify";
 
+/** The app's four modes, in display + Alt+1..4 shortcut order. Shared by the
+ *  tab strip (PgpApp), the Alt+bindings, and the command palette so the
+ *  order can never drift apart. */
+export const TABS: { id: Tab; label: string }[] = [
+	{ id: "encrypt", label: "Encrypt" },
+	{ id: "decrypt", label: "Decrypt" },
+	{ id: "sign", label: "Sign" },
+	{ id: "verify", label: "Verify" },
+];
+
 export interface Recipient {
 	source: "keybase" | "local";
 	username?: string;

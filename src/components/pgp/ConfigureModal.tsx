@@ -16,10 +16,20 @@
  */
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { ChevronDown, Download, Loader2, QrCode, ShieldHalf, TriangleAlert } from "lucide-react";
+import {
+	ChevronDown,
+	Download,
+	History,
+	Loader2,
+	QrCode,
+	ShieldHalf,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatFingerprint } from "@/lib/pgp/pgp";
+import { FingerprintWords } from "@/components/pgp/shared";
 import { type PrivateKeyConfig } from "@/components/pgp/contracts";
 import { CopyButton } from "@/components/pgp/shared";
 import {
@@ -36,6 +46,9 @@ export function ConfigureModal({
 	open,
 	onOpenChange,
 	privateKey,
+	keyHistory,
+	onRestoreKey,
+	onForgetKey,
 	onSave,
 	onClear,
 	requestDecryptedKey,
@@ -43,6 +56,11 @@ export function ConfigureModal({
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	privateKey: PrivateKeyConfig | null;
+	/** Previously configured keys (newest first) — one click switches back
+	 *  without a fresh Keybase login / armor re-paste. */
+	keyHistory: PrivateKeyConfig[];
+	onRestoreKey: (cfg: PrivateKeyConfig) => void;
+	onForgetKey: (fingerprint: string) => void;
 	onSave: (cfg: PrivateKeyConfig) => void;
 	onClear: () => void;
 	/** On-demand key unlock — used ONLY by the "enable quantum seal" flow,
@@ -206,6 +224,11 @@ export function ConfigureModal({
 								<div className="mt-1 break-all font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
 									{formatFingerprint(privateKey.info.fingerprint)}
 								</div>
+							)}
+							{/* Verify by voice: read YOUR words to a contact so they
+								can confirm this key is really yours (and vice versa). */}
+							{privateKey.info && (
+								<FingerprintWords fingerprint={privateKey.info.fingerprint} className="mt-1.5" />
 							)}
 							{/* Additive: collapsible metadata grid fed by describeKeyDetails
                   (pure helper in lib/pgp/key-details.ts). Renders nothing when
@@ -471,9 +494,77 @@ export function ConfigureModal({
 										aria-hidden
 										className="size-3.5 text-violet-600 dark:text-violet-400"
 									/>
-									Quantum seal: ML-KEM-768 pair attached (secret key wrapped under your passphrase).
+									Quantum seal: ML-KEM-768 pair attached (secret key wrapped{" "}
+									{privateKey.pq.deviceKey ? "under a device key" : "under your passphrase"}).
 								</p>
 							)}
+						</div>
+					)}
+
+					{keyHistory.length > 0 && (
+						<div className="mb-4">
+							<p className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+								<History aria-hidden className="size-4 text-muted-foreground" />
+								Previously configured keys
+							</p>
+							<p className="mb-2 text-[11px] leading-snug text-muted-foreground">
+								Switch back with one click — no re-login, no re-pasting. Passphrases are still asked
+								when needed and are never stored.
+							</p>
+							<ul className="space-y-1.5">
+								{keyHistory.map((cfg) => {
+									const fp = cfg.info?.fingerprint;
+									return (
+										<li
+											key={fp ?? cfg.label}
+											className="flex items-center justify-between gap-2 rounded-lg border border-border px-2.5 py-2"
+										>
+											<div className="min-w-0">
+												<div className="flex items-center gap-1.5">
+													<span
+														className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+															cfg.source === "keybase"
+																? "bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+																: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+														}`}
+													>
+														{cfg.source === "keybase" ? "Keybase" : cfg.source}
+													</span>
+													<span className="truncate text-xs font-medium">{cfg.label}</span>
+												</div>
+												{fp && (
+													<div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">
+														{formatFingerprint(fp)}
+													</div>
+												)}
+											</div>
+											<div className="flex shrink-0 items-center gap-1">
+												<Button
+													type="button"
+													variant="outline"
+													size="sm"
+													onClick={() => onRestoreKey(cfg)}
+													className="h-11 gap-1 px-3 text-xs transition-colors sm:h-8"
+													title="Make this the active key"
+												>
+													Use this key
+												</Button>
+												<Button
+													type="button"
+													variant="ghost"
+													size="icon"
+													onClick={() => fp && onForgetKey(fp)}
+													aria-label={`Forget ${cfg.label}`}
+													title="Forget this key"
+													className="size-11 text-muted-foreground transition-colors hover:text-foreground sm:size-8"
+												>
+													<X aria-hidden className="size-4" />
+												</Button>
+											</div>
+										</li>
+									);
+								})}
+							</ul>
 						</div>
 					)}
 

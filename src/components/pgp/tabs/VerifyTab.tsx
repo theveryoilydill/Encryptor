@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
-import { FileSearch } from "lucide-react";
+import { FileSearch, FileUp, ShieldCheck, ShieldX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,6 +12,8 @@ import {
 	ZipDownloadButton,
 	KeySourcePill,
 	SignerHashLegend,
+	DecryptedMessageView,
+	FingerprintWords,
 } from "@/components/pgp/shared";
 import type {
 	PrivateKeyConfig,
@@ -29,6 +31,7 @@ import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
+import { formatFileSize } from "@/lib/pgp/envelope";
 
 /** Plain-text verification report for the clipboard (additive): a compact,
  *  shareable summary of the current result — handy for pasting into an
@@ -79,6 +82,16 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// byte-identical in behavior.)
 	const [hintDismissedFor, setHintDismissedFor] = useState<string | null>(null);
 
+	// Binary file verification (round 20): a detached signature can cover a
+	// FILE instead of pasted text (the gpg --detach-sig workflow). When
+	// fileMode is on, the plaintext card becomes a file picker and the
+	// signature is verified over the file's exact bytes. The file is read
+	// only at verify time and never persisted anywhere.
+	const [fileMode, setFileMode] = useState(false);
+	const [verifyFile, setVerifyFile] = useState<File | null>(null);
+	const [fileDragDepth, setFileDragDepth] = useState(0);
+	const verifyFileInputRef = useRef<HTMLInputElement>(null);
+
 	// Drag & drop (R10): load armor onto the signature card (PGP-armored text
 	// files only) and any text file onto the detached-signature plaintext
 	// card (requirePgpArmor: false). Shared hook (ascii-drop.tsx); errors
@@ -118,11 +131,27 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 			setError("Paste a signature or cleartext-signed message to verify.");
 			return;
 		}
+		// File mode: the pasted block must be a detached signature and a file
+		// must be chosen — its bytes are read ONLY here, at verify time.
+		if (fileMode) {
+			if (detected !== "detached-signature") {
+				setError(
+					"File verification needs a detached signature — paste the .sig block that accompanied the file, or press Reset to verify pasted text instead.",
+				);
+				return;
+			}
+			if (!verifyFile) {
+				setError("Choose the file this signature covers.");
+				return;
+			}
+		}
 		setBusy(true);
 		try {
+			const fileBytes =
+				fileMode && verifyFile ? new Uint8Array(await verifyFile.arrayBuffer()) : undefined;
 			const res = await verifyAutoDetectWithKeyFetch(
 				armored,
-				plaintext || undefined,
+				fileBytes ? undefined : plaintext || undefined,
 				async (keyIDs) =>
 					// Verification keys: remote keyserver lookup + local self-signer
 					// recognition (a locally-configured key resolves its own
@@ -140,6 +169,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 								}
 							: null,
 					),
+				fileBytes,
 			);
 			setResult(res);
 		} catch (e) {
@@ -147,7 +177,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 		} finally {
 			setBusy(false);
 		}
-	}, [armored, plaintext, privateKey]);
+	}, [armored, plaintext, privateKey, fileMode, verifyFile, detected]);
 
 	const showPlaintextField = detected === "detached-signature";
 
@@ -236,23 +266,228 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					{...plainDropProps}
 				>
 					<AsciiDropOverlay active={plainDragDepth > 0} label="Drop to load plaintext" />
+					<div className="mb-1.5 flex items-center justify-between gap-2">
+						<div className="flex items-center gap-2">
+							<span
+								aria-hidden="true"
+								className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
+							/>
+							<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+								{fileMode
+									? "The signed file"
+									: "Original plaintext (required for detached signatures)"}
+							</Label>
+						</div>
+						{/* What was signed: pasted text or an original file (round 20).
+						    Segmented toggle keeps both paths one click away. */}
+						<div
+							role="group"
+							aria-label="What was signed — pasted text or an original file"
+							className="flex shrink-0 rounded-lg border border-border bg-background p-0.5"
+						>
+							<button
+								type="button"
+								aria-pressed={!fileMode}
+								onClick={() => setFileMode(false)}
+								className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 ${
+									!fileMode
+										? "bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+										: "text-muted-foreground hover:text-foreground"
+								}`}
+							>
+								Text
+							</button>
+							<button
+								type="button"
+								aria-pressed={fileMode}
+								onClick={() => {
+									setFileMode(true);
+									setError(null);
+								}}
+								className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 ${
+									fileMode
+										? "bg-[#0055dc]/10 text-[#0055dc] dark:bg-[#5e94ff]/15 dark:text-[#5e94ff]"
+										: "text-muted-foreground hover:text-foreground"
+								}`}
+							>
+								File
+							</button>
+						</div>
+					</div>
+
+					{!fileMode ? (
+						<Textarea
+							value={plaintext}
+							onChange={(e) => setPlaintext(e.target.value)}
+							placeholder="Paste the plaintext that was signed."
+							rows={6}
+							spellCheck={false}
+							className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
+						/>
+					) : !verifyFile ? (
+						<div
+							role="button"
+							tabIndex={0}
+							aria-label="Choose the file this signature covers — or drop it here"
+							onClick={() => verifyFileInputRef.current?.click()}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									verifyFileInputRef.current?.click();
+								}
+							}}
+							onDragEnter={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								if (e.dataTransfer.types.includes("Files")) setFileDragDepth((d) => d + 1);
+							}}
+							onDragOver={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+							}}
+							onDragLeave={(e) => {
+								e.stopPropagation();
+								setFileDragDepth((d) => Math.max(0, d - 1));
+							}}
+							onDrop={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								setFileDragDepth(0);
+								setResult(null);
+								setError(null);
+								const f = e.dataTransfer.files?.[0];
+								if (f) setVerifyFile(f);
+							}}
+							className={`animate-fade-up flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-5 text-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:focus-visible:ring-[#5e94ff]/40 ${
+								fileDragDepth > 0
+									? "border-[#0055dc]/70 bg-[#0055dc]/5 dark:border-[#5e94ff]/70 dark:bg-[#5e94ff]/5"
+									: "border-border bg-muted/30 hover:border-[#0055dc]/40 hover:bg-[#0055dc]/5 dark:hover:border-[#5e94ff]/40 dark:hover:bg-[#5e94ff]/5"
+							}`}
+						>
+							<div className="grid size-10 place-items-center rounded-full bg-[#0055dc]/10 dark:bg-[#5e94ff]/10">
+								<FileUp aria-hidden="true" className="size-5 text-[#0055dc] dark:text-[#5e94ff]" />
+							</div>
+							<p className="mt-2 text-sm font-medium">
+								{fileDragDepth > 0
+									? "Drop to choose the file"
+									: "Choose the file this signature covers — or drop it here"}
+							</p>
+							<p className="mt-1 text-xs text-muted-foreground">
+								Any format, up to 100 MB · verified locally, never uploaded
+							</p>
+						</div>
+					) : (
+						<div className="animate-fade-up flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-muted/30 px-3 py-2.5">
+							<FileSearch
+								aria-hidden="true"
+								className="size-4 shrink-0 text-[#0055dc] dark:text-[#5e94ff]"
+							/>
+							<span className="min-w-0 flex-1 truncate text-sm font-medium" title={verifyFile.name}>
+								{verifyFile.name}
+							</span>
+							<span className="font-mono text-[11px] text-muted-foreground">
+								{formatFileSize(verifyFile.size)}
+							</span>
+							<Button
+								variant="ghost"
+								size="icon"
+								aria-label="Remove this file"
+								onClick={() => {
+									setVerifyFile(null);
+									setResult(null);
+									setError(null);
+								}}
+								className="size-7 shrink-0 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
+							>
+								<X aria-hidden="true" className="size-3.5" />
+							</Button>
+						</div>
+					)}
+
+					{/* Hidden file picker — re-armed after every read so picking the
+					    same file twice re-fires onChange. */}
+					<input
+						ref={verifyFileInputRef}
+						type="file"
+						className="hidden"
+						tabIndex={-1}
+						aria-hidden="true"
+						onChange={(e) => {
+							const f = e.target.files?.[0];
+							if (f) {
+								setVerifyFile(f);
+								setResult(null);
+								setError(null);
+							}
+							e.target.value = "";
+						}}
+					/>
+				</div>
+			)}
+
+			{showPlaintextField && plaintext.trim() && result?.verified === "valid" && (
+				// "Verify renders it": a successfully verified detached-signature
+				// message renders its plaintext as markdown (same renderer the
+				// Decrypt tab uses), so what was signed reads the way it was
+				// written. The raw text stays editable in the card above.
+				<div className="animate-fade-up rounded-xl border border-emerald-300/70 bg-card p-4 shadow-sm sm:p-6 dark:border-emerald-900/50">
 					<div className="mb-1.5 flex items-center gap-2">
 						<span
 							aria-hidden="true"
-							className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
+							className="h-3.5 w-[3px] shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400"
 						/>
 						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-							Original plaintext (required for detached signatures)
+							Verified message, rendered
 						</Label>
 					</div>
-					<Textarea
-						value={plaintext}
-						onChange={(e) => setPlaintext(e.target.value)}
-						placeholder="Paste the plaintext that was signed."
-						rows={6}
-						spellCheck={false}
-						className="text-xs leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
-					/>
+					<DecryptedMessageView text={plaintext} files={[]} />
+				</div>
+			)}
+
+			{fileMode && verifyFile && result && (
+				// File-mode verdict strip (round 20): the byte-level answer for
+				// the chosen file, above the per-signature report cards. Red only
+				// when the signature is CRYPTOGRAPHICALLY bad for this file.
+				<div
+					className={`animate-fade-up flex flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-xl border px-4 py-3 shadow-sm ${
+						result.verified === "valid"
+							? "border-emerald-300/70 bg-emerald-500/5 dark:border-emerald-900/50"
+							: result.verified === "invalid"
+								? "border-red-300/70 bg-red-500/5 dark:border-red-900/50"
+								: "border-border bg-card"
+					}`}
+				>
+					{result.verified === "valid" ? (
+						<ShieldCheck
+							aria-hidden="true"
+							className="size-5 shrink-0 text-emerald-600 dark:text-emerald-400"
+						/>
+					) : result.verified === "invalid" ? (
+						<ShieldX
+							aria-hidden="true"
+							className="size-5 shrink-0 text-red-600 dark:text-red-400"
+						/>
+					) : (
+						<FileSearch aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />
+					)}
+					<span className="min-w-0 flex-1 truncate text-sm font-medium" title={verifyFile.name}>
+						{verifyFile.name}
+					</span>
+					<span
+						className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+							result.verified === "valid"
+								? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-500"
+								: result.verified === "invalid"
+									? "border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-500"
+									: "border border-border bg-muted text-muted-foreground"
+						}`}
+					>
+						{result.verified === "valid"
+							? "matches the signature"
+							: result.verified === "invalid"
+								? "does NOT match — file was modified or different signature"
+								: "signer key not found"}
+					</span>
 				</div>
 			)}
 
@@ -275,6 +510,12 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 								setPlaintext("");
 								setResult(null);
 								setError(null);
+								setVerifyFile(null);
+								// Also drop back to Text mode: the Text/File toggle only
+								// renders inside the detached-signature card, so a user
+								// stuck in File mode with non-detached armor pasted would
+								// otherwise have no way back short of a reload.
+								setFileMode(false);
 							}}
 							className="transition-colors duration-150"
 						>
@@ -428,6 +669,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 													</span>
 													{s.fingerprint}
 												</div>
+											)}
+											{/* Verify by voice: biometric words for this signer
+												— compare aloud before trusting the channel. */}
+											{s.fingerprint && (
+												<FingerprintWords fingerprint={s.fingerprint} className="mt-1" />
 											)}
 										</li>
 									);

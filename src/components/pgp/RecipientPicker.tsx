@@ -8,7 +8,7 @@
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, ChevronDown, Volume2, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -24,6 +24,9 @@ import { registryLookup } from "@/lib/registry/client";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
+import { PgpWordLine, pgpWordsFor } from "@/components/pgp/shared";
+import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
+import { useToast } from "@/hooks/use-toast";
 import { STORAGE_KEYS } from "@/lib/constants";
 
 const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
@@ -56,6 +59,58 @@ interface RecentRecipient {
 	label: string;
 	fingerprint?: string;
 	username?: string;
+	/** The recipient's armored PUBLIC key, kept when it was in hand at
+	 *  add time (manual paste, keyserver/Keybase fetch). Public material —
+	 *  the same bytes a keyserver serves — so a locally-pasted key can be
+	 *  re-added OFFLINE instead of dead-ending on a fetch that can never
+	 *  succeed (the key was never uploaded anywhere). */
+	armored?: string;
+}
+
+/** Size cap for a stored recent-recipient armor (same bound as the
+ *  sealed-output history; keys are typically 1-8 KB). */
+const MAX_RECENT_ARMOR_CHARS = 64 * 1024;
+
+/* --------------------------- RecipientVoiceCheck --------------------------- */
+
+/** "Verify by voice" for the selected recipients: one collapsed panel that
+ *  spells every recipient's fingerprint in PGP biometric words. Encrypting
+ *  to a swapped key is the silent failure mode — hex invites misreads, words
+ *  read aloud over a call do not. Renders nothing when no selected recipient
+ *  has a usable fingerprint (manual pastes without one, etc.). */
+function RecipientVoiceCheck({ recipients }: { recipients: Recipient[] }) {
+	const rows = useMemo(
+		() =>
+			recipients
+				.map((r) => ({ label: r.label, words: pgpWordsFor(r.fingerprint) }))
+				.filter((r): r is { label: string; words: string[] } => r.words !== null),
+		[recipients],
+	);
+	if (rows.length === 0) return null;
+	return (
+		<details className="group/rvc mb-2 rounded-lg border border-border/60 bg-muted/30">
+			<summary className="inline-flex w-full cursor-pointer select-none items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+				<Volume2 aria-hidden="true" className="size-3.5 shrink-0" />
+				Verify keys by voice ({rows.length})
+				<ChevronDown
+					aria-hidden="true"
+					className="ml-auto size-3 shrink-0 transition-transform group-open/rvc:rotate-180"
+				/>
+			</summary>
+			<ul className="space-y-2 px-2.5 pb-2.5">
+				{rows.map(({ label, words }) => (
+					<li key={label}>
+						<div className="text-[11px] font-medium text-foreground">{label}</div>
+						<PgpWordLine words={words} className="mt-0.5" />
+					</li>
+				))}
+			</ul>
+			<p className="px-2.5 pb-2.5 text-[10px] leading-relaxed text-muted-foreground">
+				Read each recipient&apos;s words to them over a call — every word must match on both screens
+				before you send them something sensitive. Shading alternates even/odd positions.
+			</p>
+		</details>
+	);
 }
 
 /** Load + sanitize the recent-recipients list (deduped by fingerprint||label,
@@ -74,6 +129,9 @@ function loadRecentRecipients(): RecentRecipient[] {
 			const entry: RecentRecipient = { label: r.label };
 			if (typeof r.fingerprint === "string" && r.fingerprint) entry.fingerprint = r.fingerprint;
 			if (typeof r.username === "string" && r.username) entry.username = r.username;
+			if (typeof r.armored === "string" && r.armored.length <= MAX_RECENT_ARMOR_CHARS) {
+				entry.armored = r.armored;
+			}
 			cleaned.push(entry);
 		}
 		const seen = new Set<string>();
@@ -142,6 +200,9 @@ export function RecipientPicker({
 			const stored: RecentRecipient = { label: entry.label };
 			if (entry.fingerprint) stored.fingerprint = entry.fingerprint;
 			if (entry.username) stored.username = entry.username;
+			if (entry.armored && entry.armored.length <= MAX_RECENT_ARMOR_CHARS) {
+				stored.armored = entry.armored;
+			}
 			return [stored, ...rest].slice(0, MAX_RECENT_RECIPIENTS);
 		});
 	}, []);
@@ -295,6 +356,7 @@ export function RecipientPicker({
 						label: `@${k.username}`,
 						username: k.username,
 						fingerprint: k.fingerprint,
+						armored: k.armored,
 					});
 				} else if (result.fingerprint) {
 					// Fetch the key from keys.openpgp.org or Ubuntu keyserver
@@ -354,7 +416,11 @@ export function RecipientPicker({
 							expiresAt,
 						},
 					]);
-					rememberRecentRecipient({ label: addedLabel, fingerprint: k.fingerprint });
+					rememberRecentRecipient({
+						label: addedLabel,
+						fingerprint: k.fingerprint,
+						armored: k.armored,
+					});
 				} else {
 					setError("No key fingerprint available for this result.");
 				}
@@ -373,13 +439,50 @@ export function RecipientPicker({
 	/** Add a recent recipient via the exact same path as picking a search
 	 *  result (dedupe/validation inside addRecipient still applies). */
 	const addRecentRecipient = useCallback(
-		(r: RecentRecipient) => {
+		async (r: RecentRecipient) => {
+			// Offline-first: when the entry kept its armored PUBLIC key (manual
+			// paste, or a keyserver/Keybase fetch that already had it in hand),
+			// add straight from storage — no network. This is the only path a
+			// locally-pasted key can EVER be re-added by: it was never uploaded
+			// anywhere, so the old re-fetch always dead-ended with "Could not
+			// fetch key …". Falls back to the fetch path for armor-less legacy
+			// entries or a failed validation.
+			if (r.armored) {
+				try {
+					const v = await validateArmoredKey(r.armored);
+					const info = v.info;
+					const armoredKey = r.armored;
+					if (v.ok && info && armoredKey) {
+						if (!recipients.some((p) => p.fingerprint === info.fingerprint)) {
+							setRecipients((prev) =>
+								prev.some((p) => p.fingerprint === info.fingerprint)
+									? prev
+									: [
+											...prev,
+											{
+												source: "local",
+												label: r.label,
+												armored: armoredKey,
+												fingerprint: info.fingerprint,
+												keyID: info.keyID,
+												algorithm: info.algorithm,
+												expiresAt: info.expirationTime?.getTime() ?? null,
+											},
+										],
+							);
+						}
+						return;
+					}
+				} catch {
+					// fall through to the network path
+				}
+			}
 			const result: KeySearchResult = r.username
 				? { source: "keybase", label: r.label, username: r.username, fingerprint: r.fingerprint }
 				: { source: "openpgp.org", label: r.label, fingerprint: r.fingerprint };
 			void addRecipient(result);
 		},
-		[addRecipient],
+		[addRecipient, recipients, setRecipients],
 	);
 
 	/** Manual-paste path — same commit as before, plus recent-recipients
@@ -391,6 +494,7 @@ export function RecipientPicker({
 					label: r.label,
 					fingerprint: r.fingerprint || undefined,
 					username: r.username,
+					armored: r.armored,
 				});
 			}
 			setRecipients((prev) =>
@@ -515,6 +619,9 @@ export function RecipientPicker({
 					})}
 				</ul>
 			)}
+
+			{/* Out-of-band key check for everything selected above. */}
+			{recipients.length > 0 && <RecipientVoiceCheck recipients={recipients} />}
 
 			{/* Input + autocomplete dropdown */}
 			<div className="relative" ref={containerRef}>
@@ -675,16 +782,43 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 	const [armored, setArmored] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Armor-repair state for pasted key armor (mirrors the Decrypt/Verify
+	// banner pair): `repairedWith` holds the fixes applied so the emerald
+	// notice can name them; it self-clears when the text changes again.
+	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
+	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
+	const { toast } = useToast();
 
 	const handleAdd = useCallback(async () => {
 		setError(null);
+		setRepairedWith(null);
 		if (!armored.trim()) {
 			setError("Paste an armored public key.");
 			return;
 		}
 		setBusy(true);
 		try {
-			const v = await validateArmoredKey(armored.trim());
+			// Repair fallback: if the pasted armor fails validation but shows
+			// the known mangling patterns (quotes, HTML entities, lost dashes,
+			// broken wrapping…), try the rebuild before giving up — mirrors the
+			// one-click repair on Decrypt/Verify, applied automatically here
+			// because a recipient key has no second chance to arrive.
+			let candidate = armored.trim();
+			let v = await validateArmoredKey(candidate);
+			if (!v.ok && findArmorIssues(candidate).length > 0) {
+				const originalIssues = findArmorIssues(candidate);
+				const repaired = repairArmor(candidate);
+				if (repaired) {
+					const v2 = await validateArmoredKey(repaired.text);
+					if (v2.ok) {
+						v = v2;
+						candidate = repaired.text;
+						setArmored(repaired.text);
+						setRepairedWith(originalIssues);
+						toast({ title: "Key armor repaired", description: describeFixes(originalIssues) });
+					}
+				}
+			}
 			if (!v.ok || !v.info) {
 				setError(v.error ?? "Invalid public key.");
 				return;
@@ -696,7 +830,7 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 			onAdd({
 				source: "local",
 				label: v.info.userIDs[0]?.name || v.info.userIDs[0]?.email || "Pasted key",
-				armored: armored.trim(),
+				armored: candidate,
 				fingerprint: v.info.fingerprint,
 				keyID: v.info.keyID,
 				algorithm: v.info.algorithm,
@@ -709,8 +843,14 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 		} finally {
 			setBusy(false);
 		}
-	}, [armored, onAdd]);
+	}, [armored, onAdd, toast]);
 
+	// Render-time armor damage detection for the live repair hint — only
+	// for text that plausibly IS a public-key block (never prose, never
+	// private keys). Same cheap helper the Decrypt/Verify tabs use.
+	const looksLikePublicKey = /BEGIN PGP PUBLIC KEY BLOCK/.test(armored);
+	const armorIssues = looksLikePublicKey ? findArmorIssues(armored) : [];
+	const showRepairHint = armorIssues.length > 0 && repairDismissedFor !== armored && !busy;
 	return (
 		<div className="mt-2">
 			<button
@@ -725,7 +865,12 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 				<div className="mt-1.5 space-y-2">
 					<Textarea
 						value={armored}
-						onChange={(e) => setArmored(e.target.value)}
+						onChange={(e) => {
+							setArmored(e.target.value);
+							// Same stale-notice rule as Decrypt/Verify: the emerald "repaired"
+							// note describes the PREVIOUS text only — a fresh paste clears it.
+							setRepairedWith(null);
+						}}
 						placeholder={
 							"-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----"
 						}
@@ -734,6 +879,61 @@ function ManualRecipientAdd({ onAdd }: { onAdd: (r: Recipient) => void }) {
 						aria-label="Paste an armored public key"
 						spellCheck={false}
 					/>
+					{showRepairHint && (
+						<div
+							role="status"
+							className="flex animate-fade-up items-start gap-2 rounded-lg border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300"
+						>
+							<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+							<div className="flex-1">
+								<p>
+									This key armor was mangled on its way here ({describeFixes(armorIssues)}) — common
+									with email forwarding and copy/paste.
+								</p>
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+									onClick={() => {
+										const repaired = repairArmor(armored);
+										if (!repaired) {
+											setError(
+												"Couldn't repair this key armor automatically — try re-copying it from the source.",
+											);
+											return;
+										}
+										setArmored(repaired.text);
+										setRepairedWith(armorIssues);
+									}}
+									className="press-effect mt-1.5 h-7 gap-1.5 rounded-lg border-amber-400/60 bg-white/60 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 focus-visible:ring-2 focus-visible:ring-amber-500/40 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-900/40"
+								>
+									<WandSparkles aria-hidden="true" className="size-3" />
+									Repair armor
+								</Button>
+							</div>
+							<button
+								type="button"
+								onClick={() => setRepairDismissedFor(armored)}
+								aria-label="Dismiss repair suggestion"
+								title="Dismiss hint"
+								className="flex size-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-black/5 dark:hover:bg-white/10"
+							>
+								<X aria-hidden="true" className="size-3.5" />
+							</button>
+						</div>
+					)}
+					{repairedWith && !showRepairHint && (
+						<div
+							role="status"
+							className="flex animate-fade-up items-start gap-2 rounded-lg border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+						>
+							<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+							<p>
+								Armor repaired: {describeFixes(repairedWith)} — the key above is clean; add it when
+								ready.
+							</p>
+						</div>
+					)}
 					{error && (
 						<div
 							role="alert"

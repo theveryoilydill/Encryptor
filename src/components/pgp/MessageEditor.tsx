@@ -31,7 +31,7 @@ import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 /** Register a freshly pasted image (given as a data: URL) as a new
  *  attachment. Returns the stored EnvelopeFile (with its unique name) so
  *  the editor can reference it. */
-export type OnNewImageDataUrl = (dataUrl: string) => EnvelopeFile;
+export type OnNewImageDataUrl = (dataUrl: string, suggestedName?: string) => EnvelopeFile;
 
 const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 	ssr: false,
@@ -39,9 +39,10 @@ const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 });
 
 /** Slim, grouped source-mode toolbar — the @uiw default ships ~20 commands
- *  (comment, table, image, fullscreen, help, live-preview triad …) that are
+ *  (comment, image, fullscreen, help, live-preview triad …) that are
  *  noise for this composer: images belong to the attachment pipeline, and
- *  the split preview is always visible. Ten essentials, three groups. */
+ *  the split preview is always visible. Eleven essentials, three groups —
+ *  table added for parity with the Notion engine's table block. */
 const VSCODE_COMMANDS = [
 	mdCommands.bold,
 	mdCommands.italic,
@@ -54,6 +55,7 @@ const VSCODE_COMMANDS = [
 	mdCommands.unorderedListCommand,
 	mdCommands.orderedListCommand,
 	mdCommands.checkedListCommand,
+	mdCommands.table,
 	mdCommands.divider,
 	mdCommands.link,
 ];
@@ -112,13 +114,23 @@ export function MessageEditor({
 	onNewImageDataUrl,
 	editorKind,
 	placeholder,
+	onFilesDropped: _onFilesDropped,
+	expanded = false,
 }: {
 	value: string;
 	onChange: (text: string) => void;
 	files: EnvelopeFile[];
 	onNewImageDataUrl: OnNewImageDataUrl;
 	editorKind: MarkdownEditorKind;
+	/** Non-image files pasted/dropped in the editor — forwarded to the
+	 *  composer's attachment flow (qol layer wires this up). */
+	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
+	/** Full-screen composer overlay mode (round-12 editor pass):
+	 *  # Mr. AI Acting on s183173's Behalf
+	 *  drop the fixed composer heights so the active editor engine fills
+	 *  the overlay through 100%-height chains. */
+	expanded?: boolean;
 }) {
 	// Decorative toolbar icons (VS Code mode): MDEditor renders its toolbar
 	// glyphs as role="img" SVGs without alternative text — axe's svg-img-alt
@@ -194,6 +206,7 @@ export function MessageEditor({
 		[value, onChange, onNewImageDataUrl],
 	);
 
+	void _onFilesDropped;
 	const { resolvedTheme } = useTheme();
 	const editorMd = useMemo(() => markersToDataUrls(value, files), [value, files]);
 	const previewMd = editorMd;
@@ -216,10 +229,14 @@ export function MessageEditor({
 		return (
 			<div
 				ref={vsWrapRef}
-				className="overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20"
+				className={`md-editor-wrap overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20 ${expanded ? "flex h-full min-h-0 flex-col" : ""}`}
 			>
-				<div className="grid lg:grid-cols-2">
-					<div className="min-w-0 border-b border-border lg:border-b-0 lg:border-r">
+				<div
+					className={`grid lg:grid-cols-2 ${expanded ? "min-h-0 flex-1 grid-rows-2 lg:grid-rows-1" : ""}`}
+				>
+					<div
+						className={`min-w-0 border-b border-border lg:border-b-0 lg:border-r ${expanded ? "min-h-0" : ""}`}
+					>
 						<MDEditor
 							value={editorMd}
 							onChange={handleMDEditorChange}
@@ -231,12 +248,18 @@ export function MessageEditor({
 								placeholder,
 								"aria-label": "Message (markdown)",
 							}}
-							height={480}
+							height={expanded ? "100%" : 480}
 							style={{ background: "transparent" }}
 							className="min-w-0"
 						/>
 					</div>
-					<div className="h-80 overflow-y-auto bg-background/40 p-4 lg:h-[480px]">
+					<div
+						className={
+							expanded
+								? "min-h-0 overflow-y-auto bg-background/40 p-4"
+								: "h-80 overflow-y-auto bg-background/40 p-4 lg:h-[480px]"
+						}
+					>
 						{previewMd.trim() ? (
 							<DecryptedMessageView text={previewMd} files={files} />
 						) : (
@@ -258,6 +281,7 @@ export function MessageEditor({
 			files={files}
 			onNewImageDataUrl={onNewImageDataUrl}
 			placeholder={placeholder}
+			expanded={expanded}
 		/>
 	);
 }

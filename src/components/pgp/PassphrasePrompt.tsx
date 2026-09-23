@@ -10,8 +10,13 @@
  * only in the resolver's scope and is cleared after the operation.
  *
  * SECURITY (unchanged): the passphrase is never stored and is cleared as soon
- * as this component unmounts. Keybase logins re-fetch the private key bundle
- * from Keybase each time.
+ * as this component unmounts.
+ *
+ * Keybase configs now normally carry their private key ENCRYPTED under the
+ * Keybase password (stored at login), so unlock is LOCAL — the network
+ * re-fetch from Keybase is only the fallback for legacy configs or a password
+ * mismatch. This is what makes switching back from a local key to Keybase
+ * work without a full re-login every time.
  */
 import { useCallback, useRef, useState } from "react";
 import { Eye, EyeOff, KeyRound, Loader2 } from "lucide-react";
@@ -64,6 +69,10 @@ export function PassphrasePrompt({
 	autoCache: boolean;
 }) {
 	const isKeybase = config.source === "keybase";
+	// Local-first: when the config carries encrypted armor (all new Keybase
+	// logins + manual + generated), the entered passphrase unlocks it right
+	// here. Only legacy Keybase configs (no armor) REQUIRE the network path.
+	const canUnlockLocally = !!config.encryptedArmored;
 	const promptLabel = isKeybase ? "Keybase password" : "Passphrase";
 	const promptPlaceholder = isKeybase
 		? "Your Keybase account password"
@@ -87,13 +96,45 @@ export function PassphrasePrompt({
 	const handleSubmit = useCallback(async () => {
 		if (settledRef.current) return;
 		setError(null);
-		if (!passphrase) {
+		// Legacy armor-less Keybase login is the only branch that strictly
+		// requires input upfront (an account password is never empty). The
+		// local-unlock branch may legitimately run with an empty passphrase —
+		// keys generated with the optional passphrase left empty are stored
+		// already-decrypted — so its requirement is checked after reading the
+		// key, where the encrypted/unencrypted distinction is known.
+		if (!passphrase && isKeybase && !canUnlockLocally) {
 			setError(`Enter your ${promptLabel.toLowerCase()}.`);
 			return;
 		}
 		setBusy(true);
 		try {
-			if (isKeybase) {
+			if (canUnlockLocally) {
+				// Local-first path (manual, generated, and modern Keybase
+				// configs): decrypt the stored armored key with the entered
+				// passphrase. Wrong passphrase -> error, no network involved.
+				const key = await readKey(config.encryptedArmored!);
+				if (!key.isPrivate()) {
+					throw new Error("Stored key is not a private key.");
+				}
+				// Already-decrypted key (empty optional passphrase at generation):
+				// empty input is valid — only a genuinely encrypted key requires
+				// something to type.
+				if (!(key as OpenPGP.PrivateKey).isDecrypted() && !passphrase) {
+					setError(`Enter your ${promptLabel.toLowerCase()}.`);
+					return;
+				}
+				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
+				// Caching an empty passphrase is pointless and would light up the
+				// header "remembered" state misleadingly — skip it.
+				if (autoCache && passphrase) {
+					cachePassphrase(passphrase);
+					onPassphraseCached?.();
+				}
+				settledRef.current = true;
+				request.resolve(decrypted, passphrase);
+			} else if (isKeybase) {
+				// Legacy armor-less Keybase config: the ONLY path — re-run the
+				// full Keybase login (scrypt + PDPKA + me.json re-fetch).
 				// Heavy synchronous work (scrypt + PDPKA) runs inside
 				// loginWithPassword; the 50ms yields below only let THIS
 				// label paint. The startup prewarm (PgpApp) removes the
@@ -170,7 +211,9 @@ export function PassphrasePrompt({
 				<div className="px-5 py-4">
 					<DialogDescription className="mb-3 text-xs">
 						{isKeybase
-							? "Your password is used to re-fetch and decrypt your private key from Keybase. It is never stored — only kept in RAM for this operation."
+							? canUnlockLocally
+								? "Your password unlocks your stored Keybase key right here — it is never stored. (Network re-fetch only if the password no longer matches.)"
+								: "Your password is used to re-fetch and decrypt your private key from Keybase. It is never stored — only kept in RAM for this operation."
 							: "Your passphrase decrypts the private key in memory. It is never stored and is cleared immediately after the operation."}
 					</DialogDescription>
 					<div className="space-y-2">
@@ -192,7 +235,7 @@ export function PassphrasePrompt({
 								placeholder={promptPlaceholder}
 								aria-label={promptLabel}
 								autoFocus
-								autoComplete="off"
+								autoComplete={isKeybase ? "current-password" : "off"}
 								className="min-h-11 pl-9 pr-10 sm:min-h-9"
 								disabled={busy}
 							/>
@@ -221,7 +264,7 @@ export function PassphrasePrompt({
 									aria-hidden="true"
 									className="size-3 animate-spin motion-reduce:animate-none"
 								/>
-								{isKeybase ? "Signing in…" : "Decrypting key…"}
+								{canUnlockLocally ? "Unlocking…" : "Signing in…"}
 							</p>
 						)}
 						{!isKeybase && autoCache && (
@@ -236,7 +279,12 @@ export function PassphrasePrompt({
 								disabled={busy}
 								className="h-11 min-w-0 flex-1 bg-[#0055dc] text-white transition-colors duration-150 hover:bg-[#0046b8] press-effect sm:h-9"
 							>
-								{busy ? "Working…" : "Decrypt & continue"}
+								{/* "Unlock" is accurate for every flow that
+                                    opens this prompt (encrypt, decrypt,
+                                    sign, quantum-seal setup) — the old
+                                    "Decrypt & continue" mislabeled the
+                                    encrypt/sign paths. */}
+								{busy ? "Working…" : "Unlock & continue"}
 							</Button>
 							<Button
 								type="button"

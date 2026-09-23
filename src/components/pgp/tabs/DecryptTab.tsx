@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Download, Loader2, Lock, LockKeyholeOpen, LockOpen } from "lucide-react";
+import { Download, Loader2, Lock, LockKeyholeOpen, LockOpen, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,12 +35,16 @@ import { parseDecryptedPlaintext, type EnvelopeFile } from "@/lib/pgp/envelope";
 import {
 	isQuantumSealed,
 	parseSealedArmor,
-	unwrapSealSecret,
+	unwrapSealSecretAuto,
 	unsealWithSecretKey,
 } from "@/lib/pgp/pq";
 import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { InputHint, detectPgpBlock } from "@/components/pgp/InputHint";
+import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
 import { AsciiDropOverlay, useAsciiTextDrop } from "@/components/pgp/ascii-drop";
+import { suggestTextFilename } from "@/lib/pgp/filename";
+import { downloadBlob } from "@/lib/pgp/zip-bundle";
+import { toast } from "@/hooks/use-toast";
 
 /** Debounce before auto-decrypting a pasted/typed message (ms). */
 const AUTO_DECRYPT_DEBOUNCE_MS = 600;
@@ -48,9 +52,18 @@ const AUTO_DECRYPT_DEBOUNCE_MS = 600;
 export function DecryptTab({
 	privateKey,
 	requestDecryptedKey,
+	pendingLoad,
+	onPendingLoadConsumed,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
+	/** Vault "Open in Decrypt" hand-off (round 14): when set, the armor is
+	 *  written into the input and the hand-off is consumed via
+	 *  onPendingLoadConsumed. seq (Date.now() per open) disambiguates
+	 *  repeat opens of the same armor. Optional so the tab also works
+	 *  standalone. */
+	pendingLoad?: { armor: string; seq: number } | null;
+	onPendingLoadConsumed?: () => void;
 }) {
 	const [armored, setArmored] = useState("");
 	const [output, setOutput] = useState<{
@@ -71,6 +84,11 @@ export function DecryptTab({
 	// Staleness counter for auto-decrypt runs: only the run launched for the
 	// CURRENT input may apply its result.
 	const runIdRef = useRef(0);
+	// Armor-repair banner state: what the last repair fixed (transient
+	// notice, cleared as soon as the input changes again) + a dismissal
+	// keyed to the input, mirroring the hint-dismissal pattern above.
+	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
+	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
 
 	// Drag & drop: load a .asc armor file onto the input card. Shared hook
 	// (ascii-drop.tsx) sniffs for a PGP armor header; a successful load also
@@ -153,8 +171,11 @@ export function DecryptTab({
 				if (runIdRef.current !== myRunId) return; // superseded mid-prompt
 
 				// Quantum-sealed input: strip the ML-KEM-768 outer layer first.
-				// Needs the SAME passphrase (it unwraps the ML-KEM secret from the
-				// key config) — a wrong passphrase surfaces as a friendly error.
+				// The ML-KEM secret unwraps with the passphrase OR the stored
+				// device key, whichever the key config carries (passphrase-less
+				// keys wrap under a device key — no "needs your passphrase"
+				// dead-end). A wrong passphrase / corrupt config surfaces as a
+				// friendly error.
 				let classicalInput = input;
 				if (isQuantumSealed(input)) {
 					if (!privateKey?.pq) {
@@ -162,12 +183,8 @@ export function DecryptTab({
 							"This message has a quantum-sealed copy, but your configured key has no quantum-seal key. Open it with the key that created it.",
 						);
 					}
-					if (!passphrase) {
-						throw new Error(
-							"The quantum-sealed layer needs your passphrase (the one that protects this key), not just the key — enter it in the prompt and try again.",
-						);
-					}
-					const sealSecret = await unwrapSealSecret(privateKey.pq, passphrase);
+					// # Mr. AI Acting on s183173's Behalf
+					const sealSecret = await unwrapSealSecretAuto(privateKey.pq, passphrase);
 					if (runIdRef.current !== myRunId) return;
 					classicalInput = await unsealWithSecretKey(parseSealedArmor(input), sealSecret);
 					if (runIdRef.current !== myRunId) return;
@@ -244,6 +261,20 @@ export function DecryptTab({
 		};
 	}, [armored, runDecrypt]);
 
+	// Vault "Open in Decrypt" hand-off (round 14): write the armor into the
+	// input, then let the parent clear the hand-off. seq changes on every
+	// open, so re-opening the SAME entry re-runs this effect even though the
+	// armor text is identical — and because setArmored with an unchanged
+	// value is a no-op, the still-correct plaintext from the previous open
+	// stays on screen (a repeat open never lands in an empty, stuck state).
+	// Fresh text (empty or a different input) rides the normal auto-decrypt
+	// debounce above — no extra decrypt call here.
+	useEffect(() => {
+		if (!pendingLoad) return;
+		setArmored(pendingLoad.armor);
+		onPendingLoadConsumed?.();
+	}, [pendingLoad, onPendingLoadConsumed]);
+
 	// Cheap substring detection computed during render (no effect needed).
 	// Hints never appear for empty input, nor when the text already looks like
 	// a normal encrypted message. Dismissal is keyed to the input text, so
@@ -255,14 +286,26 @@ export function DecryptTab({
 		detectedBlock !== "encrypted" &&
 		hintDismissedFor !== armored;
 
-	const reset = useCallback(() => {
-		runIdRef.current += 1;
-		setArmored("");
-		setOutput(null);
+	// Armor damage detection (cheap, render-time, same pattern as
+	// detectPgpBlock): offer the one-click repair only when the pasted
+	// block shows real mangling. Dismissal is keyed to the input.
+	const armorIssues = findArmorIssues(armored);
+	const showRepairHint = armorIssues.length > 0 && repairDismissedFor !== armored && !busy;
+
+	const applyRepair = useCallback(() => {
+		const result = repairArmor(armored);
+		if (!result) {
+			setError(
+				"Couldn't repair this block — it looks truncated (no END marker), so the ciphertext itself is incomplete.",
+			);
+			return;
+		}
+		setArmored(result.text);
+		setRepairedWith(result.fixes);
 		setError(null);
-		setBusy(false);
-		setShowRaw(false);
-	}, []);
+		// No success toast needed: the repaired text re-enters the normal
+		// auto-decrypt flow, so the result speaks for itself.
+	}, [armored]);
 
 	return (
 		<section className="space-y-6">
@@ -326,7 +369,16 @@ export function DecryptTab({
 				)}
 				<Textarea
 					value={armored}
-					onChange={(e) => setArmored(e.target.value)}
+					onChange={(e) => {
+						setRepairedWith(null);
+						// Any new input invalidates everything from the previous input —
+						// without this, a failed repair / stale decrypt error — WORSE, the
+						// PREVIOUS MESSAGE'S plaintext — sticks around when the new text
+						// never reaches the auto-decrypt path (unrecognized/partial input).
+						setError(null);
+						setOutput(null);
+						setArmored(e.target.value);
+					}}
 					placeholder={"-----BEGIN PGP MESSAGE-----\n...\n-----END PGP MESSAGE-----"}
 					rows={10}
 					spellCheck={false}
@@ -347,6 +399,50 @@ export function DecryptTab({
 							? "This looks like a signed (not encrypted) message. The Verify tab is designed for that."
 							: "This looks like a PGP key rather than an encrypted message. Keys are managed in the key configuration dialog."}
 					</InputHint>
+				)}
+				{showRepairHint && (
+					<div
+						role="status"
+						className="mt-2 flex animate-fade-up items-start gap-2 rounded-lg border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300"
+					>
+						<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<div className="flex-1">
+							<p className="leading-relaxed">
+								This message was mangled on its way here ({describeFixes(armorIssues)}) — common
+								with email forwarding and copy/paste.
+							</p>
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								onClick={applyRepair}
+								className="press-effect mt-1.5 h-7 gap-1.5 rounded-lg border-amber-400/60 bg-white/60 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 focus-visible:ring-2 focus-visible:ring-amber-500/40 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-900/40"
+							>
+								<WandSparkles aria-hidden="true" className="size-3" />
+								Repair armor
+							</Button>
+						</div>
+						<button
+							type="button"
+							onClick={() => setRepairDismissedFor(armored)}
+							aria-label="Dismiss repair suggestion"
+							title="Dismiss hint"
+							className="flex size-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-black/5 dark:hover:bg-white/10"
+						>
+							<X aria-hidden="true" className="size-3.5" />
+						</button>
+					</div>
+				)}
+				{repairedWith && !showRepairHint && (
+					<div
+						role="status"
+						className="mt-2 flex animate-fade-up items-start gap-2 rounded-lg border border-emerald-300/70 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+					>
+						<WandSparkles aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+						<div className="flex-1">
+							<p>Armor repaired: {describeFixes(repairedWith)}.</p>
+						</div>
+					</div>
 				)}
 			</div>
 
@@ -417,16 +513,24 @@ export function DecryptTab({
 							variant="outline"
 							onClick={() => {
 								// Save the decrypted message as a plain-text file (client-side
-								// only — the blob never touches a server).
-								const blob = new Blob([output.plaintext], {
-									type: "text/plain;charset=utf-8",
-								});
-								const url = URL.createObjectURL(blob);
-								const a = document.createElement("a");
-								a.href = url;
-								a.download = "decrypted-message.txt";
-								a.click();
-								URL.revokeObjectURL(url);
+								// only — the blob never touches a server). The name is derived from the
+								// text itself (first heading/subject line) so saves stay recognizable
+								// in the downloads folder; see lib/pgp/filename.ts. The shared
+								// downloadBlob helper keeps this row consistent with the app's
+								// other download buttons (appended anchor + deferred revoke).
+								try {
+									const blob = new Blob([output.plaintext], {
+										type: "text/plain;charset=utf-8",
+									});
+									downloadBlob(blob, suggestTextFilename(output.plaintext));
+									toast({ title: "Text file downloaded" });
+								} catch (e) {
+									toast({
+										title: "Download failed",
+										description: (e as Error)?.message || "Download unavailable",
+										variant: "destructive",
+									});
+								}
 							}}
 							className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
 							aria-label="Save decrypted message as a .txt file"
@@ -440,22 +544,6 @@ export function DecryptTab({
 							output={armored}
 							signers={output.signatures}
 						/>
-						{armored && (
-							<Button
-								type="button"
-								variant="outline"
-								onClick={() => {
-									// Nuke the encrypted input from memory, keep the result.
-									setArmored("");
-								}}
-								className="h-11 px-3 text-xs transition-colors sm:h-8"
-							>
-								Nuke encrypted input
-							</Button>
-						)}
-						<Button type="button" variant="ghost" onClick={reset} className="h-11 text-sm sm:h-9">
-							Start over
-						</Button>
 					</div>
 				</div>
 			)}

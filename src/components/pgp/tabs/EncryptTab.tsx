@@ -590,6 +590,16 @@ function TemplateMenu({
 	);
 }
 
+/** True when a keyboard event started inside a nested Radix surface (a
+ *  dialog, dropdown menu or listbox) that must keep Escape / shortcuts for
+ *  itself — shared by the full-screen overlay's window + React handlers. */
+function isNestedDialogTarget(target: EventTarget | null): boolean {
+	const el = target as HTMLElement | null;
+	return !!el?.closest?.(
+		'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+	);
+}
+
 export function EncryptTab({
 	privateKey,
 	recipients,
@@ -662,6 +672,22 @@ export function EncryptTab({
 		return () => {
 			document.body.style.overflow = prev;
 		};
+	}, [composerExpanded]);
+	// Escape collapses the overlay from ANYWHERE: opening it unmounts the
+	// expand button, which can drop focus on <body> — an overlay-local
+	// handler would then never see the key (and an aria-modal dialog that
+	// ignores Escape is an a11y bug). Window-level capture, same guard as
+	// the overlay's own handler so nested Radix surfaces keep their Escape.
+	useEffect(() => {
+		if (!composerExpanded) return;
+		const onWindowEscape = (e: KeyboardEvent) => {
+			if (e.key !== "Escape" || e.defaultPrevented) return;
+			if (isNestedDialogTarget(e.target)) return;
+			e.preventDefault();
+			setComposerExpanded(false);
+		};
+		window.addEventListener("keydown", onWindowEscape, true);
+		return () => window.removeEventListener("keydown", onWindowEscape, true);
 	}, [composerExpanded]);
 
 	// Global Ctrl/Cmd+Shift+E — "shortcut to expand should apply everywhere":
@@ -1611,14 +1637,7 @@ export function EncryptTab({
 						}}
 						onKeyDownCapture={(e) => {
 							if (e.key !== "Escape" || e.defaultPrevented) return;
-							const target = e.target as HTMLElement | null;
-							if (
-								target?.closest(
-									'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-								)
-							) {
-								return;
-							}
+							if (isNestedDialogTarget(e.target)) return;
 							e.preventDefault();
 							setComposerExpanded(false);
 						}}

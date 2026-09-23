@@ -488,7 +488,8 @@ export function ConfigureModal({
 										aria-hidden
 										className="size-3.5 text-violet-600 dark:text-violet-400"
 									/>
-									Quantum seal: ML-KEM-768 pair attached (secret key wrapped under your passphrase).
+									Quantum seal: ML-KEM-768 pair attached (secret key wrapped{" "}
+									{privateKey.pq.deviceKey ? "under a device key" : "under your passphrase"}).
 								</p>
 							)}
 						</div>

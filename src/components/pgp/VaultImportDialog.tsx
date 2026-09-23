@@ -12,7 +12,15 @@
  * # Mr. AI Acting on s183173's Behalf
  */
 
-import { CalendarDays, History, Paperclip, ShieldCheck, Sparkles } from "lucide-react";
+import {
+	CalendarDays,
+	History,
+	MoreHorizontal,
+	Paperclip,
+	ShieldCheck,
+	Sparkles,
+	StickyNote,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +41,8 @@ export function VaultImportDialog({
 	signedCount,
 	quantumCount,
 	filesCount,
+	annotatedCount,
+	notes,
 	exportedAt,
 	onMerge,
 	onReplace,
@@ -53,6 +63,11 @@ export function VaultImportDialog({
 	quantumCount: number;
 	/** Summed attachment counts across manifest entries. */
 	filesCount: number;
+	/** Manifest entries carrying a user note. */
+	annotatedCount: number;
+	/** The notes themselves (entry time + text, manifest order) for the
+	 *  inline preview — capped to the first few by the renderer. */
+	notes: Array<{ at: number; note: string }>;
 	/** Manifest exportedAt passthrough — display only. */
 	exportedAt?: string;
 	onMerge: () => void;
@@ -98,6 +113,12 @@ export function VaultImportDialog({
 						<Paperclip aria-hidden="true" className="size-3.5 text-muted-foreground" />
 						{filesCount} attached
 					</span>
+					{annotatedCount > 0 && (
+						<span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-500">
+							<StickyNote aria-hidden="true" className="size-3.5" />
+							{annotatedCount} annotated
+						</span>
+					)}
 					{exportedLabel && (
 						<span className="col-span-2 flex items-center gap-1.5 text-muted-foreground">
 							<CalendarDays aria-hidden="true" className="size-3.5" />
@@ -105,6 +126,44 @@ export function VaultImportDialog({
 						</span>
 					)}
 				</div>
+
+				{notes.length > 0 && (
+					/* Note preview: importing shouldn't be a blind merge — show the
+					   annotations that will land, in the vault's own amber motif,
+					   newest first. Three visible + a "+N more" line keeps the
+					   dialog compact on small screens. */
+					<div className="space-y-1.5">
+						{[...notes]
+							.sort((a, b) => b.at - a.at)
+							.slice(0, 3)
+							.map(({ at, note }) => (
+								<div
+									key={`${at}-${note.slice(0, 12)}`}
+									className="flex items-start gap-1.5 border-l-2 border-amber-400/60 pl-2"
+								>
+									<StickyNote
+										aria-hidden="true"
+										className="mt-0.5 size-3.5 shrink-0 text-amber-500 dark:text-amber-400/80"
+									/>
+									<span className="min-w-0 flex-1 text-[11px] italic leading-snug text-muted-foreground">
+										{note}
+									</span>
+									<time
+										dateTime={new Date(at).toISOString()}
+										className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70"
+									>
+										{new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+									</time>
+								</div>
+							))}
+						{notes.length > 3 && (
+							<span className="flex items-center gap-1 pl-2 text-[10px] text-muted-foreground/70">
+								<MoreHorizontal aria-hidden="true" className="size-3" />
+								{notes.length - 3} more {notes.length - 3 === 1 ? "note" : "notes"} not shown
+							</span>
+						)}
+					</div>
+				)}
 
 				{/* Merge-vs-Replace explainer — Replace is destructive, so say exactly
 				    what each choice does before it happens. */}

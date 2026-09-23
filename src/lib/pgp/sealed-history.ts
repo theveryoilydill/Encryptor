@@ -149,9 +149,14 @@ export function sanitizeHistoryRow(raw: unknown): SealedHistoryEntry | null {
 	const e = raw as Record<string, unknown>;
 	if (typeof e.armor !== "string" || e.armor.length === 0) return null;
 	if (e.armor.length > MAX_SEALED_ARMOR_CHARS) return null;
-	if (e.sealedArmor !== null && typeof e.sealedArmor !== "string") return null;
-	// Oversized PQ copy: keep the classical armor, drop just the copy —
-	// the same verdict the load path has always made, now without
+	// A MISSING sealedArmor (undefined) means "no PQ copy" — pre-PQ vaults
+	// and hand-written manifests legitimately omit the field, and rejecting
+	// the whole row for it would lock those imports out entirely. Only an
+	// explicitly wrong TYPE (e.g. a number) is malformed.
+	if (e.sealedArmor !== null && e.sealedArmor !== undefined && typeof e.sealedArmor !== "string")
+		return null;
+	// Oversized or wrong-typed PQ copy: keep the classical armor, drop just
+	// the copy — the same verdict the load path has always made, now without
 	// mutating the caller's object.
 	const sealedArmor =
 		typeof e.sealedArmor === "string" && e.sealedArmor.length <= MAX_SEALED_ARMOR_CHARS

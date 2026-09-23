@@ -2351,6 +2351,12 @@ export function EncryptTab({
 				signedCount={pendingImport?.entries.filter((en) => en.signer).length ?? 0}
 				quantumCount={pendingImport?.entries.filter((en) => en.pqSealed).length ?? 0}
 				filesCount={pendingImport?.entries.reduce((sum, en) => sum + (en.files ?? 0), 0) ?? 0}
+				annotatedCount={pendingImport?.entries.filter((en) => en.note).length ?? 0}
+				notes={
+					pendingImport?.entries
+						.filter((en): en is typeof en & { note: string } => typeof en.note === "string")
+						.map((en) => ({ at: en.at, note: en.note })) ?? []
+				}
 				exportedAt={pendingImport?.exportedAt}
 				onMerge={() => runVaultImport("merge")}
 				onReplace={() => runVaultImport("replace")}

@@ -1,13 +1,5 @@
 # For agents
 
-## AI attribution (mandatory — and it comes FIRST, before any other text)
-
-1. Every commit message MUST start with `AI Commit: ` as the very first characters of the message, before anything else. Example: `AI Commit: fix mobile layout overflow`.
-2. Every comment the agent leaves (PR descriptions, review or issue comments, code comments) MUST have the disclosure tag as the VERY FIRST line, before any other text:
-   `# Mr. AI Acting on s183173's Behalf`
-   Adapt the `#` to the language's comment syntax. In markdown comments the tag line goes at the top, above headings and everything else.
-3. Never bury the attribution at the bottom or in the middle — first thing, always.
-
 ## Use the Anthropic skills
 
 When working on this repo, actually use the installed Anthropic skills — do not freelance:
@@ -45,7 +37,7 @@ When you finish work on a PR, leave ONE final comment on it: clean, concise, and
 
 ## Theme
 
-Keep it keybase colors, blue accent color, white background color, and black text. Try to keep things minimal and clean.
+Keep it keybase colors for now, blue accent color, white background color, and black text. Try to keep things minimal and clean.
 
 ## Security
 
@@ -74,9 +66,3 @@ Make sure that everything in the repo is the latest version. This is to get new 
 3. Use DRY: Don't repeat code
 4. Direct messages to the user, don't put an explaination for features that I asked you to add, like: Sign in with keybase, but don't store the unencrypted private key in memory.
 5. No more than 3 levels of indentation in brackets — if you need a fourth, use another function (or return early from checks).
-
-## Uploading the finished product (for glm-5.2 in z.ai's website only, if you don't know and are glm-5.2 just assume you are in the website)
-
-1. Make sure to upload in the task output-in the UI it says: "All files in task". Make a zip file with the format of "Iteration_{message_number}", where message number is the current message number starting at 0 (ex if first message sent to you: {Iteration_0}). Inside the zip there is the whole repo. Also upload a git patch file with the same naming scheme that I can git am.
-2. Do not put any z.ai branding on the project. Don't put the logo in public/logo.svg.
-3. Make sure to always pull for the latest github repo every message.

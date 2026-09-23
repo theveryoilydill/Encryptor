@@ -8,7 +8,7 @@
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, WandSparkles, X } from "lucide-react";
+import { Check, ChevronDown, Volume2, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -24,6 +24,7 @@ import { registryLookup } from "@/lib/registry/client";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
+import { PgpWordLine, pgpWordsFor } from "@/components/pgp/shared";
 import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
 import { useToast } from "@/hooks/use-toast";
 import { STORAGE_KEYS } from "@/lib/constants";
@@ -69,6 +70,48 @@ interface RecentRecipient {
 /** Size cap for a stored recent-recipient armor (same bound as the
  *  sealed-output history; keys are typically 1-8 KB). */
 const MAX_RECENT_ARMOR_CHARS = 64 * 1024;
+
+/* --------------------------- RecipientVoiceCheck --------------------------- */
+
+/** "Verify by voice" for the selected recipients: one collapsed panel that
+ *  spells every recipient's fingerprint in PGP biometric words. Encrypting
+ *  to a swapped key is the silent failure mode — hex invites misreads, words
+ *  read aloud over a call do not. Renders nothing when no selected recipient
+ *  has a usable fingerprint (manual pastes without one, etc.). */
+function RecipientVoiceCheck({ recipients }: { recipients: Recipient[] }) {
+	const rows = useMemo(
+		() =>
+			recipients
+				.map((r) => ({ label: r.label, words: pgpWordsFor(r.fingerprint) }))
+				.filter((r): r is { label: string; words: string[] } => r.words !== null),
+		[recipients],
+	);
+	if (rows.length === 0) return null;
+	return (
+		<details className="group/rvc mb-2 rounded-lg border border-border/60 bg-muted/30">
+			<summary className="inline-flex w-full cursor-pointer select-none items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+				<Volume2 aria-hidden="true" className="size-3.5 shrink-0" />
+				Verify keys by voice ({rows.length})
+				<ChevronDown
+					aria-hidden="true"
+					className="ml-auto size-3 shrink-0 transition-transform group-open/rvc:rotate-180"
+				/>
+			</summary>
+			<ul className="space-y-2 px-2.5 pb-2.5">
+				{rows.map(({ label, words }) => (
+					<li key={label}>
+						<div className="text-[11px] font-medium text-foreground">{label}</div>
+						<PgpWordLine words={words} className="mt-0.5" />
+					</li>
+				))}
+			</ul>
+			<p className="px-2.5 pb-2.5 text-[10px] leading-relaxed text-muted-foreground">
+				Read each recipient&apos;s words to them over a call — every word must match on both screens
+				before you send them something sensitive. Shading alternates even/odd positions.
+			</p>
+		</details>
+	);
+}
 
 /** Load + sanitize the recent-recipients list (deduped by fingerprint||label,
  *  most recent first, capped) — guarded like every other storage access. */
@@ -576,6 +619,9 @@ export function RecipientPicker({
 					})}
 				</ul>
 			)}
+
+			{/* Out-of-band key check for everything selected above. */}
+			{recipients.length > 0 && <RecipientVoiceCheck recipients={recipients} />}
 
 			{/* Input + autocomplete dropdown */}
 			<div className="relative" ref={containerRef}>

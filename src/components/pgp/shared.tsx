@@ -19,6 +19,7 @@ import {
 import {
 	BadgeCheck,
 	Check,
+	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
 	Copy,
@@ -27,6 +28,7 @@ import {
 	History,
 	Lock,
 	Sparkles,
+	Volume2,
 	X,
 } from "lucide-react";
 import Markdown from "react-markdown";
@@ -50,6 +52,7 @@ import {
 import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
+import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import {
 	base64ToUint8Array,
 	buildZipBundle,
@@ -245,6 +248,7 @@ export function CopyButton({
 	text,
 	label = "Copy",
 	ariaLabel = "Copy output to clipboard",
+	className,
 }: {
 	/** The string to copy. */
 	text: string;
@@ -252,6 +256,9 @@ export function CopyButton({
 	label?: string;
 	/** Accessible name (defaults to the original "Copy output to clipboard"). */
 	ariaLabel?: string;
+	/** Optional size/layout overrides merged onto the button (host cards
+	 *  render this at different scales — e.g. the words-reveal mini copy). */
+	className?: string;
 }) {
 	const [copied, setCopied] = useState(false);
 	const [showCheck, setShowCheck] = useState(false);
@@ -286,7 +293,7 @@ export function CopyButton({
 					});
 				}
 			}}
-			className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+			className={`h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8 ${className ?? ""}`}
 			title="Copy to clipboard"
 			aria-label={ariaLabel}
 		>
@@ -1003,6 +1010,81 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 	);
 }
 
+/* ---------------------------- FingerprintWords ----------------------------- */
+
+/** Compute the 20 PGP words for a fingerprint, or null when the input is not
+ *  a valid 40-hex fingerprint (SignatureInfo.fingerprint is optional and
+ *  historically unvalidated — never throw from render). */
+export function pgpWordsFor(fingerprint: string): string[] | null {
+	try {
+		return fingerprintToPgpWords(fingerprint);
+	} catch {
+		return null;
+	}
+}
+
+/** The 20 words, alternating shading on odd positions to mirror the even/odd
+ *  word lists — comparing position-by-position over a call is the point. */
+export function PgpWordLine({ words, className = "" }: { words: string[]; className?: string }) {
+	return (
+		<p className={`font-mono text-[11px] leading-relaxed break-words ${className}`}>
+			{words.map((w, i) => (
+				<span key={i} className={i % 2 === 1 ? "text-muted-foreground" : "text-foreground"}>
+					{w}
+					{i < words.length - 1 ? " " : ""}
+				</span>
+			))}
+		</p>
+	);
+}
+
+/** "Verify by voice" — the PGP biometric word list for one fingerprint.
+ *
+ *  Hex fingerprints are a hostile medium for humans: 40 characters where one
+ *  misread byte silently accepts a swapped key. The biometric word list is
+ *  the fix — read the words aloud over a call and both sides detect any
+ *  difference (transposition, duplication, omission) by ear.
+ *
+ *  Renders nothing when the fingerprint is absent/invalid. Collapsed by
+ *  default so the reveal never pushes layout until asked for. */
+export function FingerprintWords({
+	fingerprint,
+	className = "",
+}: {
+	fingerprint: string;
+	/** Extra spacing classes from the host card (the reveal itself is
+	 *  width-neutral and inherits the host's type scale). */
+	className?: string;
+}) {
+	const words = useMemo(() => pgpWordsFor(fingerprint), [fingerprint]);
+	if (!words) return null;
+	return (
+		<details className={`group/fp ${className}`}>
+			<summary className="inline-flex cursor-pointer select-none items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
+				<Volume2 aria-hidden="true" className="size-3.5" />
+				Verify by voice
+				<ChevronDown
+					aria-hidden="true"
+					className="size-3 transition-transform group-open/fp:rotate-180"
+				/>
+			</summary>
+			<div className="mt-1.5 rounded-lg border border-border/60 bg-muted/40 p-2.5">
+				<PgpWordLine words={words} />
+				<p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+					Read these 20 words to your contact over a call — every word must match on both screens.
+					Shading alternates even/odd positions.
+				</p>
+				<CopyButton
+					text={words.join(" ")}
+					label="Copy words"
+					ariaLabel="Copy the 20 fingerprint verification words"
+					className="mt-1.5 h-7 px-2 text-[11px]"
+				/>
+			</div>
+		</details>
+	);
+}
+
 /* ------------------------------- SignerBadges ------------------------------- */
 
 /** "Signed by" panel describing each signature found on a message. Same
@@ -1131,6 +1213,10 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
 									{s.fingerprint}
 								</div>
 							)}
+							{/* Verify by voice: biometric words for the signer's
+								fingerprint — the out-of-band check against key swaps,
+								anchored to the hex line it spells. */}
+							{s.fingerprint && <FingerprintWords fingerprint={s.fingerprint} className="mt-1" />}
 						</li>
 					);
 				})}

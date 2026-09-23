@@ -29,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatFingerprint } from "@/lib/pgp/pgp";
+import { FingerprintWords } from "@/components/pgp/shared";
 import { type PrivateKeyConfig } from "@/components/pgp/contracts";
 import { CopyButton } from "@/components/pgp/shared";
 import {
@@ -223,6 +224,11 @@ export function ConfigureModal({
 								<div className="mt-1 break-all font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
 									{formatFingerprint(privateKey.info.fingerprint)}
 								</div>
+							)}
+							{/* Verify by voice: read YOUR words to a contact so they
+								can confirm this key is really yours (and vice versa). */}
+							{privateKey.info && (
+								<FingerprintWords fingerprint={privateKey.info.fingerprint} className="mt-1.5" />
 							)}
 							{/* Additive: collapsible metadata grid fed by describeKeyDetails
                   (pure helper in lib/pgp/key-details.ts). Renders nothing when

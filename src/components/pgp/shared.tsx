@@ -24,6 +24,7 @@ import {
 	Copy,
 	FileSignature,
 	FileText,
+	History,
 	Lock,
 	Sparkles,
 	X,
@@ -709,15 +710,56 @@ export function OutputBlock({
 
 /** Right-aligned char/word/KB counter under composer inputs (Encrypt + Sign
  *  tabs share it). aria-live off on purpose — announcing every keystroke
- *  would be noisy for screen readers. */
+ *  would be noisy for screen readers. tabular-nums keeps every digit slot
+ *  the same width, so the row doesn't jitter while typing (each keystroke
+ *  changes the numbers but not the layout). */
 export function InputSizeCounter({ text }: { text: string }) {
 	const trimmed = text.trim();
 	const words = trimmed ? trimmed.split(/\s+/).length : 0;
 	return (
-		<div aria-live="off" className="mt-1 text-right text-[10px] text-muted-foreground">
+		<div aria-live="off" className="mt-1 text-right text-[10px] tabular-nums text-muted-foreground">
 			{text.length.toLocaleString()} chars
 			{words > 0 && ` · ${words.toLocaleString()} ${words === 1 ? "word" : "words"}`}
 			{text.length > 0 && ` · ~${(text.length / 1024).toFixed(1)} KB`}
+		</div>
+	);
+}
+
+/* ------------------------------ DraftRestoredNote --------------------------- */
+
+/** One-line "draft restored" note under a composer that rehydrated unsent
+ *  text from sessionStorage (see lib/pgp/drafts.ts). Offers an explicit
+ *  Discard so restoring never feels like a state change the user can't
+ *  undo. Neutral muted family — amber is reserved for expiry warnings, red
+ *  for errors; a draft is neither. Attachments-not-kept gets its own quiet
+ *  sentence because a restored message can legitimately reference images
+ *  the draft budget didn't carry. */
+export function DraftRestoredNote({
+	filesDropped,
+	onDiscard,
+}: {
+	/** True when attachments existed but exceeded the draft budget. */
+	filesDropped?: boolean;
+	/** Throw the draft away: clears storage and the composer text. */
+	onDiscard: () => void;
+}) {
+	return (
+		<div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+			<History aria-hidden="true" className="size-3.5 shrink-0" />
+			<span>
+				Draft restored — unsent text kept in this browser from your last visit
+				{filesDropped ? " (attachments exceeded the draft budget — re-attach before sending)" : ""}.
+			</span>
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				onClick={onDiscard}
+				className="ml-auto h-6 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+			>
+				<X aria-hidden="true" className="size-3" />
+				Discard
+			</Button>
 		</div>
 	);
 }

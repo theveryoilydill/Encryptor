@@ -36,6 +36,7 @@ import {
 	AttachmentList,
 	CopyButton,
 	DownloadButton,
+	DraftRestoredNote,
 	ErrorBanner,
 	InputSizeCounter,
 	OutputBlock,
@@ -83,6 +84,7 @@ import {
 	type ParsedVaultManifest,
 	type SealedHistoryEntry,
 } from "@/lib/pgp/sealed-history";
+import { clearDraft, loadDraft, saveDraft } from "@/lib/pgp/drafts";
 import {
 	decryptAndAutoVerify,
 	describeEncryptedMessage,
@@ -603,8 +605,24 @@ export function EncryptTab({
 	settings: AppSettings;
 }) {
 	const { toast } = useToast();
-	const [plaintext, setPlaintext] = useState("");
-	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
+	// Draft resilience (sessionStorage, see lib/pgp/drafts.ts): the composer
+	// rehydrates whatever was typed before a refresh, and the restore is
+	// surfaced (and discardable) rather than silent. The initializer runs
+	// once per tab mount; the save effect below keeps storage in step.
+	const [initialDraft] = useState(() => loadDraft("encrypt"));
+	const [draftRestored, setDraftRestored] = useState(() => initialDraft !== null);
+	const [plaintext, setPlaintext] = useState(initialDraft?.text ?? "");
+	const [attachments, setAttachments] = useState<EnvelopeFile[]>(initialDraft?.files ?? []);
+	// Debounced draft persistence — one write per pause in typing, not per
+	// keystroke. Empty/whitespace text clears the stored draft instead of
+	// writing an empty one, so "cleared the message" never resurrects.
+	useEffect(() => {
+		const t = setTimeout(() => {
+			if (plaintext.trim() === "") clearDraft("encrypt");
+			else saveDraft("encrypt", plaintext, attachments);
+		}, 600);
+		return () => clearTimeout(t);
+	}, [plaintext, attachments]);
 	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
 	// image-paste bridge must return the FINAL (deduped) filename in the same
 	// tick it registers the file, but React state updates are async and the
@@ -1193,7 +1211,11 @@ export function EncryptTab({
 
 			// The user can always decrypt their own copy (Include me) — so the
 			// plaintext is deleted from the composer as soon as the ciphertext
-			// exists. Only the output remains in memory.
+			// exists. Only the output remains in memory. The draft goes with it
+			// (immediately, not on the debounced effect — closing the tab inside
+			// the debounce window must not resurrect a sealed message).
+			clearDraft("encrypt");
+			setDraftRestored(false);
 			setPlaintext("");
 			setAttachments([]);
 			setHintDismissedFor(null);
@@ -1491,6 +1513,20 @@ export function EncryptTab({
 					expanded={composerExpanded}
 				/>
 			</div>
+			{/* Draft-resilience note — only after an actual restore, and gone
+			once the user discards or seals the message. */}
+			{draftRestored && (
+				<DraftRestoredNote
+					filesDropped={initialDraft?.filesDropped}
+					onDiscard={() => {
+						clearDraft("encrypt");
+						setDraftRestored(false);
+						setPlaintext("");
+						setAttachments([]);
+						setHintDismissedFor(null);
+					}}
+				/>
+			)}
 			{/* Char/word/size counter (visual feedback only). */}
 			<InputSizeCounter text={plaintext} />
 			{showEncryptHint && detectedBlock && (

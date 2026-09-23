@@ -1032,6 +1032,8 @@ export default function PgpApp() {
 					setTourOpen(true);
 				}}
 				onSelfTest={() => void handleSelfTest()}
+				passphraseCached={passphraseCached}
+				onLockNow={handleForgetCachedPassphrase}
 			/>
 
 			{/* Shortcuts help — opened from the header button or the palette. */}

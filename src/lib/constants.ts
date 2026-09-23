@@ -59,6 +59,9 @@ export const STORAGE_KEYS = {
 	onboardingDismissed: "encryptor.onboarding-dismissed.v1",
 	/** Coach-mark guided tour completion flag. */
 	tourDone: "encryptor.tour.done.v1",
+	/** Unsent-composer drafts (sessionStorage — see lib/pgp/drafts.ts). */
+	draftEncrypt: "encryptor.draft.encrypt.v1",
+	draftSign: "encryptor.draft.sign.v1",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

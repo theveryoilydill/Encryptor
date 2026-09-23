@@ -253,8 +253,14 @@ export default function BlockNoteEditor({
 			try {
 				const md = editor.blocksToMarkdownLossy();
 				const reconciled = dataUrlsToMarkers(md, currentFiles, register);
-				syncedValue.current = reconciled;
-				if (reconciled !== value) push(reconciled);
+				// An empty document (one bare paragraph) serializes to "\n" —
+				// pushing that back left the parent holding a phantom 1-char
+				// message after every seal-and-clear (the size counter showed
+				// "1 chars" on an empty composer). Image-only documents carry
+				// envelope:// markers, so they still count as content.
+				const clean = reconciled.trim() === "" ? "" : reconciled;
+				syncedValue.current = clean;
+				if (clean !== value) push(clean);
 			} catch {
 				// Never let a serialization hiccup break typing.
 			}
@@ -394,7 +400,7 @@ export default function BlockNoteEditor({
 			}
 		>
 			{/* Left-margin drag-select surface: sits beside the blocks, never on
-			    top of them (pointer-events only on the 24px strip). */}
+                            top of them (pointer-events only on the 24px strip). */}
 			<div
 				aria-hidden="true"
 				onPointerDown={onGutterPointerDown}

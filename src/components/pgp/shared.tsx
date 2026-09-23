@@ -25,6 +25,7 @@ import {
 	Copy,
 	FileSignature,
 	FileText,
+	GitCompare,
 	History,
 	Lock,
 	Sparkles,
@@ -1038,6 +1039,166 @@ export function PgpWordLine({ words, className = "" }: { words: string[]; classN
 	);
 }
 
+/* ------------------------------- WordCompare ------------------------------- */
+
+/** Normalize one spoken/pasted word for comparison: lowercase, strip
+ *  punctuation the caller may have transcribed ("Orlando." / "Orlando," /
+ *  '"Orlando"' all compare equal to the canonical form). */
+const normalizeSpokenWord = (w: string) => w.toLowerCase().replace(/[^a-z]/g, "");
+
+const HEXISH_RE = /^[0-9a-f]{2,}$/i;
+
+/** Interactive half of "Verify by voice": your contact reads THEIR screen's
+ *  20 words aloud (or pastes them); this diffs them position-by-position
+ *  against THIS key's words and renders a per-position verdict.
+ *
+ *  The comparison is deliberately case- and punctuation-insensitive — a
+ *  phone call does not transmit capitalization, and transcription quirks
+ *  ("orlando," with a comma) must never mask a real difference. Position is
+ *  everything: even a single mismatched slot means a different key. */
+export function WordCompare({ words }: { words: string[] }) {
+	const [open, setOpen] = useState(false);
+	const [input, setInput] = useState("");
+
+	const tokens = useMemo(() => {
+		if (!open) return [] as string[];
+		return input
+			.split(/[\s,;·]+/)
+			.map((t) => t.trim())
+			.filter(Boolean);
+	}, [input, open]);
+
+	const normed = useMemo(() => tokens.map(normalizeSpokenWord), [tokens]);
+	// Hex detection runs on the RAW tokens: normalization strips digits
+	// (letters-only comparison), which would turn "B464" into "b" and
+	// defeat the fingerprint-vs-words hint below.
+	const allHexish = tokens.length > 0 && tokens.every((t) => HEXISH_RE.test(t));
+
+	const slots = words.map((expected, i) => {
+		const got = normed[i];
+		if (got === undefined) return { expected, got: null, status: "missing" as const };
+		if (got === normalizeSpokenWord(expected)) return { expected, got, status: "match" as const };
+		return { expected, got, status: "mismatch" as const };
+	});
+	const matches = slots.filter((s) => s.status === "match").length;
+	const mismatches = slots.filter((s) => s.status === "mismatch");
+	const missing = slots.filter((s) => s.status === "missing").length;
+	const complete = tokens.length >= words.length;
+
+	if (!open) {
+		return (
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				onClick={() => setOpen(true)}
+				className="mt-1.5 h-7 gap-1.5 px-2 text-[11px]"
+				aria-expanded={false}
+			>
+				<GitCompare aria-hidden="true" className="size-3.5" />
+				Compare with your contact
+			</Button>
+		);
+	}
+
+	return (
+		<div className="mt-1.5 rounded-lg border border-border/60 bg-background p-2.5">
+			<div className="flex items-center justify-between gap-2">
+				<Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+					Paste or type the words your contact read to you
+				</Label>
+				<button
+					type="button"
+					onClick={() => {
+						setOpen(false);
+						setInput("");
+					}}
+					className="shrink-0 rounded px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+					aria-label="Close the word comparison"
+				>
+					<X aria-hidden="true" className="size-3.5" />
+				</button>
+			</div>
+			<Textarea
+				value={input}
+				onChange={(e) => setInput(e.target.value)}
+				placeholder="e.g. kickoff Medusa playhouse Istanbul …"
+				rows={2}
+				spellCheck={false}
+				className="mt-1 text-[11px] leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
+				aria-label="The 20 words your contact read to you"
+			/>
+			{/* Per-position diff: expected word per slot; emerald = confirmed,
+				red = differs (a different key), muted = not yet provided. */}
+			<div className="mt-2 flex flex-wrap gap-1">
+				{slots.map((s, i) => (
+					<span
+						key={i}
+						title={
+							s.status === "mismatch"
+								? `Position ${i + 1}: expected "${s.expected}", got "${s.got}"`
+								: s.status === "match"
+									? `Position ${i + 1}: confirmed`
+									: `Position ${i + 1}: not provided yet`
+						}
+						className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+							s.status === "match"
+								? "border-emerald-300/60 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+								: s.status === "mismatch"
+									? "border-red-300/70 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+									: "border-border bg-muted/40 text-muted-foreground"
+						}`}
+					>
+						<span className="mr-0.5 text-[9px] opacity-60">{i % 2 === 0 ? "E" : "O"}</span>
+						{s.expected}
+						{s.status === "mismatch" && <X aria-hidden="true" className="size-3" />}
+					</span>
+				))}
+			</div>
+			<div role="status" aria-live="polite">
+				{allHexish ? (
+					<p className="mt-2 rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+						That looks like a hex fingerprint — paste the 20 words instead (they are the ones shown
+						above).
+					</p>
+				) : mismatches.length > 0 ? (
+					<p className="mt-2 rounded-md bg-red-100 px-2 py-1 text-[11px] font-medium text-red-800 dark:bg-red-950/50 dark:text-red-300">
+						{mismatches.length === 1
+							? "1 position differs"
+							: `${mismatches.length} positions differ`}
+						{" — "}this is a different key. Do not trust it.{" "}
+						<span className="font-normal">
+							{mismatches
+								.slice(0, 3)
+								.map(
+									(m) =>
+										`#${words.indexOf(m.expected) + 1} expected "${m.expected}", got "${m.got}"`,
+								)
+								.join("; ")}
+							{mismatches.length > 3 ? "; …" : ""}
+						</span>
+					</p>
+				) : complete && missing === 0 ? (
+					<p className="mt-2 rounded-md bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
+						All 20 words match — this is the same key. Verified by voice.
+					</p>
+				) : tokens.length > 0 ? (
+					<p className="mt-2 rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+						{matches} of 20 positions confirmed so far — {missing} more word
+						{missing === 1 ? "" : "s"} to go.
+					</p>
+				) : null}
+				{tokens.length > words.length && (
+					<p className="mt-1 text-[10px] text-muted-foreground">
+						{tokens.length - words.length} extra word{tokens.length - words.length === 1 ? "" : "s"}{" "}
+						ignored.
+					</p>
+				)}
+			</div>
+		</div>
+	);
+}
+
 /** "Verify by voice" — the PGP biometric word list for one fingerprint.
  *
  *  Hex fingerprints are a hostile medium for humans: 40 characters where one
@@ -1080,6 +1241,7 @@ export function FingerprintWords({
 					ariaLabel="Copy the 20 fingerprint verification words"
 					className="mt-1.5 h-7 px-2 text-[11px]"
 				/>
+				<WordCompare words={words} />
 			</div>
 		</details>
 	);

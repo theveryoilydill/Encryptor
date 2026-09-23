@@ -3,7 +3,7 @@
 /**
  * "Keyboard shortcuts" help dialog.
  *
- * Lists the app's global bindings (Ctrl+K palette, Alt+1..4 tabs, the
+ * Lists the app's global bindings (Alt+1..4 tabs, the
  * per-tab Ctrl/Cmd+Enter and Ctrl/Cmd+Shift+E, Ctrl+,) — keep SHORTCUTS in
  * sync with PgpApp.tsx if bindings change. Rendered controlled by PgpApp
  * (the trigger button lives in the Header, next to the theme toggle; same
@@ -23,7 +23,6 @@ import {
  *  the tab's action; Ctrl/Cmd+Shift+E toggles the Encrypt tab's full-screen
  *  composer. */
 const SHORTCUTS: { keys: string; description: string }[] = [
-	{ keys: "Ctrl+K", description: "Open the command palette (switch modes, your key, app actions)" },
 	{ keys: "Alt+1", description: "Encrypt" },
 	{ keys: "Alt+2", description: "Decrypt" },
 	{ keys: "Alt+3", description: "Sign" },

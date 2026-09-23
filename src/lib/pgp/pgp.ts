@@ -898,6 +898,41 @@ export async function signMessage(opts: SignOptions): Promise<string> {
 	return signed as string;
 }
 
+/**
+ * Sign a binary file (any bytes) as an ARMORED DETACHED signature — the
+ * classic "sign a document, ship file + .sig together" workflow. Binary
+ * parity with signMessage(detached): same signing-key unlock, the same
+ * high-precision timestamp notation, and the same output shape
+ * (-----BEGIN PGP SIGNATURE-----) — only the message is created from raw
+ * bytes instead of text, so the signature covers the file EXACTLY as
+ * uploaded (no newline normalization, no encoding rewrites).
+ */
+export async function signFileDetached(opts: {
+	file: Uint8Array;
+	privateKey: Armored | openpgp.PrivateKey;
+	passphrase?: string;
+}): Promise<string> {
+	if (opts.file.byteLength === 0) throw new Error("The file is empty — nothing to sign.");
+	if (!opts.privateKey) throw new Error("A signer private key is required.");
+
+	const signingKey =
+		typeof opts.privateKey === "string"
+			? await unlockPrivateKey(await readPrivateKey(opts.privateKey), opts.passphrase)
+			: opts.privateKey;
+
+	const { buildTimestampNotation } = await import("@/lib/pgp/signer-info");
+
+	const message = await openpgp.createMessage({ binary: opts.file });
+	const sig = await openpgp.sign({
+		message,
+		signingKeys: [signingKey],
+		detached: true,
+		format: "armored",
+		signatureNotations: buildTimestampNotation(),
+	});
+	return sig as string;
+}
+
 export async function verifyMessage(opts: VerifyOptions): Promise<VerifyResult> {
 	if (!opts.armoredSignature) throw new Error("Signature is required.");
 	if (!opts.publicKeys.length)
@@ -1317,6 +1352,10 @@ export async function verifyAutoDetectWithKeyFetch(
 			resolvedFrom?: KeySource;
 		}>
 	>,
+	/** When set, `armored` must be a detached signature and it is verified over
+	 *  these raw file bytes instead of `plaintext` (binary file verification).
+	 *  Text mode is untouched when omitted. */
+	fileBytes?: Uint8Array,
 ): Promise<{
 	verified: "valid" | "invalid" | "unknown";
 	signatures: Array<{
@@ -1357,7 +1396,12 @@ export async function verifyAutoDetectWithKeyFetch(
 		);
 	}
 
-	if (format === "detached-signature" && !plaintext) {
+	if (fileBytes && format !== "detached-signature") {
+		throw new Error(
+			"File verification needs a detached signature — paste the .sig block that accompanied the file.",
+		);
+	}
+	if (format === "detached-signature" && !plaintext && !fileBytes) {
 		throw new Error("A detached signature was detected. Please paste the original plaintext too.");
 	}
 
@@ -1370,7 +1414,9 @@ export async function verifyAutoDetectWithKeyFetch(
 		}[];
 	};
 	if (format === "detached-signature") {
-		const message = await openpgp.createMessage({ text: plaintext as string });
+		const message = fileBytes
+			? await openpgp.createMessage({ binary: fileBytes })
+			: await openpgp.createMessage({ text: plaintext as string });
 		const signature = await openpgp.readSignature({ armoredSignature: armored });
 		// openpgp.verify requires at least one verification key. Use an empty key
 		// set to discover the signature's key IDs without verifying yet.
@@ -1499,7 +1545,9 @@ export async function verifyAutoDetectWithKeyFetch(
 		}[];
 	};
 	if (format === "detached-signature") {
-		const message = await openpgp.createMessage({ text: plaintext as string });
+		const message = fileBytes
+			? await openpgp.createMessage({ binary: fileBytes })
+			: await openpgp.createMessage({ text: plaintext as string });
 		const signature = await openpgp.readSignature({ armoredSignature: armored });
 		verifiedResult = await openpgp.verify({
 			message,

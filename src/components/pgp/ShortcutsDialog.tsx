@@ -3,16 +3,13 @@
 /**
  * "Keyboard shortcuts" help dialog.
  *
- * Lists the global Alt+1..4 tab bindings implemented in PgpApp.tsx (TABS
- * order: encrypt, decrypt, sign, verify) — keep SHORTCUTS in sync if that
- * order ever changes. Opened from a ghost icon button in the header, next
- * to the theme toggle (same a11y pattern as ConfigureModal/PassphrasePrompt:
- * DialogTitle required + DialogDescription to avoid Radix warnings).
+ * Lists the app's global bindings (Ctrl+K palette, Alt+1..4 tabs, the
+ * per-tab Ctrl/Cmd+Enter and Ctrl/Cmd+Shift+E, Ctrl+,) — keep SHORTCUTS in
+ * sync with PgpApp.tsx if bindings change. Rendered controlled by PgpApp
+ * (the trigger button lives in the Header, next to the theme toggle; same
+ * a11y pattern as ConfigureModal/PassphrasePrompt: DialogTitle required +
+ * DialogDescription to avoid Radix warnings).
  */
-import { useState } from "react";
-import { Keyboard } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
 import {
 	Dialog,
 	DialogContent,
@@ -26,6 +23,7 @@ import {
  *  the tab's action; Ctrl/Cmd+Shift+E toggles the Encrypt tab's full-screen
  *  composer. */
 const SHORTCUTS: { keys: string; description: string }[] = [
+	{ keys: "Ctrl+K", description: "Open the command palette (switch modes, your key, app actions)" },
 	{ keys: "Alt+1", description: "Encrypt" },
 	{ keys: "Alt+2", description: "Decrypt" },
 	{ keys: "Alt+3", description: "Sign" },
@@ -35,22 +33,15 @@ const SHORTCUTS: { keys: string; description: string }[] = [
 	{ keys: "Ctrl+,", description: "Open Settings" },
 ];
 
-export function ShortcutsDialog() {
-	const [open, setOpen] = useState(false);
-
+export function ShortcutsDialog({
+	open,
+	onOpenChange,
+}: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}) {
 	return (
-		<Dialog open={open} onOpenChange={setOpen}>
-			<Button
-				variant="ghost"
-				size="icon"
-				onClick={() => setOpen(true)}
-				aria-label="Keyboard shortcuts"
-				title="Keyboard shortcuts"
-				data-tour="shortcuts-button"
-				className="size-11 text-muted-foreground transition-colors hover:text-foreground press-effect sm:size-8"
-			>
-				<Keyboard className="size-4" aria-hidden />
-			</Button>
+		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-sm">
 				<DialogHeader className="border-b px-5 py-3.5">
 					<DialogTitle className="text-base font-semibold">Keyboard shortcuts</DialogTitle>

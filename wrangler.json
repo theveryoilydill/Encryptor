@@ -28,5 +28,18 @@
 			"head_sampling_rate": 1,
 			"persist": true
 		}
+	},
+	"previews": {},
+	"env": {
+		"preview": {
+			"name": "encryptor-preview",
+			"main": ".open-next/worker.js",
+			"assets": {
+				"directory": ".open-next/assets",
+				"binding": "ASSETS"
+			},
+			"compatibility_date": "2026-08-02",
+			"compatibility_flags": ["nodejs_compat"]
+		}
 	}
 }

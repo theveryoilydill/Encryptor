@@ -25,6 +25,9 @@ import {
 	type Tab,
 } from "@/components/pgp/contracts";
 import { ConfigureModal } from "@/components/pgp/ConfigureModal";
+import { LoginView } from "@/components/pgp/login/LoginView";
+import { ApiReferenceDialog } from "@/components/pgp/registry/ApiReferenceDialog";
+import { GuidedTour, isTourDone, markTourDone } from "@/components/pgp/onboarding/GuidedTour";
 import { PassphrasePrompt } from "@/components/pgp/PassphrasePrompt";
 import { SettingsDialog } from "@/components/pgp/SettingsDialog";
 import { ShortcutsDialog } from "@/components/pgp/ShortcutsDialog";
@@ -328,6 +331,10 @@ export default function PgpApp() {
 	// share a dialog with key/auth setup. Ctrl+, opens THIS dialog; the key
 	// dialog stays one click away on the key button.
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	// Guided tour (coach marks over the live UI). Auto-starts once, right
+	// after the first key of a session is set up — see the sign-in effect
+	// below. Replay lives in Settings → Help.
+	const [tourOpen, setTourOpen] = useState(false);
 	const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
 	// Own-key expiry banner dismissal (additive): keyed to
 	// "<fingerprint>:<status>" so a different key — or the same key crossing
@@ -371,6 +378,39 @@ export default function PgpApp() {
 	const [settings, setSettings] = useState<AppSettings>(loadSettings);
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
+	// Unencrypted-own-key banner (round-12 product pass): fires when the
+	// configured key is PRIVATE and its material is DECRYPTED — i.e. stored
+	// without passphrase protection (describePrivateKey reports
+	// isDecrypted:false only for passphrase-protected keys; a generated or
+	// pasted passphrase-less key comes back isDecrypted:true).
+	const [unprotectedKeyDismissedFp, setUnprotectedKeyDismissedFp] = useState<string | null>(() => {
+		try {
+			return localStorage.getItem(STORAGE_KEYS.unprotectedKeyBannerDismissed);
+		} catch {
+			return null;
+		}
+	});
+	const handleDismissUnprotectedKeyBanner = useCallback(() => {
+		const fp = privateKey?.info?.fingerprint ?? null;
+		if (fp) {
+			try {
+				localStorage.setItem(STORAGE_KEYS.unprotectedKeyBannerDismissed, fp);
+			} catch {
+				// guarded storage posture — the in-memory dismissal still applies
+			}
+		}
+		setUnprotectedKeyDismissedFp(fp);
+	}, [privateKey]);
+	// "isPrivate" in info narrows AnyKeyInfo to PrivateKeyInfo so both
+	// protection fields are honestly read from the key's own metadata.
+	const ownInfo = privateKey?.info;
+	const showUnprotectedKeyBanner =
+		!!ownInfo &&
+		"isPrivate" in ownInfo &&
+		ownInfo.isPrivate &&
+		ownInfo.isDecrypted &&
+		unprotectedKeyDismissedFp !== ownInfo.fingerprint;
+
 	// Post-quantum onboarding banner: shows once per key (dismissal persisted
 	// per fingerprint) until the key carries an ML-KEM-768 pair.
 	const [pqBannerDismissedFp, setPqBannerDismissedFp] = useState<string | null>(() => {
@@ -534,6 +574,40 @@ export default function PgpApp() {
 		toast({ title: "Session passphrase forgotten" });
 	}, [toast]);
 
+	// Adopt a key coming from the login gate (generated, imported, pasted,
+	// or restored from registry escrow): configure it app-wide and jump to
+	// Encrypt so the key is immediately usable.
+	const handleUseRegistryKey = useCallback(
+		(config: PrivateKeyConfig) => {
+			handleSetPrivateKey(config);
+			setTab("encrypt");
+		},
+		[handleSetPrivateKey],
+	);
+
+	// One-shot screen-reader announcement when the gate sign-in completes
+	// (privateKey transitions null -> configured). The existing tab region
+	// below covers tab changes; sign-in deserves its own polite message.
+	const prevKeyRef = useRef<PrivateKeyConfig | null>(null);
+	const [signInAnnouncement, setSignInAnnouncement] = useState("");
+	useEffect(() => {
+		if (!prevKeyRef.current && privateKey) {
+			setSignInAnnouncement(`Signed in as ${privateKey.label}. Keys are ready to use.`);
+			// Key setup just finished — this is the moment for the guided
+			// tour. Once ever: the done flag survives reloads, and Settings
+			// can always replay it.
+			if (!isTourDone()) setTourOpen(true);
+		}
+		prevKeyRef.current = privateKey;
+	}, [privateKey]);
+
+	// Closing the tour — by finishing OR skipping — records it as seen so
+	// it never re-appears unprompted.
+	const handleTourOpenChange = useCallback((next: boolean) => {
+		setTourOpen(next);
+		if (!next) markTourDone();
+	}, []);
+
 	// R9 auto-lock enforcement for the UI state: the freshness gate covers real
 	// unlock attempts; this lightweight interval covers the header indicator +
 	// announcement when the deadline passes while the app is open.
@@ -565,7 +639,7 @@ export default function PgpApp() {
 		[passphraseCached],
 	);
 
-	// Alt+1..4 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
+	// Alt+1..5 switches tabs; Ctrl/Cmd+, opens the app Settings dialog; the
 	// key dialog stays on the header key button.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -732,6 +806,11 @@ export default function PgpApp() {
 			<span aria-hidden={false} className="sr-only" role="status" aria-live="polite">
 				{currentTabLabel} tab selected
 			</span>
+			{signInAnnouncement && (
+				<span aria-hidden={false} className="sr-only" role="status" aria-live="polite">
+					{signInAnnouncement}
+				</span>
+			)}
 
 			<Header
 				onConfigure={() => setConfigOpen(true)}
@@ -742,31 +821,40 @@ export default function PgpApp() {
 				onForgetCachedPassphrase={handleForgetCachedPassphrase}
 			/>
 
-			<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
-				{showPqBanner && privateKey && (
-					<div className="mb-4">
-						<PostQuantumBanner
-							label={privateKey.label}
-							busy={pqBusy}
-							onEnable={() => void handleEnableQuantumSeal()}
-							onDismiss={handleDismissPqBanner}
-						/>
-					</div>
-				)}
-				{showExpiryBanner && privateKey && keyExpiry && (
-					<div className="mb-4">
-						<OwnKeyExpiryBanner
-							label={privateKey.label}
-							status={keyExpiry.status as "expired" | "expiring"}
-							detail={expiryDetail}
-							onOpenSettings={() => setConfigOpen(true)}
-							onDismiss={() => setExpiryDismissed(expiryKey)}
-						/>
-					</div>
-				)}
-				<Tabs value={tab} onChange={setTab} />
+			{privateKey ? (
+				<main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 lg:py-8">
+					{showUnprotectedKeyBanner && privateKey && (
+						<div className="mb-4">
+							<OwnKeyUnprotectedBanner
+								label={privateKey.label}
+								onDismiss={handleDismissUnprotectedKeyBanner}
+							/>
+						</div>
+					)}
+					{showPqBanner && privateKey && (
+						<div className="mb-4">
+							<PostQuantumBanner
+								label={privateKey.label}
+								busy={pqBusy}
+								onEnable={() => void handleEnableQuantumSeal()}
+								onDismiss={handleDismissPqBanner}
+							/>
+						</div>
+					)}
+					{showExpiryBanner && privateKey && keyExpiry && (
+						<div className="mb-4">
+							<OwnKeyExpiryBanner
+								label={privateKey.label}
+								status={keyExpiry.status as "expired" | "expiring"}
+								detail={expiryDetail}
+								onOpenSettings={() => setConfigOpen(true)}
+								onDismiss={() => setExpiryDismissed(expiryKey)}
+							/>
+						</div>
+					)}
+					<Tabs value={tab} onChange={setTab} />
 
-				{/* All four panels stay MOUNTED for the whole session; inactive ones
+					{/* All four panels stay MOUNTED for the whole session; inactive ones
             get the `hidden` attribute (display:none — unfocusable, out of
             the a11y tree). Drafts and results survive tab switches: peeking
             at another mode can no longer silently discard a half-written
@@ -775,45 +863,54 @@ export default function PgpApp() {
             newly-active panel (removing/adding the class replays it).
             Mount-time effects in the tabs are safe: they all no-op on empty
             input (auto-decrypt, format detection, metadata parsing). */}
-				{TABS.map((t) => {
-					const active = t.id === tab;
-					return (
-						<div
-							key={t.id}
-							role="tabpanel"
-							id={`panel-${t.id}`}
-							aria-labelledby={`tab-${t.id}`}
-							hidden={!active}
-							className={`mt-6 ${active ? "panel-enter" : ""}`}
-						>
-							{t.id === "encrypt" && (
-								<EncryptTab
-									privateKey={privateKey}
-									recipients={recipients}
-									setRecipients={setRecipients}
-									includeSelf={includeSelf}
-									onIncludeSelfChange={handleSetIncludeSelf}
-									requestDecryptedKey={requestDecryptedKey}
-									onOpenInDecrypt={handleOpenInDecrypt}
-									settings={settings}
-								/>
-							)}
-							{t.id === "decrypt" && (
-								<DecryptTab
-									privateKey={privateKey}
-									requestDecryptedKey={requestDecryptedKey}
-									pendingLoad={pendingDecryptLoad}
-									onPendingLoadConsumed={consumePendingDecryptLoad}
-								/>
-							)}
-							{t.id === "sign" && (
-								<SignTab privateKey={privateKey} requestDecryptedKey={requestDecryptedKey} />
-							)}
-							{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
-						</div>
-					);
-				})}
-			</main>
+					{TABS.map((t) => {
+						const active = t.id === tab;
+						return (
+							<div
+								key={t.id}
+								role="tabpanel"
+								id={`panel-${t.id}`}
+								aria-labelledby={`tab-${t.id}`}
+								hidden={!active}
+								className={`mt-6 ${active ? "panel-enter" : ""}`}
+							>
+								{t.id === "encrypt" && (
+									<EncryptTab
+										privateKey={privateKey}
+										recipients={recipients}
+										setRecipients={setRecipients}
+										includeSelf={includeSelf}
+										onIncludeSelfChange={handleSetIncludeSelf}
+										requestDecryptedKey={requestDecryptedKey}
+										onOpenInDecrypt={handleOpenInDecrypt}
+										settings={settings}
+									/>
+								)}
+								{t.id === "decrypt" && (
+									<DecryptTab
+										privateKey={privateKey}
+										requestDecryptedKey={requestDecryptedKey}
+										pendingLoad={pendingDecryptLoad}
+										onPendingLoadConsumed={consumePendingDecryptLoad}
+									/>
+								)}
+								{t.id === "sign" && (
+									<SignTab
+										privateKey={privateKey}
+										requestDecryptedKey={requestDecryptedKey}
+										markdownEditor={settings.markdownEditor}
+									/>
+								)}
+								{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
+							</div>
+						);
+					})}
+				</main>
+			) : (
+				/* Sign-in gate: the minimal "Login/Get your keys" page.
+                                   Nothing else is usable until a key is configured. */
+				<LoginView onUseKey={handleUseRegistryKey} />
+			)}
 
 			<Footer onSelfTest={handleSelfTest} />
 
@@ -842,6 +939,12 @@ export default function PgpApp() {
 				onSettingsChange={handleSetSettings}
 				privateKey={privateKey}
 				onEnableQuantumSeal={handleEnableQuantumSeal}
+				onReplayTour={() => {
+					// Close the settings dialog first so the tour's spotlight
+					// doesn't fight it for the screen.
+					setSettingsOpen(false);
+					setTourOpen(true);
+				}}
 			/>
 
 			{keyRequest && privateKey && (
@@ -858,6 +961,9 @@ export default function PgpApp() {
 						},
 					}}
 					onKeyUpdated={handleSetPrivateKey}
+					/* Owner feedback: never ask to remember — the auto-lock
+                                           preference decides silently. */
+					autoCache={settings.autoLockMinutes > 0}
 					onPassphraseCached={() => {
 						setPassphraseCached(true);
 						setPassphraseCachedUntil(
@@ -866,6 +972,14 @@ export default function PgpApp() {
 					}}
 				/>
 			)}
+
+			{/* Coach-mark walkthrough of the app; mounts over the main UI. */}
+			<GuidedTour
+				open={tourOpen}
+				onOpenChange={handleTourOpenChange}
+				tab={tab}
+				onTabChange={setTab}
+			/>
 		</div>
 	);
 }
@@ -967,32 +1081,36 @@ function Header({
 						<ShortcutsDialog />
 					</div>
 					{/* Dedicated settings entry (round 11 feedback): the gear owns app
-              preferences; the key button next to it owns key/auth. */}
-					<Button
-						variant="ghost"
-						size="icon"
-						onClick={onOpenSettings}
-						title="Settings (Ctrl+,)"
-						aria-label="Settings"
-						className="size-11 text-muted-foreground transition-colors hover:text-[#0055dc] press-effect sm:size-8 dark:hover:text-[#5e94ff]"
-					>
-						<Settings aria-hidden className="size-4" />
-					</Button>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={onConfigure}
-						className="h-11 gap-2 transition-colors duration-150 hover:border-[#0055dc] hover:text-[#0055dc] dark:hover:border-[#5e94ff] dark:hover:text-[#5e94ff] press-effect sm:h-8"
-					>
-						<KeyIcon />
-						{privateKey ? (
-							<span className="max-w-[34vw] truncate sm:max-w-[14rem]">
+              preferences; the key button next to it owns key/auth. Both are
+              hidden on the sign-in gate — signing in IS the configuration
+              surface now (LoginView), so there is nothing to configure yet. */}
+					{privateKey && (
+						<Button
+							variant="ghost"
+							size="icon"
+							onClick={onOpenSettings}
+							title="Settings (Ctrl+,)"
+							aria-label="Settings"
+							data-tour="settings-button"
+							className="size-11 text-muted-foreground transition-colors hover:text-[#0055dc] press-effect sm:size-8 dark:hover:text-[#5e94ff]"
+						>
+							<Settings aria-hidden className="size-4" />
+						</Button>
+					)}
+					{privateKey && (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={onConfigure}
+							data-tour="key-button"
+							className="h-11 gap-2 transition-colors duration-150 hover:border-[#0055dc] hover:text-[#0055dc] dark:hover:border-[#5e94ff] dark:hover:text-[#5e94ff] press-effect sm:h-8"
+						>
+							<KeyIcon />
+							<span>
 								{privateKey.source === "keybase" ? `@${privateKey.username}` : privateKey.label}
 							</span>
-						) : (
-							<span className="hidden sm:inline">Configure private key</span>
-						)}
-					</Button>
+						</Button>
+					)}
 				</div>
 			</div>
 			<span
@@ -1058,7 +1176,12 @@ function ThemeToggle() {
 
 function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 	return (
-		<nav className="flex gap-1 border-b border-border" role="tablist" aria-label="Mode">
+		<nav
+			className="flex gap-1 border-b border-border"
+			role="tablist"
+			aria-label="Mode"
+			data-tour="mode-tabs"
+		>
 			{TABS.map((t) => {
 				const active = t.id === value;
 				const n = TABS.indexOf(t) + 1;
@@ -1160,6 +1283,7 @@ function Footer({ onSelfTest }: { onSelfTest: () => Promise<void> }) {
 						)}
 						{testing ? "Testing…" : "Crypto self-test"}
 					</Button>
+					<ApiReferenceDialog />
 					<a
 						href="https://github.com/theveryoilydill/Encryptor"
 						target="_blank"

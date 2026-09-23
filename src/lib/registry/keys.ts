@@ -8,6 +8,7 @@
 import * as openpgp from "openpgp";
 
 import { RegistryError } from "./db";
+import { normalizeDisplayName } from "./name";
 
 /** Email grammar for registry indexing (strict, lowercase-normalized). */
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
@@ -37,12 +38,36 @@ export function normalizeEmail(raw: string): string | null {
 	return EMAIL_RE.test(email) ? email : null;
 }
 
+/**
+ * Quantum-seal public key: base64 of a raw ML-KEM-768 (FIPS 203) public
+ * key — exactly 1184 bytes. Stored as an OPTIONAL public column: the
+ * secret half never leaves the owner's device, and the public half is
+ * only ever used to ENCAPSULATE (seal) archive copies to this key.
+ * Returns the trimmed value, or null when malformed.
+ */
+export const MLKEM768_PUBLIC_KEY_BYTES = 1184;
+
+const PQ_SEAL_PK_B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+export function parsePqSealPk(raw: string): string | null {
+	const value = raw.trim();
+	if (value.length < 100 || value.length > 2048 || !PQ_SEAL_PK_B64_RE.test(value)) return null;
+	try {
+		if (atob(value).length !== MLKEM768_PUBLIC_KEY_BYTES) return null;
+		return value;
+	} catch {
+		return null;
+	}
+}
+
 /** A public key fully derived server-side from the armored input. */
 export interface ParsedPublicKey {
 	fingerprint: string;
 	keyId: string;
 	subkeyIds: string[];
 	emails: string[];
+	/** Normalized self-reported User ID display names (see extractNames). */
+	names: string[];
 	/** Canonicalized armor produced by re-serializing the parsed key. */
 	armored: string;
 	createdAt: number;
@@ -131,6 +156,8 @@ export async function parsePublicArmored(
 
 	// Extract and normalize self-reported User ID emails (deduped, capped).
 	const emails = extractEmails(key, maxEmails());
+	// Same for display names — the registry indexes them for name lookups.
+	const names = extractNames(key, maxNames());
 
 	// Best-effort creation time (epoch seconds); 0 when unavailable.
 	const creation = key.getCreationTime();
@@ -154,9 +181,90 @@ export async function parsePublicArmored(
 		keyId: primary,
 		subkeyIds: allIds.slice(1),
 		emails,
+		names,
 		armored,
 		createdAt,
 	};
+}
+
+/** A passphrase-encrypted private key validated against a known fingerprint. */
+export interface ParsedEncryptedPrivate {
+	/** Verified to equal the public record's fingerprint. */
+	fingerprint: string;
+	/** Canonicalized armor produced by re-serializing the parsed key. */
+	armored: string;
+}
+
+/**
+ * Parse and validate an armored ENCRYPTED private key for escrow. The
+ * registry may hold private key material ONLY when every secret packet is
+ * passphrase-encrypted (the armored backup form users already keep offline).
+ * Throws RegistryError with a 4xx status on public keys, decrypted secret
+ * packets, fingerprint mismatches, or malformed input.
+ */
+export async function parseEncryptedPrivateArmored(
+	input: string,
+	maxArmorBytes: number,
+	expectedFingerprint: string,
+): Promise<ParsedEncryptedPrivate> {
+	if (typeof input !== "string" || input.trim().length === 0) {
+		throw new RegistryError("The 'encryptedPrivate' field is required", 400);
+	}
+	if (input.length > maxArmorBytes) {
+		throw new RegistryError(`Encrypted private key exceeds the ${maxArmorBytes} byte limit`, 413);
+	}
+
+	let key: openpgp.Key;
+	try {
+		key = await openpgp.readKey({ armoredKey: input });
+	} catch {
+		throw new RegistryError("encryptedPrivate is not a parseable OpenPGP key", 400);
+	}
+	if (!key.isPrivate()) {
+		throw new RegistryError("encryptedPrivate must be a PRIVATE key", 400);
+	}
+
+	// Identity binding: the escrowed key must be the SAME key as the public
+	// record — otherwise a lookup could hand back a decoy key that the
+	// requester believes is theirs.
+	const fingerprint = key.getFingerprint().toUpperCase();
+	if (fingerprint !== expectedFingerprint) {
+		throw new RegistryError("encryptedPrivate does not match this fingerprint", 400);
+	}
+
+	// Hard rule: NO usable private bytes in the database. openpgp.js keeps
+	// a per-packet flag, so walk every packet ourselves instead of relying
+	// on Key.isDecrypted() (whose "some vs every" semantics shifted across
+	// major versions). A single decrypted packet rejects the whole upload.
+	const packets = key.getKeys();
+	const anyDecrypted = packets.some(({ keyPacket }) => {
+		const secret = keyPacket as { isDecrypted?: () => boolean };
+		return typeof secret.isDecrypted === "function" && secret.isDecrypted() === true;
+	});
+	if (anyDecrypted) {
+		throw new RegistryError(
+			"Private key contains decrypted material — encrypt it with a passphrase first",
+			400,
+		);
+	}
+
+	try {
+		await key.verifyPrimaryKey();
+	} catch {
+		throw new RegistryError("Private key has an invalid primary key self-signature", 400);
+	}
+
+	let armored: string;
+	try {
+		armored = key.armor();
+	} catch {
+		throw new RegistryError("Private key could not be re-serialized", 400);
+	}
+	if (armored.length > maxArmorBytes) {
+		throw new RegistryError(`Encrypted private key exceeds the ${maxArmorBytes} byte limit`, 413);
+	}
+
+	return { fingerprint, armored };
 }
 
 /**
@@ -224,4 +332,40 @@ export function maxSubkeys(): number {
 /** Maximum self-reported emails indexed per key (single source of truth). */
 export function maxEmails(): number {
 	return 10;
+}
+
+/** Maximum self-reported display names indexed per key. Names come from the
+ *  same User IDs as the emails, so the same cap keeps the batches bounded. */
+export function maxNames(): number {
+	return 10;
+}
+
+/** Valid normalized name: printable, no angle brackets (they delimit the
+ *  email part), 1–64 chars after normalization. The implementation lives in
+ *  the client-safe shared module (./name) so server indexing and client
+ *  search can never drift apart. */
+export function normalizeName(raw: string): string | null {
+	return normalizeDisplayName(raw);
+}
+
+/**
+ * Extract self-reported User ID display names from a parsed key — the part
+ * of "Name <email>" before the email (owner feedback: restore with
+ * "fingerprint, email, or name"). Normalized via normalizeName (lowercased,
+ * whitespace-collapsed) and deduped; names are NOT unique across keys.
+ */
+export function extractNames(key: openpgp.Key, cap: number): string[] {
+	const names: string[] = [];
+	const users = key.users ?? [];
+	for (const user of users) {
+		const userID = user?.userID;
+		if (!userID) continue;
+		// Prefer the packet-parsed name; fall back to the raw userid string
+		// minus the <email> tail.
+		const candidate = userID.name || userID.userID?.replace(/<[^<>]*>.*$/, "") || "";
+		const name = normalizeName(candidate);
+		if (name && !names.includes(name)) names.push(name);
+		if (names.length >= cap) break;
+	}
+	return names;
 }

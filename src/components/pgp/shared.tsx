@@ -7,7 +7,15 @@
  * (src/components/pgp/PgpApp.tsx in the audit tree) — only the styling is
  * modernized (shadcn/ui + #0055dc accent, 150–200ms transitions, a11y).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ComponentProps,
+	type ReactNode,
+} from "react";
 import {
 	BadgeCheck,
 	Check,
@@ -23,6 +31,8 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { rehypeSecureHtml } from "@/lib/pgp/safe-html";
+import { githubSlug } from "@/lib/pgp/github-slug";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -31,7 +41,9 @@ import { Textarea } from "@/components/ui/textarea";
 import {
 	envelopeFileToDataUrl,
 	formatFileSize,
+	isLocalImageUrl,
 	isSafeImageUrl,
+	SAFE_DATA_IMAGE_RE,
 	type EnvelopeFile,
 } from "@/lib/pgp/envelope";
 import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
@@ -59,6 +71,7 @@ const KEY_SOURCE_LABELS: Readonly<Record<KeySource, string>> = {
 	local: "key from your configured key",
 	keybase: "key from Keybase",
 	"openpgp.org": "key from keys.openpgp.org",
+	encryptor: "key from the Encryptor Registry",
 };
 
 /** Small muted pill naming where the signer's public key was resolved from.
@@ -104,8 +117,15 @@ export function ImageViewer({
 }) {
 	const open = index !== null && images.length > 0;
 	const file = open ? images[Math.min(index, images.length - 1)] : null;
+	const rawViewerSrc = file && file.type.startsWith("image/") ? envelopeFileToDataUrl(file) : null;
+	// Barrier guard for static analysis: the same tainted string that
+	// reaches <img src> is regex-tested right here.
 	const safeSrc =
-		file && file.type.startsWith("image/") ? isSafeImageUrl(envelopeFileToDataUrl(file)) : null;
+		rawViewerSrc !== null &&
+		SAFE_DATA_IMAGE_RE.test(rawViewerSrc) &&
+		isSafeImageUrl(rawViewerSrc) !== null
+			? rawViewerSrc
+			: null;
 	const many = images.length > 1;
 	const go = useCallback(
 		(delta: number) => {
@@ -521,16 +541,16 @@ export function OutputBlock({
 							className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
 						/>
 						{/* Section-label family (R11-b): the tab input cards and the
-                Decrypt-tab result rows both render their Label as
-                text-xs uppercase tracking-wide muted — the OutputBlock title
-                is the same kind of section label, so it joins the family. */}
+		Decrypt-tab result rows both render their Label as
+		text-xs uppercase tracking-wide muted — the OutputBlock title
+		is the same kind of section label, so it joins the family. */}
 						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 							{title}
 						</Label>
 						{/* R8: armor stats — quiet mono detail next to the section label.
-                Armor is ASCII so string length ≈ byte length; lines from the
-                raw split. Hidden on the smallest screens to keep the row
-                uncluttered. */}
+		Armor is ASCII so string length ≈ byte length; lines from the
+		raw split. Hidden on the smallest screens to keep the row
+		uncluttered. */}
 						{output && (
 							<span
 								aria-hidden="true"
@@ -740,7 +760,13 @@ export function AttachmentList({
 				<ul className="flex flex-wrap gap-2">
 					{attachments.map((f, idx) => {
 						const isImage = f.type.startsWith("image/");
-						const previewUrl = isImage ? isSafeImageUrl(envelopeFileToDataUrl(f)) : null;
+						const rawPreview = isImage ? envelopeFileToDataUrl(f) : null;
+						const previewUrl =
+							rawPreview !== null &&
+							SAFE_DATA_IMAGE_RE.test(rawPreview) &&
+							isSafeImageUrl(rawPreview) !== null
+								? rawPreview
+								: null;
 						return (
 							<li
 								key={`${f.name}-${idx}`}
@@ -790,6 +816,40 @@ export function AttachmentList({
 
 /* --------------------------- DecryptedMessageView --------------------------- */
 
+/** Flatten React children to plain text (for slug derivation). */
+function flattenText(node: ReactNode): string {
+	if (node === null || node === undefined || typeof node === "boolean") return "";
+	if (typeof node === "string" || typeof node === "number") return String(node);
+	if (Array.isArray(node)) return node.map(flattenText).join("");
+	if (typeof node === "object" && "props" in (node as unknown as Record<string, unknown>)) {
+		return flattenText((node as { props: { children?: ReactNode } }).props?.children);
+	}
+	return "";
+}
+
+/** Heading renderer factory: emits the heading tag with a GitHub-style anchor
+ *  id derived from the heading's own text, so composer-generated TOC links
+ *  jump to the right heading in the rendered view. */
+function headingWithAnchor(Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+	return function Heading(props: ComponentProps<"h1"> & { node?: unknown }) {
+		const { node: _node, children, ...rest } = props;
+		const id = githubSlug(flattenText(children));
+		return (
+			<Tag {...rest} id={id || undefined}>
+				{children}
+			</Tag>
+		);
+	};
+}
+const headingAnchors = {
+	h1: headingWithAnchor("h1"),
+	h2: headingWithAnchor("h2"),
+	h3: headingWithAnchor("h3"),
+	h4: headingWithAnchor("h4"),
+	h5: headingWithAnchor("h5"),
+	h6: headingWithAnchor("h6"),
+};
+
 /** Render a decrypted message as markdown (GitHub-flavored), with inline
  *  envelope images.
  *
@@ -823,36 +883,66 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 		<div className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
 			<Markdown
 				remarkPlugins={[remarkGfm, remarkBreaks]}
+				// Secure raw-HTML support: parse the HTML the sender wrote, then
+				// strip everything the strict schema disallows. Never renders
+				// scripts, styles, event handlers, or unsafe URLs.
+				rehypePlugins={rehypeSecureHtml}
 				components={{
+					...headingAnchors,
 					a: ({ node: _node, children, ...props }) => (
 						<a {...props} target="_blank" rel="noreferrer noopener" className={ACCENT_TEXT}>
 							{children}
 						</a>
 					),
-					img: ({ node: _node, src, alt, ...props }) => {
+					img: ({ node: _node, src, alt, title }) => {
 						const meta = parseInlineImageAlt(alt ?? "");
-						// Resolve envelope:// handles against the attachment list; every
-						// other URL (markdown-written by the sender) is guarded by the
-						// strict isSafeImageUrl allow-list before reaching the DOM.
+						// Resolve envelope:// handles against the attachment list. Every
+						// other URL (markdown written by the sender) must pass the strict
+						// LOCAL-ONLY allow-list (isLocalImageUrl) before reaching the DOM:
+						// unlike the encrypt-side previews, remote https: images are NOT
+						// rendered here — they would auto-load while reading a decrypted
+						// message and leak the recipient's IP to a tracking pixel.
+						const raw = typeof src === "string" ? src : null;
 						const candidate =
-							typeof src === "string" && src.startsWith("envelope://")
-								? (fileMap.get(decodeURIComponent(src.slice("envelope://".length))) ?? null)
-								: typeof src === "string"
-									? src
-									: null;
-						const safeSrc = candidate ? isSafeImageUrl(candidate) : null;
+							raw !== null && raw.startsWith("envelope://")
+								? (fileMap.get(decodeURIComponent(raw.slice("envelope://".length))) ?? null)
+								: raw;
+						// Barrier guard for static analysis: regex-test the exact
+						// tainted string before it reaches <img src>.
+						const safeSrc =
+							candidate !== null &&
+							SAFE_DATA_IMAGE_RE.test(candidate) &&
+							isLocalImageUrl(candidate) !== null
+								? candidate
+								: null;
+						const remoteBlocked = safeSrc === null && raw !== null && /^https?:/i.test(raw);
 						if (!safeSrc) {
 							return (
-								<span className="mx-1 inline-block rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] italic text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
-									[missing image: {meta.displayName}]
+								<span
+									title={
+										remoteBlocked
+											? "Remote images are blocked in decrypted messages (tracking-pixel privacy guard)."
+											: undefined
+									}
+									className="mx-1 inline-block rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] italic text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
+								>
+									{remoteBlocked
+										? `[remote image blocked: ${meta.displayName}]`
+										: `[missing image: ${meta.displayName}]`}
 								</span>
 							);
 						}
+						// NOTE: sender-controlled markdown attributes are NOT spread onto
+						// the <img> — a crafted srcset/sizes attribute would bypass the
+						// src allow-list above. Only alt/src/style/className/title (ours)
+						// reach the DOM. loading=lazy also defers offscreen inline images.
 						return (
 							<img
-								{...props}
+								title={title}
 								src={safeSrc}
 								alt={meta.displayName}
+								loading="lazy"
+								decoding="async"
 								style={{
 									width: `${meta.scale}%`,
 									maxWidth: "100%",
@@ -953,24 +1043,23 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
 							</div>
 							{/* Secondary info line: name + email + comment (if available and
                   not already used as the display name). */}
-							{(s.name || s.email || s.comment) &&
-								!s.username && (
-									// Wrap rhythm (R9-b): horizontal separation unchanged (8px);
-									// wrapped rows tighten to the 2px inter-row rhythm (mt-0.5)
-									// instead of the looser all-axis 8px gap on narrow widths.
-									<div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-										{s.name && <span>Name: {s.name}</span>}
-										{s.email && (
-											<span>
-												Email:{" "}
-												<a href={`mailto:${s.email}`} className={`${ACCENT_TEXT} hover:underline`}>
-													{s.email}
-												</a>
-											</span>
-										)}
-										{s.comment && <span>Comment: {s.comment}</span>}
-									</div>
-								)}
+							{(s.name || s.email || s.comment) && !s.username && (
+								// Wrap rhythm (R9-b): horizontal separation unchanged (8px);
+								// wrapped rows tighten to the 2px inter-row rhythm (mt-0.5)
+								// instead of the looser all-axis 8px gap on narrow widths.
+								<div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+									{s.name && <span>Name: {s.name}</span>}
+									{s.email && (
+										<span>
+											Email:{" "}
+											<a href={`mailto:${s.email}`} className={`${ACCENT_TEXT} hover:underline`}>
+												{s.email}
+											</a>
+										</span>
+									)}
+									{s.comment && <span>Comment: {s.comment}</span>}
+								</div>
+							)}
 							{/* All user IDs (if the key has more than one). */}
 							{s.allUserIDs && s.allUserIDs.length > 1 && (
 								<details className="mt-1">
@@ -1036,9 +1125,9 @@ export function FileDownloadList({ files }: { files: EnvelopeFile[] }) {
 			</div>
 			<ul className="space-y-1.5">
 				{files.map((f, i) => {
-					const isImage = f.type.startsWith("image/");
 					const url = envelopeFileToDataUrl(f);
-					const safeImgSrc = isImage ? isSafeImageUrl(url) : null;
+					const safeImgSrc =
+						SAFE_DATA_IMAGE_RE.test(url) && isSafeImageUrl(url) !== null ? url : null;
 					return (
 						<li key={i} className="flex items-center gap-2.5 text-sm">
 							{safeImgSrc ? (

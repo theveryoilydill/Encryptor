@@ -6,6 +6,8 @@
  */
 import * as openpgp from "openpgp";
 
+import type { KeySource } from "@/components/pgp/contracts";
+
 export type Armored = string;
 
 export interface PublicKeyInfo {
@@ -34,10 +36,14 @@ export interface GenerateKeyOptions {
 	email?: string;
 	passphrase?: string;
 	/**
-	 * "ecc" uses modern Edwards-curve keys (recommended, default).
+	 * "curve25519" generates the modern (non-legacy) Ed25519 + X25519 pair —
+	 * the default for new Encryptor keys (owner feedback: generated keys must
+	 * not show up as "EdDSA (legacy)"). Still v4 packets, so fingerprints stay
+	 * 40-hex and every registry/word-list/UI surface works unchanged.
+	 * "ecc" is the older v4 Edwards-curve path (kept for explicit opt-in);
 	 * "rsa" is older but widely compatible.
 	 */
-	type?: "ecc" | "rsa";
+	type?: "ecc" | "curve25519" | "rsa";
 	/** For ECC: see openpgp.EllipticCurveName */
 	curve?:
 		| "ed25519Legacy"
@@ -388,7 +394,10 @@ export async function generateKeyPair(opts: GenerateKeyOptions): Promise<Generat
 		format: "armored",
 		...(type === "ecc"
 			? { curve: opts.curve ?? "ed25519Legacy" }
-			: { rsaBits: opts.rsaBits ?? 4096 }),
+			: type === "curve25519"
+				? // Modern Ed25519 (sign) + X25519 (encrypt) — no curve option.
+					{}
+				: { rsaBits: opts.rsaBits ?? 4096 }),
 		...(keyExpirationTime ? { keyExpirationTime } : {}),
 	});
 
@@ -643,7 +652,7 @@ export async function decryptAndAutoVerify(
 			 *  locally-resolved records carry it). */
 			expiresAt?: number | null;
 			/** Which source resolved this key (local / Keybase / openpgp.org). */
-			resolvedFrom?: "local" | "keybase" | "openpgp.org";
+			resolvedFrom?: KeySource;
 		}>
 	>,
 ): Promise<{
@@ -665,7 +674,7 @@ export async function decryptAndAutoVerify(
 		/** Expiration of the signer's key as epoch-ms, when known. */
 		expiresAt?: number | null;
 		/** Where the verification key came from. */
-		resolvedFrom?: "local" | "keybase" | "openpgp.org";
+		resolvedFrom?: KeySource;
 	}>;
 }> {
 	if (!opts.armoredMessage) throw new Error("An encrypted message is required.");
@@ -1305,7 +1314,7 @@ export async function verifyAutoDetectWithKeyFetch(
 			 *  locally-resolved records carry it). */
 			expiresAt?: number | null;
 			/** Which source resolved this key (local / Keybase / openpgp.org). */
-			resolvedFrom?: "local" | "keybase" | "openpgp.org";
+			resolvedFrom?: KeySource;
 		}>
 	>,
 ): Promise<{
@@ -1327,7 +1336,7 @@ export async function verifyAutoDetectWithKeyFetch(
 		/** Expiration of the signer's key as epoch-ms, when known. */
 		expiresAt?: number | null;
 		/** Where the verification key came from. */
-		resolvedFrom?: "local" | "keybase" | "openpgp.org";
+		resolvedFrom?: KeySource;
 	}>;
 }> {
 	const format = detectArmoredFormat(armored);

@@ -567,6 +567,16 @@ function TemplateMenu({
 	);
 }
 
+/** True when a keyboard event started inside a nested Radix surface (a
+ *  dialog, dropdown menu or listbox) that must keep Escape / shortcuts for
+ *  itself — shared by the full-screen overlay's window + React handlers. */
+function isNestedDialogTarget(target: EventTarget | null): boolean {
+	const el = target as HTMLElement | null;
+	return !!el?.closest?.(
+		'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+	);
+}
+
 export function EncryptTab({
 	privateKey,
 	recipients,
@@ -640,6 +650,54 @@ export function EncryptTab({
 			document.body.style.overflow = prev;
 		};
 	}, [composerExpanded]);
+	// Escape collapses the overlay from ANYWHERE: opening it unmounts the
+	// expand button, which can drop focus on <body> — an overlay-local
+	// handler would then never see the key (and an aria-modal dialog that
+	// ignores Escape is an a11y bug). Window-level capture, same guard as
+	// the overlay's own handler so nested Radix surfaces keep their Escape.
+	useEffect(() => {
+		if (!composerExpanded) return;
+		const onWindowEscape = (e: KeyboardEvent) => {
+			if (e.key !== "Escape" || e.defaultPrevented) return;
+			if (isNestedDialogTarget(e.target)) return;
+			e.preventDefault();
+			setComposerExpanded(false);
+		};
+		window.addEventListener("keydown", onWindowEscape, true);
+		return () => window.removeEventListener("keydown", onWindowEscape, true);
+	}, [composerExpanded]);
+
+	// Global Ctrl/Cmd+Shift+E — "shortcut to expand should apply everywhere":
+	// the tab components stay mounted across tab switches, so a window-level
+	// capture listener lets the composer open from ANY tab. Same dialog-safe
+	// guards as the section handler; the section + overlay handlers see
+	// defaultPrevented and skip, so the toggle never double-fires.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if (
+				(e.ctrlKey || e.metaKey) &&
+				e.shiftKey &&
+				!e.altKey &&
+				(e.key === "E" || e.key === "e") &&
+				!e.defaultPrevented
+			) {
+				const target = e.target as HTMLElement | null;
+				if (
+					target?.closest(
+						'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
+					)
+				) {
+					return;
+				}
+				e.preventDefault();
+				setComposerExpanded((v) => !v);
+			}
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, []);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{
@@ -1514,15 +1572,22 @@ export function EncryptTab({
 					</span>
 				</div>
 			)}
-			<RecipientPicker
-				recipients={recipients}
-				setRecipients={setRecipients}
-				selfRecipient={selfRecipient}
-				includeSelf={includeSelf}
-				onIncludeSelfChange={onIncludeSelfChange}
-			/>
+			{/* Guided-tour anchor: the recipient search lives here. */}
+			<div data-tour="recipients">
+				<RecipientPicker
+					recipients={recipients}
+					setRecipients={setRecipients}
+					selfRecipient={selfRecipient}
+					includeSelf={includeSelf}
+					onIncludeSelfChange={onIncludeSelfChange}
+				/>
+			</div>
 
-			{!composerExpanded && <div className="rounded-xl">{composerBody}</div>}
+			{!composerExpanded && (
+				<div className="rounded-xl" data-tour="composer">
+					{composerBody}
+				</div>
+			)}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
 			    dialog filling the viewport. Escape collapses it — EXCEPT when a
 			    Radix surface opened FROM the composer is on stage (template
@@ -1538,16 +1603,18 @@ export function EncryptTab({
 						role="dialog"
 						aria-modal="true"
 						aria-label="Composer, full screen"
+						onPointerDown={(e) => {
+							// Click-off close: a press on the overlay itself (the backdrop
+							// around the editor card) collapses — presses inside the
+							// composer content target deeper nodes and are ignored.
+							if (e.target === e.currentTarget) {
+								e.preventDefault();
+								setComposerExpanded(false);
+							}
+						}}
 						onKeyDownCapture={(e) => {
 							if (e.key !== "Escape" || e.defaultPrevented) return;
-							const target = e.target as HTMLElement | null;
-							if (
-								target?.closest(
-									'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-								)
-							) {
-								return;
-							}
+							if (isNestedDialogTarget(e.target)) return;
 							e.preventDefault();
 							setComposerExpanded(false);
 						}}
@@ -1584,9 +1651,7 @@ export function EncryptTab({
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
-							{composerBody}
-						</div>
+						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
 					</div>,
 					document.body,
 				)}

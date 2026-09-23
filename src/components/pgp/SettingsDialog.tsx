@@ -19,6 +19,7 @@
 import { useMemo, useRef, useState } from "react";
 import {
 	ChevronsDown,
+	CircleHelp,
 	Download,
 	FileCog,
 	KeyRound,
@@ -68,6 +69,7 @@ const SECTIONS = [
 	{ id: "encryption", label: "Encryption", icon: ShieldHalf },
 	{ id: "security", label: "Security", icon: KeyRound },
 	{ id: "data", label: "Data", icon: Download },
+	{ id: "help", label: "Help", icon: CircleHelp },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -274,7 +276,7 @@ export function SettingsDialog({
 	onSettingsChange,
 	privateKey,
 	onEnableQuantumSeal,
-	onReplayWelcomeTour,
+	onReplayTour,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -285,9 +287,8 @@ export function SettingsDialog({
 	 *  generation). Resolves true when the key gained a quantum-seal pair.
 	 *  Optional for stories/tests that render the dialog standalone. */
 	onEnableQuantumSeal?: () => Promise<boolean>;
-	/** Re-shows the full-screen welcome tour (skipping must never be a
-	 *  dead end — round-12 human feedback). */
-	onReplayWelcomeTour?: () => void;
+	/** Opens the guided tour over the app (closes this dialog first). */
+	onReplayTour?: () => void;
 }) {
 	const [query, setQuery] = useState("");
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -302,9 +303,8 @@ export function SettingsDialog({
 			composer: !q || hits("composer editor markdown notion vscode auto sign signature"),
 			encryption: !q || hits("encryption compression zlib zip quantum sealed post pq ml-kem"),
 			security: !q || hits("security passphrase auto lock cache session"),
-			data:
-				!q ||
-				hits("data backup restore import export reset defaults welcome tour onboarding replay"),
+			data: !q || hits("data backup restore import export reset defaults"),
+			help: !q || hits("help tour onboarding walkthrough guided shortcuts"),
 		} as Record<SectionId, boolean>;
 	}, [q]);
 
@@ -530,36 +530,49 @@ export function SettingsDialog({
 								Data
 							</p>
 							<BackupRestoreSection privateKey={privateKey} />
+						</section>
+					)}
+
+					{visible.help && (
+						<section
+							data-settings-section="help"
+							className="scroll-mt-4 border-b py-2 last:border-b-0"
+						>
+							<p className="py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+								Help
+							</p>
 							<SettingRow
-								title="Replay welcome tour"
-								description="Skipped the first-run walkthrough? Bring the full-screen welcome back at any time."
+								title="Guided tour"
+								description="A short walkthrough of the app's main areas, shown once after key setup."
 							>
 								<Button
-									type="button"
 									variant="outline"
 									size="sm"
-									className="h-11 gap-1.5 px-3 text-xs sm:h-8 sm:text-[13px]"
-									onClick={() => {
-										onReplayWelcomeTour?.();
-										onOpenChange(false);
-									}}
+									onClick={onReplayTour}
+									disabled={!onReplayTour}
+									data-testid="replay-guided-tour"
+									className="h-11 gap-1.5 px-3 text-xs sm:h-8"
 								>
-									<RotateCcw aria-hidden="true" className="size-3.5" />
-									Show tour
+									<CircleHelp aria-hidden className="size-3.5" />
+									Replay tour
 								</Button>
 							</SettingRow>
 						</section>
 					)}
 
 					{/* Everything filtered out: say so instead of a blank pane. */}
-					{!visible.composer && !visible.encryption && !visible.security && !visible.data && (
-						<div className="py-10 text-center">
-							<p className="text-sm font-medium">No matching setting</p>
-							<p className="mt-1 text-xs text-muted-foreground">
-								Try “editor”, “compression”, “lock”, or “backup”.
-							</p>
-						</div>
-					)}
+					{!visible.composer &&
+						!visible.encryption &&
+						!visible.security &&
+						!visible.data &&
+						!visible.help && (
+							<div className="py-10 text-center">
+								<p className="text-sm font-medium">No matching setting</p>
+								<p className="mt-1 text-xs text-muted-foreground">
+									Try “editor”, “compression”, “lock”, or “backup”.
+								</p>
+							</div>
+						)}
 				</div>
 
 				<div className="border-t px-5 py-3">

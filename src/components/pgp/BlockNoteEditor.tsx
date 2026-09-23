@@ -20,14 +20,27 @@
 import {
 	BlockNoteSchema,
 	defaultBlockSpecs,
+	filterSuggestionItems,
 	type BlockNoteEditor as BlockNoteEditorType,
 } from "@blocknote/core";
 import { BlockNoteView } from "@blocknote/mantine";
-import { useCreateBlockNote } from "@blocknote/react";
+import {
+	SuggestionMenuController,
+	getDefaultReactSlashMenuItems,
+	useCreateBlockNote,
+	type DefaultReactSuggestionItem,
+} from "@blocknote/react";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
-import { useEffect, useRef } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type PointerEvent as ReactPointerEvent,
+} from "react";
 import { useTheme } from "next-themes";
+import { ListTree } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
@@ -45,6 +58,48 @@ void file;
 const schema = BlockNoteSchema.create({
 	blockSpecs: keptBlockSpecs,
 });
+
+/** "Insert table of contents" as a / command — TOC insertion lives in the
+ *  slash menu, not only in the composer utility row. Builds a GitHub-style
+ *  TOC from the document's headings and prepends it.
+ *
+ *  # Mr. AI Acting on s183173's Behalf */
+const insertTableOfContentsSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
+	title: "Table of contents",
+	subtext: "Insert a TOC from the document headings",
+	onItemClick: () => {
+		void (async () => {
+			const md = await editor.blocksToMarkdownLossy();
+			const rows: string[] = [];
+			for (const line of md.split("\n")) {
+				const match = /^(#{1,6})\s+(.*)$/.exec(line);
+				if (!match) continue;
+				const title = match[2].trim().replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+				const slug = title
+					.toLowerCase()
+					.replace(/[^\p{L}\p{N}\s-]/gu, "")
+					.replace(/\s+/g, "-");
+				rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${slug})`);
+			}
+			if (rows.length === 0) return;
+			const tocBlocks = await editor.tryParseMarkdownToBlocks(`${rows.join("\n")}\n`);
+			if (tocBlocks && tocBlocks.length > 0) {
+				editor.insertBlocks(tocBlocks, editor.document[0], "before");
+			}
+		})();
+	},
+	aliases: ["toc", "table of contents", "outline"],
+	group: "Advanced",
+	icon: <ListTree size={18} />,
+});
+
+/** Slash menu = the defaults + the TOC item. */
+function getSlashMenuItems(editor: Editor, query: string) {
+	return filterSuggestionItems(
+		[...getDefaultReactSlashMenuItems(editor), insertTableOfContentsSlashItem(editor)],
+		query,
+	);
+}
 
 type Editor = BlockNoteEditorType<
 	typeof schema.blockSchema,
@@ -253,6 +308,76 @@ export default function BlockNoteEditor({
 		})();
 	};
 
+	// Drag-select in the editor's left sidebar/margin ("drag in sidebars of
+	// the markdown editor to make a drag select box"): pressing in the
+	// gutter starts a selection rectangle; every block whose box intersects
+	// is selected by extending the browser's native selection from the
+	// first to the last intersecting block — copy/delete keep working.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	const [dragBox, setDragBox] = useState<{ x: number; y: number; w: number; h: number } | null>(
+		null,
+	);
+	const gutterDrag = useRef<{ startY: number; startX: number } | null>(null);
+
+	const blockElements = useCallback((): HTMLElement[] => {
+		const root = viewRef.current;
+		if (!root) return [];
+		return Array.from(root.querySelectorAll<HTMLElement>(".bn-block-content"));
+	}, []);
+
+	const selectRange = useCallback(
+		(startY: number, endY: number, startX: number, endX: number) => {
+			const blocks = blockElements();
+			if (blocks.length === 0) return;
+			const top = Math.min(startY, endY);
+			const bottom = Math.max(startY, endY);
+			const left = Math.min(startX, endX);
+			const right = Math.max(startX, endX);
+			const hit = blocks.filter((el) => {
+				const r = el.getBoundingClientRect();
+				return r.bottom >= top && r.top <= bottom && r.right >= left && r.left <= right;
+			});
+			if (hit.length === 0) return;
+			const first = hit[0];
+			const last = hit[hit.length - 1];
+			const range = document.createRange();
+			range.setStartBefore(first);
+			range.setEndAfter(last);
+			const sel = window.getSelection();
+			sel?.removeAllRanges();
+			sel?.addRange(range);
+		},
+		[blockElements],
+	);
+
+	const onGutterPointerDown = useCallback(
+		(e: ReactPointerEvent<HTMLDivElement>) => {
+			if (e.button !== 0) return;
+			e.preventDefault();
+			gutterDrag.current = { startY: e.clientY, startX: e.clientX };
+			const move = (ev: PointerEvent) => {
+				const d = gutterDrag.current;
+				if (!d) return;
+				setDragBox({
+					x: Math.min(d.startX, ev.clientX),
+					y: Math.min(d.startY, ev.clientY),
+					w: Math.abs(ev.clientX - d.startX),
+					h: Math.abs(ev.clientY - d.startY),
+				});
+				selectRange(d.startY, ev.clientY, d.startX, ev.clientX);
+			};
+			const up = () => {
+				gutterDrag.current = null;
+				setDragBox(null);
+				window.removeEventListener("pointermove", move);
+				window.removeEventListener("pointerup", up);
+			};
+			window.addEventListener("pointermove", move);
+			window.addEventListener("pointerup", up);
+		},
+		[selectRange],
+	);
 	const editorShell =
 		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
@@ -268,11 +393,31 @@ export default function BlockNoteEditor({
 					: `${editorShell} min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 			}
 		>
+			{/* Left-margin drag-select surface: sits beside the blocks, never on
+			    top of them (pointer-events only on the 24px strip). */}
+			<div
+				aria-hidden="true"
+				onPointerDown={onGutterPointerDown}
+				className="absolute inset-y-0 left-0 z-10 w-6 cursor-default select-none"
+			/>
+			{dragBox && (
+				<div
+					aria-hidden="true"
+					className="pointer-events-none fixed z-40 rounded border border-[#0055dc]/60 bg-[#0055dc]/10 dark:border-[#5e94ff]/60 dark:bg-[#5e94ff]/10"
+					style={{ left: dragBox.x, top: dragBox.y, width: dragBox.w, height: dragBox.h }}
+				/>
+			)}
 			<BlockNoteView
 				editor={editor}
 				theme={resolvedTheme === "dark" ? "dark" : "light"}
+				slashMenu={false}
 				aria-label="Message (markdown)"
-			/>
+			>
+				<SuggestionMenuController
+					triggerCharacter="/"
+					getItems={async (query) => getSlashMenuItems(editor, query)}
+				/>
+			</BlockNoteView>
 		</div>
 	);
 }

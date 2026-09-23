@@ -19,7 +19,8 @@ import {
 	searchAllKeyserversClient,
 	type KeySearchResult,
 } from "@/lib/pgp/keybase";
-import { fetchKeysFromAllSources } from "@/lib/pgp/key-lookup";
+import { fetchKeysFromAllSources, registrySuggestResults } from "@/lib/pgp/key-lookup";
+import { registryLookup } from "@/lib/registry/client";
 import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
 import { PROXIES, type Recipient } from "@/components/pgp/contracts";
@@ -168,6 +169,14 @@ export function RecipientPicker({
 	// # Mr. AI Acting on s183173's Behalf
 	const visibleSuggestions = input.trim() === "" ? [] : suggestions;
 
+	/** Query the Encryptor Registry for email / name / 40-hex / 16-hex queries and
+	 *  map live keys to suggestion results — the SHARED implementation lives
+	 *  in key-lookup.ts (owner DRY requirement: recipient search and verify's
+	 *  key search must not drift). Public armor comes back with the lookup,
+	 *  so the add path needs no second fetch; revoked keys are never
+	 *  suggested. Non-matching query shapes resolve to []. */
+	const registrySuggest = useCallback((q: string) => registrySuggestResults(q), []);
+
 	// Debounced multi-source search
 	useEffect(() => {
 		if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -179,8 +188,23 @@ export function RecipientPicker({
 			}
 			setBusy(true);
 			try {
-				const results = await searchAllKeyserversClient(q, PROXIES.searchAllProxy);
-				setSuggestions(results);
+				// Encryptor Registry results first, then the classic keyservers —
+				// each source fails independently so one outage never blanks the
+				// dropdown.
+				const [registryResults, keyserverResults] = await Promise.all([
+					registrySuggest(q).catch(() => [] as KeySearchResult[]),
+					searchAllKeyserversClient(q, PROXIES.searchAllProxy).catch(() => [] as KeySearchResult[]),
+				]);
+				// Dedupe by fingerprint (registry entries win ties).
+				const seen = new Set<string>();
+				const merged: KeySearchResult[] = [];
+				for (const r of [...registryResults, ...keyserverResults]) {
+					const key = r.fingerprint || `nb-${r.source}-${r.label}`;
+					if (seen.has(key)) continue;
+					seen.add(key);
+					merged.push(r);
+				}
+				setSuggestions(merged);
 				setShowSuggestions(true);
 			} catch {
 				setSuggestions([]);
@@ -209,7 +233,56 @@ export function RecipientPicker({
 			setError(null);
 			setAdding(true);
 			try {
-				if (result.source === "keybase" && result.username) {
+				if (result.source === "encryptor") {
+					// The registry lookup already returned the public armor.
+					let armoredKey = result.armored;
+					if (!armoredKey && result.fingerprint) {
+						const again = await registryLookup({ fingerprint: result.fingerprint });
+						armoredKey = again.find((k) => !k.revoked)?.armored;
+					}
+					if (!armoredKey || !result.fingerprint) {
+						setError("Could not fetch that key from the Encryptor Registry.");
+						return;
+					}
+					// Narrowed once (TS cannot keep narrowing an optional property
+					// inside the setRecipients closure below).
+					const fpr = result.fingerprint;
+					if (recipients.some((p) => p.fingerprint === fpr)) {
+						setInput("");
+						setSuggestions([]);
+						setShowSuggestions(false);
+						return;
+					}
+					// Expiry + algorithm backfill — the same describe-once pattern as
+					// the keyserver path (never blocks the add on failure).
+					let expiresAt: number | null = null;
+					let algorithm = "Unknown";
+					try {
+						const described = await validateArmoredKey(armoredKey);
+						const exp = described.info?.expirationTime;
+						if (exp instanceof Date && Number.isFinite(exp.getTime())) {
+							expiresAt = exp.getTime();
+						}
+						if (described.info?.algorithm) {
+							algorithm = described.info.algorithm;
+						}
+					} catch {
+						expiresAt = null;
+					}
+					setRecipients((prev) => [
+						...prev,
+						{
+							source: "local",
+							label: result.label,
+							armored: armoredKey,
+							fingerprint: fpr,
+							keyID: result.keyID ?? fpr.slice(-16),
+							algorithm,
+							expiresAt,
+						},
+					]);
+					rememberRecentRecipient({ label: result.label, fingerprint: fpr });
+				} else if (result.source === "keybase" && result.username) {
 					// Fetch the full public key from Keybase
 					const r = await lookupKeybaseUsersClient([result.username], PROXIES.keybaseProxy);
 					if (r.found.length === 0) {
@@ -401,6 +474,7 @@ export function RecipientPicker({
 	);
 
 	const sourceColors: Record<string, string> = {
+		encryptor: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400",
 		keybase: `bg-[#0055dc]/10 ${ACCENT_TEXT}`,
 		ubuntu: "bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400",
 		"openpgp.org": "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-400",
@@ -514,12 +588,12 @@ export function RecipientPicker({
 					onFocus={() => visibleSuggestions.length > 0 && setShowSuggestions(true)}
 					placeholder={
 						recipients.length === 0
-							? "Search by name, email, or Keybase username…"
+							? "Search by name, email, Keybase username, or fingerprint…"
 							: "Add another recipient…"
 					}
 					className="min-h-11 pr-8 sm:min-h-0 sm:py-2"
 					disabled={adding}
-					aria-label="Search recipients by name, email, or Keybase username"
+					aria-label="Search recipients by name, email, Keybase username, or fingerprint"
 					autoComplete="off"
 				/>
 				{busy && (
@@ -559,8 +633,8 @@ export function RecipientPicker({
 										}`}
 									>
 										{/* No avatar here — person photos/initials in the key
-                        picker were noise (and a privacy leak of profile
-                        pictures); results are identified by their labels. */}
+			picker were noise (and a privacy leak of profile
+			pictures); results are identified by their labels. */}
 										<div className="min-w-0 flex-1">
 											<div className="truncate font-medium">{s.label}</div>
 											{s.fullName && s.username && (

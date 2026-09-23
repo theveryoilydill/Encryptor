@@ -19,7 +19,11 @@ export const LIMITS = {
 	registryMaxEmails: 10,
 	registryMaxLookupResults: 10,
 	registryMaxReasonChars: 200,
-	registryMaxBodyBytes: 100 * 1024,
+	registryMaxBodyBytes: 192 * 1024,
+	/** Escrowed ENCRYPTED private keys (passphrase-protected backups). */
+	registryMaxPrivateArmorBytes: 64 * 1024,
+	registryPrivateKeyLimit: 30,
+	registryPrivateKeyWindowSec: 3600,
 	/** Fixed-window rate limits per client IP (window = seconds). */
 	registryPublishLimit: 5,
 	registryPublishWindowSec: 3600,
@@ -53,6 +57,8 @@ export const STORAGE_KEYS = {
 	/** Full-screen first-run onboarding dismissal ("skip the entire thing").
 	 *  Persisted so a user who skipped the takeover is never nagged again. */
 	onboardingDismissed: "encryptor.onboarding-dismissed.v1",
+	/** Coach-mark guided tour completion flag. */
+	tourDone: "encryptor.tour.done.v1",
 } as const;
 
 /** Shared Keybase username grammar (2–15 chars: a-z, 0-9, _). */

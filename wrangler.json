@@ -29,6 +29,7 @@
 			"persist": true
 		}
 	},
+	"previews": {},
 	"env": {
 		"preview": {
 			"name": "encryptor-preview",

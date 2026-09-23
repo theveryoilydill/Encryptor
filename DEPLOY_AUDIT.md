@@ -2,7 +2,7 @@
 
 <!-- Mr. AI Acting on s183173's Behalf -->
 
-Status: **root cause corrected after dashboard screenshot (second pass); repo-side hardening applied in this PR.**
+Status: **root cause corrected after dashboard screenshot (second pass); 2026-09-23 preview-build failure analyzed and `previews` block added (third pass); repo-side hardening applied in this PR.**
 
 ## Correction vs first pass
 
@@ -19,7 +19,9 @@ the production worker `encryptor`. The command does not depend on the branch, so
 branch build — `develop` merges, PR branches, even dependabot branches — promotes itself
 to the worker's **Active (production) Deployment** instead of saving as a preview version.
 Per Cloudflare's docs, builds only save as versions (without promotion) when the build
-runs `wrangler versions upload`.
+runs `wrangler versions upload`. (Superseded 2026-09-23: Cloudflare's newer Workers
+Previews workflow — `npx wrangler preview` — is the now-recommended non-promoting path;
+see the follow-up section below.)
 
 ## Evidence
 
@@ -68,9 +70,15 @@ runs `wrangler versions upload`.
 ### Dashboard (owner, ~1 minute — the actual kill switch)
 
 1. Workers & Pages → `encryptor` → Settings → Builds → **Previews Base** tab.
-2. Make sure the command non-production builds run is **`bunx wrangler versions upload`**
-   (not `wrangler deploy`). Then only `main` builds promote to Active Deployment; all
-   other branches produce versions/previews that never receive production traffic.
+2. Make sure the command non-production builds run is **`npx wrangler preview`**
+   (not `wrangler deploy`). Every non-`main` branch then builds into an isolated branch
+   Preview and never receives production traffic.
+   - This supersedes the earlier `wrangler versions upload` suggestion in this document:
+     per the compare-workflows docs (updated 2026-09-22), Version URLs run with
+     **production resources** and must not be used for branch/PR testing.
+   - `npx wrangler preview` requires a top-level `previews` block in `wrangler.json`;
+     this PR adds it (see follow-up below). Without it the deploy step fails with
+     "Your Wrangler configuration is missing a `previews` block" (wrangler 4.135).
 3. Leave the Production tab's deploy command as `bunx wrangler deploy`.
 
 ### Repo-side hardening (applied in this PR)
@@ -84,6 +92,10 @@ runs `wrangler versions upload`.
   `wrangler deploy --dry-run` (top-level still resolves to REGISTRY_DB + ASSETS).
   Note: registry endpoints will error on preview until a dedicated preview D1 is
   deliberately wired into `env.preview`.
+- `wrangler.json`: top-level `"previews": {}` block — makes the dashboard's
+  `npx wrangler preview` deploy command work for branch builds. An empty block is the
+  documented pattern, and Previews do not inherit production bindings, so branch
+  previews get no `REGISTRY_DB` (isolation by default).
 - `package.json`: new `deploy:preview` script —
   `next build && opennextjs-cloudflare build --skipNextBuild && bunx wrangler deploy --env preview` —
   so manual preview deploys have an explicit, safe target instead of reusing
@@ -91,12 +103,36 @@ runs `wrangler versions upload`.
 - `.github/dependabot.yml`: `target-branch: "develop"` — Dependabot PRs were the odd ones
   out (e.g. PR #41 targeted `main` while the team flow merges everything into `develop`).
 
+## Follow-up (2026-09-23): first Previews build failed → `previews` block added
+
+After the Previews Base tab went live, the Workers Builds run for `6336b07` (this PR's
+head) failed at the deploy step — build `df473874-0c9f-4288-9b6a-a66604995742`
+(check-run started 2026-09-23 03:49:22 UTC):
+
+- Build command succeeded: `bun run build` → Next.js 16.3.5 + OpenNext 1.20.6, worker
+  bundled to `.open-next/worker.js`.
+- Deploy command `npx wrangler preview` (wrangler 4.135.0) aborted with:
+  `✘ [ERROR] Your Wrangler configuration is missing a 'previews' block to run this command.`
+
+The failure is fail-closed: nothing was deployed and production was untouched. Fix:
+top-level `"previews": {}` added to `wrangler.json` in this PR. Per the Previews
+configuration docs, the block is required but may be empty, and **Previews do not
+inherit production settings** — so branch previews get no `REGISTRY_DB` binding and
+cannot touch the production registry D1. Registry API routes will error on preview URLs
+until a staging D1 is deliberately wired into `previews.d1_databases`.
+
+Wrangler also warned "found named environments in your configuration" — expected since
+this PR adds `env.preview`; without `--env`, `wrangler preview` targets the top-level
+Worker, which is the standard Previews setup (production settings top-level, preview
+settings in the `previews` block).
+
 ## Recommended follow-ups
 
 - Retire or repair `.github/workflows/nextjs.yml` — dead GitHub Pages pipeline that fails
   on every `main` push.
-- Optionally create `encryptor-registry-preview` (D1) and bind it in `env.preview` when
-  registry features are needed on preview deploys.
+- Optionally create `encryptor-registry-preview` (D1) and bind it when registry features
+  are needed outside production: `previews.d1_databases` for dashboard branch Previews,
+  and/or `env.preview.d1_databases` for manual `bun run deploy:preview` deploys.
 - Consider branch protection on `main` and `develop` so only PR merges land there.
 - Merge-order note: merging this PR into `develop` will itself trigger a build — with the
   dashboard fix from above applied first, that build will no longer promote to production.

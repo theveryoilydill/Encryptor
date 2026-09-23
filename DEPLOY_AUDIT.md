@@ -32,17 +32,17 @@ runs `wrangler versions upload`.
    — the dashboard URLs always land under `/production/builds/`, including for branches
    that should never touch production:
 
-   | Commit | Branch | Context | WB build started (UTC) |
-   |---|---|---|---|
-   | `c1a0f27` | develop | PR #54 merge | 2026-09-22 02:03:19 |
-   | `e80ecbe` | develop | PR #53 merge | 2026-09-22 02:02:18 |
-   | `ddd6a61` | develop | PR #52 merge | 2026-09-22 02:01:17 |
-   | `6ecc155` | develop | PR #48 merge | 2026-09-22 00:52:55 |
-   | `0ff3e13` | ai/postquantum-algos | open PR #47 | 2026-09-16 04:04:49 |
-   | `d3fa4e5` | ai/qol-features | open PR #46 | 2026-09-16 04:38:31 |
-   | `04502ca` | dependabot/npm_and_yarn/recharts | open PR #41 | 2026-09-18 22:08:17 |
-   | `9ed5d88` | dependabot/npm_and_yarn/oxfmt | open PR #38 | 2026-09-18 22:06:42 |
-   | `9ee690d` | main | direct push | 2026-09-12 22:07:46 |
+   | Commit    | Branch                           | Context      | WB build started (UTC) |
+   | --------- | -------------------------------- | ------------ | ---------------------- |
+   | `c1a0f27` | develop                          | PR #54 merge | 2026-09-22 02:03:19    |
+   | `e80ecbe` | develop                          | PR #53 merge | 2026-09-22 02:02:18    |
+   | `ddd6a61` | develop                          | PR #52 merge | 2026-09-22 02:01:17    |
+   | `6ecc155` | develop                          | PR #48 merge | 2026-09-22 00:52:55    |
+   | `0ff3e13` | ai/postquantum-algos             | open PR #47  | 2026-09-16 04:04:49    |
+   | `d3fa4e5` | ai/qol-features                  | open PR #46  | 2026-09-16 04:38:31    |
+   | `04502ca` | dependabot/npm_and_yarn/recharts | open PR #41  | 2026-09-18 22:08:17    |
+   | `9ed5d88` | dependabot/npm_and_yarn/oxfmt    | open PR #38  | 2026-09-18 22:06:42    |
+   | `9ee690d` | main                             | direct push  | 2026-09-12 22:07:46    |
 
    Every merge into `develop` produced a build ~1 minute after the merge.
 

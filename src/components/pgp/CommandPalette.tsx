@@ -55,6 +55,8 @@ export function CommandPalette({
 	onOpenShortcuts,
 	onReplayTour,
 	onSelfTest,
+	passphraseCached,
+	onLockNow,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -66,6 +68,12 @@ export function CommandPalette({
 	onOpenShortcuts: () => void;
 	onReplayTour: () => void;
 	onSelfTest: () => void;
+	/** Whether a session passphrase is currently cached in memory — the lock
+	 *  action only exists while there is something to lock. */
+	passphraseCached: boolean;
+	/** Forget the cached session passphrase now (same handler the "Your key"
+	 *  dialog uses — it already toasts confirmation). */
+	onLockNow: () => void;
 }) {
 	const { theme, setTheme } = useTheme();
 	const current = theme === "light" || theme === "dark" ? theme : "system";
@@ -157,6 +165,15 @@ export function CommandPalette({
 						<FlaskConical aria-hidden />
 						Crypto self-test
 					</CommandItem>
+					{passphraseCached && (
+						<CommandItem
+							value="lock session passphrase forget lock now security"
+							onSelect={run(onLockNow)}
+						>
+							<Lock aria-hidden />
+							Lock session passphrase now
+						</CommandItem>
+					)}
 				</CommandGroup>
 			</CommandList>
 		</CommandDialog>

@@ -1,13 +1,19 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { FileSignature } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
+import {
+	DraftRestoredNote,
+	ErrorBanner,
+	InputSizeCounter,
+	OutputBlock,
+} from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
+import { clearDraft, loadDraft, saveDraft } from "@/lib/pgp/drafts";
 import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import { signMessage } from "@/lib/pgp/pgp";
@@ -22,11 +28,30 @@ export function SignTab({
 	/** Which composer engine to use (same setting as the Encrypt tab). */
 	markdownEditor: MarkdownEditorKind;
 }) {
-	const [plaintext, setPlaintext] = useState("");
+	// Draft resilience (same pattern as the Encrypt tab — see
+	// lib/pgp/drafts.ts). Signing intentionally does NOT clear the
+	// composer on success, so the draft simply mirrors it: saved while
+	// typing, cleared when the text is emptied or discarded.
+	const [initialDraft] = useState(() => loadDraft("sign"));
+	const [draftRestored, setDraftRestored] = useState(() => initialDraft !== null);
+	const [plaintext, setPlaintext] = useState(initialDraft?.text ?? "");
 	const [detached, setDetached] = useState(false);
 	const [output, setOutput] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+
+	// Debounced draft persistence (one write per typing pause).
+	useEffect(() => {
+		const t = setTimeout(() => {
+			if (plaintext.trim() === "") {
+				clearDraft("sign");
+				setDraftRestored(false);
+			} else {
+				saveDraft("sign", plaintext);
+			}
+		}, 600);
+		return () => clearTimeout(t);
+	}, [plaintext]);
 
 	const handleSign = useCallback(async () => {
 		setError(null);
@@ -94,9 +119,9 @@ export function SignTab({
 					</div>
 				)}
 				{/* Markdown editor for signing ("markdown for signing too") — same
-				    two engines as the Encrypt composer. Signing has no attachment
-				    pipeline, so image registration intentionally fails closed:
-				    pasted images stay inline as data URLs inside the signed text. */}
+                                    two engines as the Encrypt composer. Signing has no attachment
+                                    pipeline, so image registration intentionally fails closed:
+                                    pasted images stay inline as data URLs inside the signed text. */}
 				<MessageEditor
 					value={plaintext}
 					onChange={setPlaintext}
@@ -107,6 +132,16 @@ export function SignTab({
 					editorKind={markdownEditor}
 					placeholder="Paste or write the text you want to sign."
 				/>
+				{/* Draft-resilience note — only after an actual restore. */}
+				{draftRestored && (
+					<DraftRestoredNote
+						onDiscard={() => {
+							clearDraft("sign");
+							setDraftRestored(false);
+							setPlaintext("");
+						}}
+					/>
+				)}
 				{/* Char/word/size counter — parity with the Encrypt tab counter. */}
 				<InputSizeCounter text={plaintext} />
 			</div>

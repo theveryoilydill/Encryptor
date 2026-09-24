@@ -623,3 +623,53 @@
 .dark .bn-mobile-formatting-toolbar {
 	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.4);
 }
+
+/* Print (round 4): the Decrypt result's "Print" button clones the rendered
+   message into a body-level #print-mount and swaps html.printing on for the
+   duration. In print, ONLY the clone survives — the app chrome, buttons,
+   and armor textareas all drop out — and the clone prints as a clean,
+   paper-friendly document regardless of the active theme (the handler also
+   strips the dark class while printing, so tokens resolve light). */
+@media print {
+	html.printing body > *:not(#print-mount) {
+		display: none !important;
+	}
+	html.printing,
+	html.printing body {
+		background: #fff !important;
+	}
+	#print-mount {
+		display: block !important;
+		color: #111 !important;
+		font-size: 12px;
+		line-height: 1.55;
+	}
+	#print-mount .print-header {
+		margin-bottom: 10px;
+		padding-bottom: 6px;
+		border-bottom: 1px solid #ddd;
+		font-size: 10px;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #555;
+	}
+	#print-mount .bg-card {
+		background: #fff !important;
+	}
+	#print-mount [class*="border"] {
+		border-color: #ddd !important;
+	}
+	#print-mount code,
+	#print-mount pre {
+		background: #f5f5f5 !important;
+		color: #111 !important;
+	}
+	#print-mount img {
+		max-width: 100% !important;
+	}
+	/* The click-to-zoom wrapper must vanish for layout in print so images
+	   flow exactly like plain inline images. */
+	#print-mount button {
+		display: contents;
+	}
+}

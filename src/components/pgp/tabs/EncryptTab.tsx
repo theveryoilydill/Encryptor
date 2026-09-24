@@ -22,6 +22,7 @@ import {
 	Minimize2,
 	Paperclip,
 	Pencil,
+	Search,
 	ShieldCheck,
 	ShieldX,
 	Sparkles,
@@ -771,6 +772,22 @@ export function EncryptTab({
 	useEffect(() => {
 		setSealedHistory(loadSealedHistory());
 	}, []);
+
+	// Vault search (round 23): a client-side filter over the entry metadata
+	// people actually remember — recipient labels, the sticky note, the
+	// signer label. The armor/fingerprint bytes are NOT searched: the note
+	// field is the intended place for "what was this?" context.
+	const [vaultQuery, setVaultQuery] = useState("");
+	const filteredHistory = useMemo(() => {
+		const q = vaultQuery.trim().toLowerCase();
+		if (!q) return sealedHistory;
+		return sealedHistory.filter((e) => {
+			const haystack = [e.note ?? "", e.signer ?? "", ...(e.labels ?? [])]
+				.join(" \n ")
+				.toLowerCase();
+			return haystack.includes(q);
+		});
+	}, [sealedHistory, vaultQuery]);
 
 	// Vault summary-strip totals (round 16): computed over the (≤8) entries
 	// with a cheap useMemo — combined armor bytes (classical + PQ copies)
@@ -2116,235 +2133,278 @@ export function EncryptTab({
 										</Button>
 									</span>
 								</div>
-								<ul className="divide-y divide-border border-t border-border">
-									{sealedHistory.map((entry) => (
-										<li
-											key={entry.id}
-											className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
+								{/* Vault search row (round 23): renders with entries, under the
+                                                                    summary strip. Filters by recipient labels / note / signer;
+                                                                    shows an N-of-M tally while active. */}
+								<div className="flex items-center gap-2 px-4 pb-2">
+									<div className="relative min-w-0 flex-1">
+										<Search
+											aria-hidden="true"
+											className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+										/>
+										<Input
+											value={vaultQuery}
+											onChange={(e) => setVaultQuery(e.target.value)}
+											onKeyDown={(e) => {
+												if (e.key === "Escape") {
+													e.preventDefault();
+													setVaultQuery("");
+												}
+											}}
+											placeholder="Filter by recipient, note, or signer"
+											aria-label="Filter vault entries"
+											className="h-8 bg-background pl-8 text-xs dark:bg-input/20"
+										/>
+									</div>
+									{vaultQuery.trim() !== "" && (
+										<span
+											className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+											aria-live="polite"
 										>
-											{/* PQ edge accent (round 14): a violet gradient strip on the left
+											{filteredHistory.length} of {sealedHistory.length}
+										</span>
+									)}
+								</div>
+								<ul className="divide-y divide-border border-t border-border">
+									{filteredHistory.length === 0 && vaultQuery.trim() !== "" ? (
+										<li className="px-4 py-5 text-center">
+											<p className="text-xs text-muted-foreground">
+												No vault entries match “{vaultQuery.trim()}”. The filter covers recipient
+												labels, notes, and the signer — not the ciphertext.
+											</p>
+										</li>
+									) : (
+										filteredHistory.map((entry) => (
+											<li
+												key={entry.id}
+												className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
+											>
+												{/* PQ edge accent (round 14): a violet gradient strip on the left
                                                                                     edge mirrors the PQ chip/badge color language — rows carrying a
                                                                                     quantum-sealed copy are spottable at a glance. */}
-											{entry.sealedArmor && (
-												<span
-													aria-hidden="true"
-													className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
-												/>
-											)}
-											<time
-												dateTime={new Date(entry.at).toISOString()}
-												title={formatHistoryTime(entry.at)}
-												className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
-											>
-												{formatRelativeHistoryTime(entry.at)}
-											</time>
-											<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-												<span
-													title={
-														entry.labels && entry.labels.length > 0
-															? `Sealed to: ${entry.labels.join(", ")}`
-															: undefined
-													}
-													className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
+												{entry.sealedArmor && (
+													<span
+														aria-hidden="true"
+														className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
+													/>
+												)}
+												<time
+													dateTime={new Date(entry.at).toISOString()}
+													title={formatHistoryTime(entry.at)}
+													className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
 												>
-													{entry.keys} {entry.keys === 1 ? "key" : "keys"}
-												</span>
-												{entry.signed &&
-													(entry.signer ? (
-														<span
-															title={
-																entry.signerFp
-																	? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
-																	: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
-															}
-															className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
-														>
-															signed by {entry.signer}
-														</span>
-													) : (
-														<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-															signed
-														</span>
-													))}
-												{entry.pqSealed && (
-													<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-														PQ
+													{formatRelativeHistoryTime(entry.at)}
+												</time>
+												<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+													<span
+														title={
+															entry.labels && entry.labels.length > 0
+																? `Sealed to: ${entry.labels.join(", ")}`
+																: undefined
+														}
+														className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
+													>
+														{entry.keys} {entry.keys === 1 ? "key" : "keys"}
 													</span>
-												)}
-												{entry.files !== undefined && entry.files > 0 && (
-													<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
-														<Paperclip aria-hidden="true" className="size-3" />
-														{entry.files} {entry.files === 1 ? "file" : "files"}
+													{entry.signed &&
+														(entry.signer ? (
+															<span
+																title={
+																	entry.signerFp
+																		? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
+																		: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
+																}
+																className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
+															>
+																signed by {entry.signer}
+															</span>
+														) : (
+															<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+																signed
+															</span>
+														))}
+													{entry.pqSealed && (
+														<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+															PQ
+														</span>
+													)}
+													{entry.files !== undefined && entry.files > 0 && (
+														<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+															<Paperclip aria-hidden="true" className="size-3" />
+															{entry.files} {entry.files === 1 ? "file" : "files"}
+														</span>
+													)}
+													<HealthVerdictChip verdict={healthMap[entry.id]} />
+													<span className="font-mono text-[10px] text-muted-foreground">
+														~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 													</span>
-												)}
-												<HealthVerdictChip verdict={healthMap[entry.id]} />
-												<span className="font-mono text-[10px] text-muted-foreground">
-													~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
 												</span>
-											</span>
-											{/* User note line (round 22): basis-full drops it onto its own
+												{/* User note line (round 22): basis-full drops it onto its own
                                                                                     row under the auto chips. Annotation voice — amber accent +
                                                                                     italic — deliberately distinct from the seal-time chip family.
                                                                                     Clicking the note re-opens the editor. */}
-											{noteEditingId !== entry.id && entry.note && (
-												<button
-													type="button"
-													onClick={() => {
-														setNoteEditingId(entry.id);
-														setNoteDraft(entry.note ?? "");
-													}}
-													aria-label={`Edit the note on this entry: ${entry.note}`}
-													className="flex w-full basis-full cursor-pointer items-start gap-1.5 border-l-2 border-amber-400/60 pl-2 text-left"
-												>
-													<StickyNote
-														aria-hidden="true"
-														className="mt-0.5 size-3.5 shrink-0 text-amber-500 dark:text-amber-400/80"
-													/>
-													<span className="text-[11px] italic leading-snug text-muted-foreground">
-														{entry.note}
-													</span>
-												</button>
-											)}
-											{noteEditingId === entry.id && (
-												<span className="flex w-full basis-full flex-wrap items-center gap-1.5">
-													<Input
-														value={noteDraft}
-														onChange={(e) => setNoteDraft(e.target.value)}
-														onKeyDown={(e) => {
-															if (e.key === "Enter") {
-																e.preventDefault();
-																handleSaveNote(entry.id);
-															} else if (e.key === "Escape") {
-																e.preventDefault();
+												{noteEditingId !== entry.id && entry.note && (
+													<button
+														type="button"
+														onClick={() => {
+															setNoteEditingId(entry.id);
+															setNoteDraft(entry.note ?? "");
+														}}
+														aria-label={`Edit the note on this entry: ${entry.note}`}
+														className="flex w-full basis-full cursor-pointer items-start gap-1.5 border-l-2 border-amber-400/60 pl-2 text-left"
+													>
+														<StickyNote
+															aria-hidden="true"
+															className="mt-0.5 size-3.5 shrink-0 text-amber-500 dark:text-amber-400/80"
+														/>
+														<span className="text-[11px] italic leading-snug text-muted-foreground">
+															{entry.note}
+														</span>
+													</button>
+												)}
+												{noteEditingId === entry.id && (
+													<span className="flex w-full basis-full flex-wrap items-center gap-1.5">
+														<Input
+															value={noteDraft}
+															onChange={(e) => setNoteDraft(e.target.value)}
+															onKeyDown={(e) => {
+																if (e.key === "Enter") {
+																	e.preventDefault();
+																	handleSaveNote(entry.id);
+																} else if (e.key === "Escape") {
+																	e.preventDefault();
+																	setNoteEditingId(null);
+																	setNoteDraft("");
+																}
+															}}
+															maxLength={MAX_SEALED_NOTE_CHARS}
+															placeholder="e.g. Contract for Alice — emailed 9/23"
+															aria-label="Vault entry note"
+															className="h-8 min-w-0 flex-1 bg-background text-xs dark:bg-input/20"
+															autoFocus
+														/>
+														<Button
+															variant="outline"
+															size="sm"
+															onClick={() => handleSaveNote(entry.id)}
+															className="h-8 px-2.5 text-xs"
+														>
+															Save
+														</Button>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={() => {
 																setNoteEditingId(null);
 																setNoteDraft("");
-															}
-														}}
-														maxLength={MAX_SEALED_NOTE_CHARS}
-														placeholder="e.g. Contract for Alice — emailed 9/23"
-														aria-label="Vault entry note"
-														className="h-8 min-w-0 flex-1 bg-background text-xs dark:bg-input/20"
-														autoFocus
-													/>
-													<Button
-														variant="outline"
-														size="sm"
-														onClick={() => handleSaveNote(entry.id)}
-														className="h-8 px-2.5 text-xs"
-													>
-														Save
-													</Button>
+															}}
+															className="h-8 px-2.5 text-xs"
+														>
+															Cancel
+														</Button>
+													</span>
+												)}
+												{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
+                                                                                    actions the group must wrap at narrow widths — nowrap plus the
+                                                                                    section's overflow-hidden silently clipped the trailing
+                                                                                    txt/remove buttons at 390 px. */}
+												<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
 													<Button
 														variant="ghost"
 														size="sm"
 														onClick={() => {
-															setNoteEditingId(null);
-															setNoteDraft("");
+															setOutput(entry.armor);
+															setSealedCopy(entry.sealedArmor ?? "");
+															setOutputMeta({
+																keys: entry.keys,
+																signed: entry.signed,
+																labels: entry.labels ?? [],
+																signer: entry.signer,
+																signerFp: entry.signerFp,
+																files: entry.files,
+															});
+															setError(null);
+															toast({
+																title: "Sealed output restored",
+																description:
+																	"The ciphertext is back in the output box — copy or download it from there.",
+															});
 														}}
-														className="h-8 px-2.5 text-xs"
+														className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
 													>
-														Cancel
+														<History aria-hidden="true" className="size-3.5" />
+														Restore
+													</Button>
+													<Button
+														variant="ghost"
+														size="sm"
+														onClick={() =>
+															onOpenInDecrypt?.({
+																armor: entry.sealedArmor ?? entry.armor,
+																seq: Date.now(),
+															})
+														}
+														title={
+															healthMap[entry.id] === "ok"
+																? "Verified decryptable by the last health check, so this is one click to plaintext."
+																: "Opens this sealed output in the Decrypt tab — auto-decrypts with your key."
+														}
+														className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
+													>
+														<ArrowRight aria-hidden="true" className="size-3.5" />
+														{healthMap[entry.id] === "ok" && (
+															// Emerald glow-dot (round 19): this entry passed the last
+															// health check, so the deep-link is one click to plaintext.
+															<span
+																aria-hidden="true"
+																className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_4px] shadow-emerald-500/60"
+															/>
+														)}
+														<span className="whitespace-nowrap">Open in Decrypt</span>
+													</Button>
+													<CopyButton
+														text={entry.armor}
+														label="Copy"
+														ariaLabel="Copy sealed output to clipboard"
+													/>
+													{entry.sealedArmor && (
+														<SealedCopyButton sealedArmor={entry.sealedArmor} />
+													)}
+													<DownloadButton text={entry.armor} title="sealed output" />
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() => {
+															setNoteEditingId(noteEditingId === entry.id ? null : entry.id);
+															setNoteDraft(entry.note ?? "");
+														}}
+														aria-label={
+															entry.note
+																? `Edit the note on this entry: ${entry.note}`
+																: "Add a note to this vault entry"
+														}
+														title={entry.note ? "Edit note" : "Add note"}
+														className={`size-7 ${
+															noteEditingId === entry.id
+																? "text-amber-600 dark:text-amber-400"
+																: "text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400"
+														}`}
+													>
+														<Pencil aria-hidden="true" className="size-3.5" />
+													</Button>
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
+														aria-label="Remove this entry from the sealed-output history"
+														className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
+													>
+														<X aria-hidden="true" className="size-3.5" />
 													</Button>
 												</span>
-											)}
-											{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
-                                                                                    actions the group must wrap at narrow widths — nowrap plus the
-                                                                                    section's overflow-hidden silently clipped the trailing
-                                                                                    txt/remove buttons at 390 px. */}
-											<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() => {
-														setOutput(entry.armor);
-														setSealedCopy(entry.sealedArmor ?? "");
-														setOutputMeta({
-															keys: entry.keys,
-															signed: entry.signed,
-															labels: entry.labels ?? [],
-															signer: entry.signer,
-															signerFp: entry.signerFp,
-															files: entry.files,
-														});
-														setError(null);
-														toast({
-															title: "Sealed output restored",
-															description:
-																"The ciphertext is back in the output box — copy or download it from there.",
-														});
-													}}
-													className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
-												>
-													<History aria-hidden="true" className="size-3.5" />
-													Restore
-												</Button>
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() =>
-														onOpenInDecrypt?.({
-															armor: entry.sealedArmor ?? entry.armor,
-															seq: Date.now(),
-														})
-													}
-													title={
-														healthMap[entry.id] === "ok"
-															? "Verified decryptable by the last health check, so this is one click to plaintext."
-															: "Opens this sealed output in the Decrypt tab — auto-decrypts with your key."
-													}
-													className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
-												>
-													<ArrowRight aria-hidden="true" className="size-3.5" />
-													{healthMap[entry.id] === "ok" && (
-														// Emerald glow-dot (round 19): this entry passed the last
-														// health check, so the deep-link is one click to plaintext.
-														<span
-															aria-hidden="true"
-															className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_4px] shadow-emerald-500/60"
-														/>
-													)}
-													<span className="whitespace-nowrap">Open in Decrypt</span>
-												</Button>
-												<CopyButton
-													text={entry.armor}
-													label="Copy"
-													ariaLabel="Copy sealed output to clipboard"
-												/>
-												{entry.sealedArmor && <SealedCopyButton sealedArmor={entry.sealedArmor} />}
-												<DownloadButton text={entry.armor} title="sealed output" />
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() => {
-														setNoteEditingId(noteEditingId === entry.id ? null : entry.id);
-														setNoteDraft(entry.note ?? "");
-													}}
-													aria-label={
-														entry.note
-															? `Edit the note on this entry: ${entry.note}`
-															: "Add a note to this vault entry"
-													}
-													title={entry.note ? "Edit note" : "Add note"}
-													className={`size-7 ${
-														noteEditingId === entry.id
-															? "text-amber-600 dark:text-amber-400"
-															: "text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400"
-													}`}
-												>
-													<Pencil aria-hidden="true" className="size-3.5" />
-												</Button>
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
-													aria-label="Remove this entry from the sealed-output history"
-													className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
-												>
-													<X aria-hidden="true" className="size-3.5" />
-												</Button>
-											</span>
-										</li>
-									))}
+											</li>
+										))
+									)}
 								</ul>
 								<p className="border-t border-border bg-muted/25 px-4 py-2 text-[11px] text-muted-foreground">
 									Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is

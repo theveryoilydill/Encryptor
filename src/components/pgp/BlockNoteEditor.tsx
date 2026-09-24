@@ -701,6 +701,9 @@ export default function BlockNoteEditor({
 	);
 	const codeCopyChip = useCodeCopyChip(viewRef);
 	const mobileToolbar = usePrefersMobileToolbar();
+	// Keyboard offset: BlockNote's experimental controller tracks the
+	// virtual keyboard itself (VirtualKeyboard API + visualViewport
+	// fallback → --bn-mobile-keyboard-offset) — no custom listener needed.
 	const editorShell =
 		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (

@@ -636,8 +636,9 @@ export default function PgpApp() {
 		[passphraseCached],
 	);
 
-	// Alt+1..5 switches tabs; Ctrl/Cmd+, opens the app Settings dialog;
-	// the key dialog stays on the header key button.
+	// Alt+1..4 switches tabs (TABS.length — see contracts.ts); Ctrl/Cmd+,
+	// opens the app Settings dialog; the key dialog stays on the header
+	// key button.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ",") {

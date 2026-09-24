@@ -216,10 +216,10 @@
 
 .animate-fade-up {
 	/* `backwards`, not `both`: the end state IS the resting state, so
-	   forwards-fill buys nothing — and a forwards-filled transform keeps the
-	   element a containing block even at identity, which degrades every
-	   position: fixed descendant (BlockNote's mobile formatting toolbar
-	   docks by fixed positioning and ended up anchored to this div). */
+           forwards-fill buys nothing — and a forwards-filled transform keeps the
+           element a containing block even at identity, which degrades every
+           position: fixed descendant (BlockNote's mobile formatting toolbar
+           docks by fixed positioning and ended up anchored to this div). */
 	animation: fade-up 0.3s ease-out backwards;
 }
 
@@ -580,7 +580,7 @@
    `.bn-block-content[data-content-type="codeBlock"] > div > select` rule. */
 .bn-editor .bn-block-content[data-content-type="codeBlock"] select {
 	/* BlockNote's own CSS absolutely positions the select with fixed offsets;
-	   static inside the wrapper lets the pill shrink-wrap it instead. */
+           static inside the wrapper lets the pill shrink-wrap it instead. */
 	position: static;
 	appearance: auto;
 	border-radius: 6px;
@@ -615,10 +615,15 @@
 	border-top: 1px solid var(--border);
 	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.08);
 	/* BlockNote centers the bar content for floating use; a docked sheet
-	   scrolls from the left edge instead. */
+           scrolls from the left edge instead. */
 	justify-content: flex-start;
 	gap: 2px;
 	padding-inline: 6px;
+	/* Keyboard offset: BlockNote's experimental controller already tracks
+           the virtual keyboard (VirtualKeyboard API + visualViewport fallback)
+           and publishes --bn-mobile-keyboard-offset, which its own stylesheet
+           reads for `bottom`. Do NOT override top/bottom here — a custom
+           anchor would fight the native offset and break the rise animation. */
 }
 .dark .bn-mobile-formatting-toolbar {
 	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.4);
@@ -668,13 +673,13 @@
 		max-width: 100% !important;
 	}
 	/* The click-to-zoom wrapper must vanish for layout in print so images
-	   flow exactly like plain inline images. */
+           flow exactly like plain inline images. */
 	#print-mount button {
 		display: contents;
 	}
 	/* Attachments appendix (round 5): a titled block of framed figures —
-	   name + size caption under each image; non-images are caption-only
-	   rows so the paper trail lists every file even when it can't render. */
+           name + size caption under each image; non-images are caption-only
+           rows so the paper trail lists every file even when it can't render. */
 	#print-mount .print-attachments {
 		margin-top: 14px;
 		padding-top: 8px;
@@ -707,7 +712,7 @@
 		color: #555;
 	}
 	/* Verification evidence footer: quiet closing line under the message —
-	   who signed, which key, when it was checked. */
+           who signed, which key, when it was checked. */
 	#print-mount .print-verification {
 		margin-top: 12px;
 		padding-top: 6px;

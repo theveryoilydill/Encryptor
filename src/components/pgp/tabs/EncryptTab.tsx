@@ -108,6 +108,12 @@ import {
 import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import {
+	composerOverlayOwner,
+	isComposerToggleChord,
+	isNestedDialogTarget,
+	isPrimaryActionChord,
+} from "@/lib/pgp/composer-overlay";
+import {
 	buildPlaintextForEncryption,
 	formatFileSize,
 	readFileAsBase64,
@@ -575,16 +581,6 @@ function TemplateMenu({
 	);
 }
 
-/** True when a keyboard event started inside a nested Radix surface (a
- *  dialog, dropdown menu or listbox) that must keep Escape / shortcuts for
- *  itself — shared by the full-screen overlay's window + React handlers. */
-function isNestedDialogTarget(target: EventTarget | null): boolean {
-	const el = target as HTMLElement | null;
-	return !!el?.closest?.(
-		'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-	);
-}
-
 export function EncryptTab({
 	privateKey,
 	recipients,
@@ -594,6 +590,7 @@ export function EncryptTab({
 	requestDecryptedKey,
 	onOpenInDecrypt,
 	settings,
+	globalComposerChord = true,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	recipients: Recipient[];
@@ -609,6 +606,12 @@ export function EncryptTab({
 	/** App preferences (compression + editor style) — owned by PgpApp so a
 	 *  settings change re-renders the open tab immediately. */
 	settings: AppSettings;
+	/** Whether THIS tab owns the global Ctrl/Cmd+Shift+E expand chord right
+	 *  now. True everywhere except the Sign tab — since Sign grew its own
+	 *  full-screen composer, the chord must expand the composer of the ACTIVE
+	 *  tab, and PgpApp routes it (sign → SignTab, everything else → here as
+	 *  the legacy fallback for tabs without a composer of their own). */
+	globalComposerChord?: boolean;
 }) {
 	const { toast } = useToast();
 	// Draft resilience (sessionStorage, see lib/pgp/drafts.ts): the composer
@@ -702,6 +705,10 @@ export function EncryptTab({
 		const onWindowEscape = (e: KeyboardEvent) => {
 			if (e.key !== "Escape" || e.defaultPrevented) return;
 			if (isNestedDialogTarget(e.target)) return;
+			// Focus inside ANOTHER tab's overlay (both composers can stack):
+			// that overlay is on top and owns the key — stand down.
+			const owner = composerOverlayOwner(e.target);
+			if (owner !== null && owner !== "encrypt") return;
 			e.preventDefault();
 			setComposerExpanded(false);
 		};
@@ -713,33 +720,22 @@ export function EncryptTab({
 	// the tab components stay mounted across tab switches, so a window-level
 	// capture listener lets the composer open from ANY tab. Same dialog-safe
 	// guards as the section handler; the section + overlay handlers see
-	// defaultPrevented and skip, so the toggle never double-fires.
+	// defaultPrevented and skip, so the toggle never double-fires. Gated on
+	// globalComposerChord: while the Sign tab is active, its own composer
+	// takes the chord (see PgpApp).
 	//
 	// # Mr. AI Acting on s183173's Behalf
 	useEffect(() => {
+		if (!globalComposerChord) return;
 		const onKey = (e: KeyboardEvent) => {
-			if (
-				(e.ctrlKey || e.metaKey) &&
-				e.shiftKey &&
-				!e.altKey &&
-				(e.key === "E" || e.key === "e") &&
-				!e.defaultPrevented
-			) {
-				const target = e.target as HTMLElement | null;
-				if (
-					target?.closest(
-						'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-					)
-				) {
-					return;
-				}
-				e.preventDefault();
-				setComposerExpanded((v) => !v);
-			}
+			if (!isComposerToggleChord(e) || e.defaultPrevented) return;
+			if (isNestedDialogTarget(e.target)) return;
+			e.preventDefault();
+			setComposerExpanded((v) => !v);
 		};
 		window.addEventListener("keydown", onKey, true);
 		return () => window.removeEventListener("keydown", onKey, true);
-	}, []);
+	}, [globalComposerChord]);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{
@@ -1230,6 +1226,10 @@ export function EncryptTab({
 				}
 			}
 			setOutput(armored);
+			// Encrypted from the full-screen overlay: collapse it so the
+			// result (which renders in the inline layout BELOW the composer)
+			// is actually visible — the overlay would otherwise cover it.
+			setComposerExpanded(false);
 			// Display-only recipient labels for the "Sealed to: …" tooltip —
 			// capped like every other display list so a 50-recipient paste can't
 			// blow up the strip.
@@ -1641,7 +1641,7 @@ export function EncryptTab({
 				// Ctrl/Cmd+Enter runs the primary action from anywhere in the tab
 				// (editor, attachment list, button). Skips while a run is in flight
 				// — same guard as the button's disabled state.
-				if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+				if (isPrimaryActionChord(e)) {
 					e.preventDefault();
 					if (!busy) void handleEncrypt();
 				}
@@ -1650,21 +1650,9 @@ export function EncryptTab({
 				// menu belong to that surface, never to us — and an already-handled
 				// (defaultPrevented) event is left alone. The composer overlay
 				// itself opts back in via the :not, just like its Escape guard.
-				if (
-					(e.ctrlKey || e.metaKey) &&
-					e.shiftKey &&
-					!e.altKey &&
-					(e.key === "E" || e.key === "e") &&
-					!e.defaultPrevented
-				) {
-					const target = e.target as HTMLElement | null;
-					if (
-						target?.closest(
-							'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-						)
-					) {
-						return;
-					}
+				// Shared chord/guard predicates live in lib/pgp/composer-overlay.ts
+				// (the Sign tab's overlay mirrors this exact wiring).
+				if (isComposerToggleChord(e) && !e.defaultPrevented && !isNestedDialogTarget(e.target)) {
 					e.preventDefault();
 					setComposerExpanded((v) => !v);
 				}
@@ -1728,7 +1716,7 @@ export function EncryptTab({
 			{composerExpanded &&
 				createPortal(
 					<div
-						data-composer-overlay
+						data-composer-overlay="encrypt"
 						role="dialog"
 						aria-modal="true"
 						aria-label="Composer, full screen"
@@ -1750,7 +1738,7 @@ export function EncryptTab({
 						onKeyDown={(e) => {
 							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
 							// portal sits outside the <section> keydown handler.
-							if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+							if (isPrimaryActionChord(e)) {
 								e.preventDefault();
 								if (!busy) void handleEncrypt();
 							}
@@ -1760,20 +1748,10 @@ export function EncryptTab({
 							// section: nested dialogs/popovers opened FROM the composer
 							// keep the keys for themselves.
 							if (
-								(e.ctrlKey || e.metaKey) &&
-								e.shiftKey &&
-								!e.altKey &&
-								(e.key === "E" || e.key === "e") &&
-								!e.defaultPrevented
+								isComposerToggleChord(e) &&
+								!e.defaultPrevented &&
+								!isNestedDialogTarget(e.target)
 							) {
-								const target = e.target as HTMLElement | null;
-								if (
-									target?.closest(
-										'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-									)
-								) {
-									return;
-								}
 								e.preventDefault();
 								setComposerExpanded(false);
 							}

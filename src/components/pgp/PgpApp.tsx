@@ -883,6 +883,7 @@ export default function PgpApp() {
 										requestDecryptedKey={requestDecryptedKey}
 										onOpenInDecrypt={handleOpenInDecrypt}
 										settings={settings}
+										globalComposerChord={tab !== "sign"}
 									/>
 								)}
 								{t.id === "decrypt" && (
@@ -898,6 +899,7 @@ export default function PgpApp() {
 										privateKey={privateKey}
 										requestDecryptedKey={requestDecryptedKey}
 										markdownEditor={settings.markdownEditor}
+										globalComposerChord={tab === "sign"}
 									/>
 								)}
 								{t.id === "verify" && <VerifyTab privateKey={privateKey} />}

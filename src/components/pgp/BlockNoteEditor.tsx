@@ -456,6 +456,18 @@ export default function BlockNoteEditor({
 	// name (aria-input-field-name) and a label on a role-prohibited element
 	// (aria-prohibited-attr). Mount-only — the element is created once.
 	const viewRef = useRef<HTMLDivElement>(null);
+	// Full-screen overlay just opened: move focus into the editor so
+	// keyboard users are not left behind the aria-modal surface (the
+	// portal renders outside the tab panel, so focus must be explicit).
+	// Re-runs on every expand; a collapse keeps focus where the user
+	// clicked (the overlay unmounts entirely).
+	useEffect(() => {
+		if (!expanded) return;
+		const id = requestAnimationFrame(() => {
+			viewRef.current?.querySelector<HTMLElement>(".bn-editor")?.focus();
+		});
+		return () => cancelAnimationFrame(id);
+	}, [expanded]);
 	useEffect(() => {
 		const el = viewRef.current?.querySelector<HTMLElement>(".tiptap");
 		if (el) {
@@ -715,7 +727,7 @@ export default function BlockNoteEditor({
 			// the scrolling); the inline composer keeps them.
 			className={
 				expanded
-					? `${editorShell} flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
+					? `${editorShell} flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:flex-1 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 					: `${editorShell} min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 			}
 		>

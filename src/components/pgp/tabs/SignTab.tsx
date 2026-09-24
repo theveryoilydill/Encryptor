@@ -1,8 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
-import { FileSignature, FileUp, ShieldCheck, X } from "lucide-react";
+import {
+	ClipboardCopy as CopyMarkdownIcon,
+	FileSignature,
+	FileUp,
+	Maximize2,
+	Minimize2,
+	ShieldCheck,
+	X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -19,6 +28,12 @@ import { formatFileSize } from "@/lib/pgp/envelope";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
+import {
+	composerOverlayOwner,
+	isComposerToggleChord,
+	isNestedDialogTarget,
+	isPrimaryActionChord,
+} from "@/lib/pgp/composer-overlay";
 import { signFileDetached, signMessage } from "@/lib/pgp/pgp";
 import { toast } from "@/hooks/use-toast";
 
@@ -26,11 +41,17 @@ export function SignTab({
 	privateKey,
 	requestDecryptedKey,
 	markdownEditor,
+	globalComposerChord = false,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 	/** Which composer engine to use (same setting as the Encrypt tab). */
 	markdownEditor: MarkdownEditorKind;
+	/** True while the Sign tab is active — PgpApp routes the global
+	 *  Ctrl/Cmd+Shift+E expand chord to whichever tab owns the composer
+	 *  (see EncryptTab.globalComposerChord for the other side of the
+	 *  routing). */
+	globalComposerChord?: boolean;
 }) {
 	// Draft resilience (same pattern as the Encrypt tab — see
 	// lib/pgp/drafts.ts). Signing intentionally does NOT clear the
@@ -65,6 +86,55 @@ export function SignTab({
 		const t = setTimeout(() => setDraftSaved(false), 2000);
 		return () => clearTimeout(t);
 	}, [draftSaved]);
+	// Full-screen composer overlay (parity with the Encrypt tab): when
+	// expanded, the whole "Text to sign" composer — header row, editor,
+	// counter — moves into a portal dialog filling the viewport. The state
+	// lives HERE in the tab; the editor engine simply re-mounts with the
+	// same value props, so text survives expand AND collapse untouched.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	const [composerExpanded, setComposerExpanded] = useState(false);
+	// Body scroll lock while the overlay is up; the previous inline value is
+	// restored on cleanup (also fires if the tab unmounts mid-expanded).
+	useEffect(() => {
+		if (!composerExpanded) return;
+		const prev = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+		return () => {
+			document.body.style.overflow = prev;
+		};
+	}, [composerExpanded]);
+	// Escape collapses the overlay from ANYWHERE (window-level capture —
+	// opening it can drop focus on <body>, and an aria-modal dialog that
+	// ignores Escape is an a11y bug). Nested Radix surfaces keep their
+	// Escape via the shared guard, and a focus inside ANOTHER tab's overlay
+	// (both composers can stack) makes this handler stand down.
+	useEffect(() => {
+		if (!composerExpanded) return;
+		const onWindowEscape = (e: KeyboardEvent) => {
+			if (e.key !== "Escape" || e.defaultPrevented) return;
+			if (isNestedDialogTarget(e.target)) return;
+			const owner = composerOverlayOwner(e.target);
+			if (owner !== null && owner !== "sign") return;
+			e.preventDefault();
+			setComposerExpanded(false);
+		};
+		window.addEventListener("keydown", onWindowEscape, true);
+		return () => window.removeEventListener("keydown", onWindowEscape, true);
+	}, [composerExpanded]);
+	// Global Ctrl/Cmd+Shift+E — routes to THIS tab's composer only while the
+	// Sign tab is active (PgpApp owns the routing; see globalComposerChord).
+	useEffect(() => {
+		if (!globalComposerChord) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (!isComposerToggleChord(e) || e.defaultPrevented) return;
+			if (isNestedDialogTarget(e.target)) return;
+			e.preventDefault();
+			setComposerExpanded((v) => !v);
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, [globalComposerChord]);
 
 	const handleSign = useCallback(async () => {
 		setError(null);
@@ -91,12 +161,36 @@ export function SignTab({
 				detached,
 			});
 			setOutput(signed);
+			// Signed from the full-screen overlay: collapse it so the result
+			// (which renders in the inline layout BELOW the composer) is
+			// actually visible — the overlay would otherwise cover it.
+			setComposerExpanded(false);
 		} catch (e) {
 			setError((e as Error).message);
 		} finally {
 			setBusy(false);
 		}
 	}, [plaintext, privateKey, detached, requestDecryptedKey]);
+
+	// Copy the text-to-sign markdown SOURCE — parity with the Encrypt
+	// composer's utility row (works without signing, for pasting the text
+	// anywhere else or archiving it).
+	const handleCopyMarkdown = useCallback(() => {
+		if (!plaintext.trim()) {
+			toast({ title: "Nothing to copy — the composer is empty" });
+			return;
+		}
+		void navigator.clipboard
+			.writeText(plaintext)
+			.then(() => toast({ title: "Markdown copied" }))
+			.catch(() =>
+				toast({
+					title: "Copy failed",
+					description: "The clipboard rejected the write — select the text and copy manually.",
+					variant: "destructive",
+				}),
+			);
+	}, [plaintext, toast]);
 
 	// ------------------------- File signing (round 20) -------------------------
 	// A self-contained second flow at the bottom of the tab: pick ANY file,
@@ -169,20 +263,17 @@ export function SignTab({
 		}
 	}, [fileSig, toast]);
 
-	return (
-		<section
-			className="space-y-6"
-			onKeyDown={(e) => {
-				// Ctrl/Cmd+Enter runs the primary action from anywhere in the tab.
-				// Skips while a run is in flight — same guard as the disabled button.
-				if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
-					e.preventDefault();
-					if (!busy) void handleSign();
-				}
-			}}
-		>
-			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
-				<div className="mb-1.5 flex items-center gap-2">
+	// The whole "Text to sign" composer — header row (label + utility
+	// buttons), empty-state, editor, draft note and counter — as one value,
+	// rendered EITHER inside the inline card OR inside the full-screen
+	// portal overlay below. Pure re-mount either way: no state lives in the
+	// subtree, so text survives expand AND collapse.
+	//
+	// # Mr. AI Acting on s183173's Behalf
+	const composerBody = (
+		<>
+			<div className="mb-1.5 flex items-center justify-between gap-2">
+				<div className="flex items-center gap-2">
 					<span
 						aria-hidden="true"
 						className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
@@ -191,21 +282,48 @@ export function SignTab({
 						Text to sign
 					</Label>
 				</div>
-				{!plaintext.trim() && !output && (
-					<div className="animate-fade-up mb-3 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-muted/30 p-6 text-center sm:p-8">
-						<div className="grid size-12 place-items-center rounded-full bg-[#0055dc]/10 dark:bg-[#5e94ff]/10">
-							<FileSignature
-								aria-hidden="true"
-								className="size-7 text-[#0055dc] dark:text-[#5e94ff]"
-							/>
-						</div>
-						<p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						aria-label="Copy message as markdown"
+						title="Copy message as markdown"
+						onClick={handleCopyMarkdown}
+						className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+					>
+						<CopyMarkdownIcon aria-hidden="true" className="size-3.5" />
+					</button>
+					<button
+						type="button"
+						aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
+						title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
+						onClick={() => setComposerExpanded((v) => !v)}
+						className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+					>
+						{composerExpanded ? (
+							<Minimize2 aria-hidden="true" className="size-3.5" />
+						) : (
+							<Maximize2 aria-hidden="true" className="size-3.5" />
+						)}
+					</button>
+				</div>
+			</div>
+			{!plaintext.trim() && !output && (
+				<div className="animate-fade-up mb-3 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-muted/30 p-6 text-center sm:p-8">
+					<div className="grid size-12 place-items-center rounded-full bg-[#0055dc]/10 dark:bg-[#5e94ff]/10">
+						<FileSignature
+							aria-hidden="true"
+							className="size-7 text-[#0055dc] dark:text-[#5e94ff]"
+						/>
 					</div>
-				)}
-				{/* Markdown editor for signing ("markdown for signing too") — same
-                                    two engines as the Encrypt composer. Signing has no attachment
-                                    pipeline, so image registration intentionally fails closed:
-                                    pasted images stay inline as data URLs inside the signed text. */}
+					<p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
+				</div>
+			)}
+			{/* Markdown editor for signing ("markdown for signing too") — same
+				    two engines as the Encrypt composer. Signing has no attachment
+				    pipeline, so image registration intentionally fails closed:
+				    pasted images stay inline as data URLs inside the signed text.
+				    flex-1 min-h-0 in the overlay lets the engine fill the viewport. */}
+			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
 				<MessageEditor
 					value={plaintext}
 					onChange={setPlaintext}
@@ -215,21 +333,101 @@ export function SignTab({
 					}}
 					editorKind={markdownEditor}
 					placeholder="Paste or write the text you want to sign."
+					expanded={composerExpanded}
 				/>
-				{/* Draft-resilience note — only after an actual restore. */}
-				{draftRestored && (
-					<DraftRestoredNote
-						onDiscard={() => {
-							clearDraft("sign");
-							setDraftRestored(false);
-							setPlaintext("");
-						}}
-					/>
-				)}
-				{/* Char/word/size counter — parity with the Encrypt tab counter,
-                                        including the transient draft-saved tick. */}
-				<InputSizeCounter text={plaintext} note={draftSaved ? "Draft saved" : undefined} />
 			</div>
+			{/* Draft-resilience note — only after an actual restore. */}
+			{draftRestored && (
+				<DraftRestoredNote
+					onDiscard={() => {
+						clearDraft("sign");
+						setDraftRestored(false);
+						setPlaintext("");
+					}}
+				/>
+			)}
+			{/* Char/word/size counter — parity with the Encrypt tab counter,
+				    including the transient draft-saved tick. */}
+			<InputSizeCounter text={plaintext} note={draftSaved ? "Draft saved" : undefined} />
+		</>
+	);
+
+	return (
+		<section
+			className="space-y-6"
+			onKeyDown={(e) => {
+				// Ctrl/Cmd+Enter runs the primary action from anywhere in the tab.
+				// Skips while a run is in flight — same guard as the disabled button.
+				if (isPrimaryActionChord(e)) {
+					e.preventDefault();
+					if (!busy) void handleSign();
+				}
+				// Ctrl/Cmd+Shift+E toggles the full-screen composer — same dialog-safe
+				// wiring as the Encrypt tab (shared predicates live in
+				// lib/pgp/composer-overlay.ts).
+				if (isComposerToggleChord(e) && !e.defaultPrevented && !isNestedDialogTarget(e.target)) {
+					e.preventDefault();
+					setComposerExpanded((v) => !v);
+				}
+			}}
+		>
+			{!composerExpanded && (
+				<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
+					{composerBody}
+				</div>
+			)}
+			{/* Full-screen composer overlay — same pattern as the Encrypt tab:
+				    a portal dialog filling the viewport. Click-off + Escape collapse
+				    (both dialog-safe), Ctrl/Cmd+Enter signs from inside, Ctrl/Cmd+Shift+E
+				    collapses. The passphrase prompt opened by requestDecryptedKey
+				    portals OUTSIDE this overlay and keeps its own Escape via the
+				    nested-dialog guard. */}
+			{composerExpanded &&
+				createPortal(
+					<div
+						data-composer-overlay="sign"
+						role="dialog"
+						aria-modal="true"
+						aria-label="Composer, full screen"
+						onPointerDown={(e) => {
+							// Click-off close: a press on the overlay itself (the backdrop
+							// around the composer) collapses — presses inside the composer
+							// content target deeper nodes and are ignored.
+							if (e.target === e.currentTarget) {
+								e.preventDefault();
+								setComposerExpanded(false);
+							}
+						}}
+						onKeyDownCapture={(e) => {
+							if (e.key !== "Escape" || e.defaultPrevented) return;
+							if (isNestedDialogTarget(e.target)) return;
+							e.preventDefault();
+							setComposerExpanded(false);
+						}}
+						onKeyDown={(e) => {
+							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
+							// portal sits outside the <section> keydown handler.
+							if (isPrimaryActionChord(e)) {
+								e.preventDefault();
+								if (!busy) void handleSign();
+							}
+							// Ctrl/Cmd+Shift+E collapses the overlay — same dialog-safe
+							// guard as the section handler.
+							if (
+								isComposerToggleChord(e) &&
+								!e.defaultPrevented &&
+								!isNestedDialogTarget(e.target)
+							) {
+								e.preventDefault();
+								setComposerExpanded(false);
+							}
+						}}
+						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
+					>
+						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
+					</div>,
+					document.body,
+				)}
 
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
 				<RadioGroup

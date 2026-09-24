@@ -27,7 +27,11 @@ const SHORTCUTS: { keys: string; description: string }[] = [
 	{ keys: "Alt+2", description: "Decrypt" },
 	{ keys: "Alt+3", description: "Sign" },
 	{ keys: "Alt+4", description: "Verify" },
-	{ keys: "Ctrl+Enter", description: "Run the tab's action (encrypt / sign / verify)" },
+	{
+		keys: "Ctrl+Enter",
+		description:
+			"Run the tab's action (encrypt / sign / verify); from a full-screen composer it collapses on success",
+	},
 	{ keys: "Ctrl+Shift+E", description: "Expand / collapse the composer (Encrypt · Sign)" },
 	{ keys: "Ctrl+,", description: "Open Settings" },
 ];

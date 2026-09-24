@@ -1758,7 +1758,61 @@ export function EncryptTab({
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
+						{/* max-w-4xl: Notion-style reading column — the composer stays
+                            scannable on wide screens instead of stretching edge to
+                            edge. mt-auto pins the status bar to the bottom. */}
+						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
+							{composerBody}
+							{/* Overlay status bar (round 9): the configuration the action
+                                will run with (recipients / attachments / signing) plus the
+                                chords that work in here — so zen mode never blacks out
+                                context. Chips mirror the inline layout's live state. */}
+							<div className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3">
+								<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+									{recipients.length === 0 ? (
+										includeSelf ? (
+											<span className="rounded-full bg-muted/60 px-2 py-0.5">
+												encrypting to yourself
+											</span>
+										) : (
+											<span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+												No recipients yet
+											</span>
+										)
+									) : (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">
+											{recipients.length === 1 ? "1 recipient" : `${recipients.length} recipients`}
+										</span>
+									)}
+									{includeSelf && (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">includes you</span>
+									)}
+									{attachments.length > 0 && (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">
+											{attachments.length === 1
+												? "1 attachment"
+												: `${attachments.length} attachments`}
+										</span>
+									)}
+									{settings.autoSign && (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">+ sign</span>
+									)}
+								</div>
+								<div className="hidden shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
+									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+										Ctrl+↵
+									</kbd>
+									<span>Encrypt</span>
+									<span aria-hidden="true" className="text-border">
+										·
+									</span>
+									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+										Esc
+									</kbd>
+									<span>Collapse</span>
+								</div>
+							</div>
+						</div>
 					</div>,
 					document.body,
 				)}

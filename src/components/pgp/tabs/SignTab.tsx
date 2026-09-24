@@ -307,7 +307,9 @@ export function SignTab({
 					</button>
 				</div>
 			</div>
-			{!plaintext.trim() && !output && (
+			{/* Hidden while the full-screen overlay is up — the editor's own
+			    placeholder already covers "empty" in zen mode (Encrypt parity). */}
+			{!composerExpanded && !plaintext.trim() && !output && (
 				<div className="animate-fade-up mb-3 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-muted/30 p-6 text-center sm:p-8">
 					<div className="grid size-12 place-items-center rounded-full bg-[#0055dc]/10 dark:bg-[#5e94ff]/10">
 						<FileSignature
@@ -424,7 +426,40 @@ export function SignTab({
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
+						{/* max-w-4xl + status bar — same pattern as the Encrypt overlay
+                            (Notion-style reading column; mt-auto pins the bar). */}
+						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
+							{composerBody}
+							<div className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3">
+								<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+									<span className="rounded-full bg-muted/60 px-2 py-0.5">
+										{detached ? "Detached signature" : "Cleartext signed"}
+									</span>
+									{privateKey ? (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">
+											Key: {privateKey.label}
+										</span>
+									) : (
+										<span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+											No key selected
+										</span>
+									)}
+								</div>
+								<div className="hidden shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
+									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+										Ctrl+↵
+									</kbd>
+									<span>Sign</span>
+									<span aria-hidden="true" className="text-border">
+										·
+									</span>
+									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+										Esc
+									</kbd>
+									<span>Collapse</span>
+								</div>
+							</div>
+						</div>
 					</div>,
 					document.body,
 				)}

@@ -552,3 +552,48 @@
 .dark .msg-md-view .hljs-deletion {
 	color: #ff8b7b;
 }
+
+/* Editor code blocks: BlockNote renders the language <select> in a flex
+   row beside the code and fades it in on hover, effectively invisible in
+   dark mode. Overlay it as a quiet pill pinned to the block's top-right
+   (Notion-style language label); the code area gets extra top padding so
+   the pill never covers the first line. .bn-editor prefix + explicit
+   width keep the rules above BlockNote's own specificity. */
+.bn-block-content[data-content-type="codeBlock"] {
+	position: relative;
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] > div:has(> select) {
+	position: absolute;
+	top: 0.35rem;
+	right: 0.5rem;
+	width: fit-content;
+	z-index: 5;
+	line-height: 1;
+}
+/* .bn-editor prefix raises specificity above BlockNote's own
+   `.bn-block-content[data-content-type="codeBlock"] > div > select` rule. */
+.bn-editor .bn-block-content[data-content-type="codeBlock"] select {
+	/* BlockNote's own CSS absolutely positions the select with fixed offsets;
+	   static inside the wrapper lets the pill shrink-wrap it instead. */
+	position: static;
+	appearance: auto;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: color-mix(in srgb, var(--background) 85%, transparent);
+	color: var(--muted-foreground);
+	font-size: 11px;
+	line-height: 1.2;
+	padding: 2px 6px;
+	cursor: pointer;
+	backdrop-filter: blur(4px);
+	transition:
+		color 0.15s ease,
+		border-color 0.15s ease;
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] select:hover {
+	color: var(--foreground);
+	border-color: var(--muted-foreground);
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] pre {
+	padding-top: 2.2rem;
+}

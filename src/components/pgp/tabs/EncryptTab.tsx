@@ -17,6 +17,7 @@ import {
 	List,
 	Loader2,
 	Lock,
+	ClipboardCopy as CopyMarkdownIcon,
 	Maximize2,
 	Minimize2,
 	Paperclip,
@@ -404,8 +405,8 @@ function TemplateMenu({
 				className="max-h-[min(26rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto"
 			>
 				{/* Plain-text disclosure (round-12 product pass): saved templates live
-				    in this browser's storage UNENCRYPTED. One line up front keeps the
-				    "no secrets in templates" rule visible wherever templates are used. */}
+                                    in this browser's storage UNENCRYPTED. One line up front keeps the
+                                    "no secrets in templates" rule visible wherever templates are used. */}
 				<p
 					role="note"
 					className="mx-1.5 mb-1 flex items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] font-medium leading-relaxed text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
@@ -489,7 +490,7 @@ function TemplateMenu({
 					Backup
 				</DropdownMenuLabel>
 				{/* Export always works (even with zero templates — an empty backup is
-				     still a valid file); import feeds the merge + toast flow. */}
+                                     still a valid file); import feeds the merge + toast flow. */}
 				<DropdownMenuItem onSelect={handleExport} className="gap-1.5 py-2 text-xs">
 					<FileDown aria-hidden="true" className="size-3.5" />
 					Export templates
@@ -508,8 +509,8 @@ function TemplateMenu({
 			</DropdownMenuContent>
 
 			{/* Backup file input lives OUTSIDE the DropdownMenuContent: Radix
-			    unmounts the content on close, which would null the ref before the
-			    deferred picker click could fire. */}
+                            unmounts the content on close, which would null the ref before the
+                            deferred picker click could fire. */}
 			<input
 				ref={importInputRef}
 				type="file"
@@ -524,8 +525,8 @@ function TemplateMenu({
 				}}
 			/>
 			{/* Name prompt for "Save current message as template". Plain
-			    Dialog (not an inline menu editor) so mobile keyboards, focus
-			    trapping, and Escape handling all behave. */}
+                            Dialog (not an inline menu editor) so mobile keyboards, focus
+                            trapping, and Escape handling all behave. */}
 			<Dialog open={saveOpen} onOpenChange={setSaveOpen}>
 				<DialogContent className="sm:max-w-sm">
 					<DialogHeader>
@@ -619,14 +620,27 @@ export function EncryptTab({
 	const [attachments, setAttachments] = useState<EnvelopeFile[]>(initialDraft?.files ?? []);
 	// Debounced draft persistence — one write per pause in typing, not per
 	// keystroke. Empty/whitespace text clears the stored draft instead of
-	// writing an empty one, so "cleared the message" never resurrects.
+	// writing an empty one, so "cleared the message" never resurrects. The
+	// transient "Draft saved" tick in the counter row makes the (otherwise
+	// silent) autosave visible without ever interrupting typing.
+	const [draftSaved, setDraftSaved] = useState(false);
 	useEffect(() => {
 		const t = setTimeout(() => {
-			if (plaintext.trim() === "") clearDraft("encrypt");
-			else saveDraft("encrypt", plaintext, attachments);
+			if (plaintext.trim() === "") {
+				clearDraft("encrypt");
+				setDraftSaved(false);
+			} else {
+				saveDraft("encrypt", plaintext, attachments);
+				setDraftSaved(true);
+			}
 		}, 600);
 		return () => clearTimeout(t);
 	}, [plaintext, attachments]);
+	useEffect(() => {
+		if (!draftSaved) return;
+		const t = setTimeout(() => setDraftSaved(false), 2000);
+		return () => clearTimeout(t);
+	}, [draftSaved]);
 	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
 	// image-paste bridge must return the FINAL (deduped) filename in the same
 	// tick it registers the file, but React state updates are async and the
@@ -1086,6 +1100,26 @@ export function EncryptTab({
 		setPlaintext(`${toc}\n\n${plaintext}`);
 	}, [plaintext, toast]);
 
+	// Copy the composer's markdown SOURCE (what the recipient will see
+	// rendered). Works without sealing — for pasting the message anywhere
+	// else, archiving it, or moving it to another tool.
+	const handleCopyMarkdown = useCallback(() => {
+		if (!plaintext.trim()) {
+			toast({ title: "Nothing to copy — the composer is empty" });
+			return;
+		}
+		void navigator.clipboard
+			.writeText(plaintext)
+			.then(() => toast({ title: "Markdown copied" }))
+			.catch(() =>
+				toast({
+					title: "Copy failed",
+					description: "The clipboard rejected the write — select the text and copy manually.",
+					variant: "destructive",
+				}),
+			);
+	}, [plaintext, toast]);
+
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
 		setOutput("");
@@ -1500,9 +1534,18 @@ export function EncryptTab({
 	// # Mr. AI Acting on s183173's Behalf
 	const composerBody = (
 		<>
-			{/* Composer utility row: table-of-contents insert, full-screen
-			    toggle and the template menu, right-aligned. */}
+			{/* Composer utility row: copy-markdown, table-of-contents insert,
+                            full-screen toggle and the template menu, right-aligned. */}
 			<div className="mb-1.5 flex items-center justify-end gap-2">
+				<button
+					type="button"
+					aria-label="Copy message as markdown"
+					title="Copy message as markdown"
+					onClick={handleCopyMarkdown}
+					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+				>
+					<CopyMarkdownIcon aria-hidden="true" className="size-3.5" />
+				</button>
 				<button
 					type="button"
 					aria-label="Insert table of contents"
@@ -1528,7 +1571,7 @@ export function EncryptTab({
 				<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
 			</div>
 			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
-			    the viewport; plain block inline. */}
+                            the viewport; plain block inline. */}
 			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
 				<MessageEditor
 					value={plaintext}
@@ -1542,7 +1585,7 @@ export function EncryptTab({
 				/>
 			</div>
 			{/* Draft-resilience note — only after an actual restore, and gone
-			once the user discards or seals the message. */}
+                        once the user discards or seals the message. */}
 			{draftRestored && (
 				<DraftRestoredNote
 					filesDropped={initialDraft?.filesDropped}
@@ -1555,8 +1598,9 @@ export function EncryptTab({
 					}}
 				/>
 			)}
-			{/* Char/word/size counter (visual feedback only). */}
-			<InputSizeCounter text={plaintext} />
+			{/* Char/word/size counter (visual feedback only) + the transient
+                            "Draft saved" tick from the debounced autosave. */}
+			<InputSizeCounter text={plaintext} note={draftSaved ? "Draft saved" : undefined} />
 			{showEncryptHint && detectedBlock && (
 				<InputHint
 					tone={detectedBlock === "encrypted" ? "amber" : "info"}
@@ -1653,13 +1697,13 @@ export function EncryptTab({
 				</div>
 			)}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
-			    dialog filling the viewport. Escape collapses it — EXCEPT when a
-			    Radix surface opened FROM the composer is on stage (template
-			    dropdown, save-template dialog, …): those consume Escape
-			    themselves and must never come back to a collapsed composer.
-			    Most Radix layers portal OUTSIDE this overlay, so their Escapes
-			    never even bubble through it; the target checks + the
-			    defaultPrevented guard cover the paths that still do. */}
+                            dialog filling the viewport. Escape collapses it — EXCEPT when a
+                            Radix surface opened FROM the composer is on stage (template
+                            dropdown, save-template dialog, …): those consume Escape
+                            themselves and must never come back to a collapsed composer.
+                            Most Radix layers portal OUTSIDE this overlay, so their Escapes
+                            never even bubble through it; the target checks + the
+                            defaultPrevented guard cover the paths that still do. */}
 			{composerExpanded &&
 				createPortal(
 					<div
@@ -1828,7 +1872,7 @@ export function EncryptTab({
 							</span>
 						))}
 					{/* Paperclip icon (round 16): files chips read as attachments at
-					    a glance — strip + vault rows + summary strip share the motif. */}
+                                            a glance — strip + vault rows + summary strip share the motif. */}
 					{outputMeta.files !== undefined && outputMeta.files > 0 && (
 						<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
 							<Paperclip aria-hidden="true" className="size-3" />
@@ -1864,8 +1908,8 @@ export function EncryptTab({
 			)}
 
 			{/* Round 18 UX: the vault shell ALWAYS renders (collapsed default) —
-			    after a Clear (or on a fresh browser) Import used to be unreachable
-			    when the whole section unmounted at 0 entries. */}
+                            after a Clear (or on a fresh browser) Import used to be unreachable
+                            when the whole section unmounted at 0 entries. */}
 			<section
 				className="relative animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
 				aria-label="Recent sealed outputs"
@@ -1915,7 +1959,7 @@ export function EncryptTab({
 							/>
 						</CollapsibleTrigger>
 						{/* Round 18: Clear only makes sense with entries — hides at 0 so
-							    the empty state stays the single focus. */}
+                                                            the empty state stays the single focus. */}
 						{sealedHistory.length > 0 && (
 							<Button
 								variant="ghost"
@@ -1935,9 +1979,9 @@ export function EncryptTab({
 						{sealedHistory.length === 0 ? (
 							<div className="px-4 py-5">
 								{/* Round 18 UX discovery: the old shell only rendered when
-									    entries existed, so after a Clear (or on a fresh browser)
-									    Import was UNREACHABLE. The empty state gets its own dashed
-									    card + import button instead. */}
+                                                                            entries existed, so after a Clear (or on a fresh browser)
+                                                                            Import was UNREACHABLE. The empty state gets its own dashed
+                                                                            card + import button instead. */}
 								<div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-4 py-6 text-center">
 									<History aria-hidden="true" className="size-5 text-muted-foreground" />
 									<p className="text-sm font-medium">Nothing sealed yet</p>
@@ -1961,9 +2005,9 @@ export function EncryptTab({
 						) : (
 							<>
 								{/* Vault summary strip (round 16): a thin muted at-a-glance bar —
-							    "N entries · ~X KB sealed · N signed · N quantum-sealed · N
-							    attached". Only the segments that apply render; the size
-							    combines classical + PQ armor bytes. */}
+                                                            "N entries · ~X KB sealed · N signed · N quantum-sealed · N
+                                                            attached". Only the segments that apply render; the size
+                                                            combines classical + PQ armor bytes. */}
 								<div className="flex flex-wrap items-center gap-x-1 px-4 pb-1 pt-2 text-[11px] text-muted-foreground">
 									<span>
 										{sealedHistory.length} {sealedHistory.length === 1 ? "entry" : "entries"}
@@ -2065,8 +2109,8 @@ export function EncryptTab({
 											className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
 										>
 											{/* PQ edge accent (round 14): a violet gradient strip on the left
-										    edge mirrors the PQ chip/badge color language — rows carrying a
-										    quantum-sealed copy are spottable at a glance. */}
+                                                                                    edge mirrors the PQ chip/badge color language — rows carrying a
+                                                                                    quantum-sealed copy are spottable at a glance. */}
 											{entry.sealedArmor && (
 												<span
 													aria-hidden="true"
@@ -2125,9 +2169,9 @@ export function EncryptTab({
 												</span>
 											</span>
 											{/* User note line (round 22): basis-full drops it onto its own
-										    row under the auto chips. Annotation voice — amber accent +
-										    italic — deliberately distinct from the seal-time chip family.
-										    Clicking the note re-opens the editor. */}
+                                                                                    row under the auto chips. Annotation voice — amber accent +
+                                                                                    italic — deliberately distinct from the seal-time chip family.
+                                                                                    Clicking the note re-opens the editor. */}
 											{noteEditingId !== entry.id && entry.note && (
 												<button
 													type="button"
@@ -2190,9 +2234,9 @@ export function EncryptTab({
 												</span>
 											)}
 											{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
-										    actions the group must wrap at narrow widths — nowrap plus the
-										    section's overflow-hidden silently clipped the trailing
-										    txt/remove buttons at 390 px. */}
+                                                                                    actions the group must wrap at narrow widths — nowrap plus the
+                                                                                    section's overflow-hidden silently clipped the trailing
+                                                                                    txt/remove buttons at 390 px. */}
 											<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
 												<Button
 													variant="ghost"
@@ -2304,10 +2348,10 @@ export function EncryptTab({
 					</CollapsibleContent>
 				</Collapsible>
 				{/* Round 19: violet manifest-dropzone overlay - while a Files drag
-				    hovers the vault card (vaultDragDepth > 0) the whole section
-				    lights up with the dashed violet target, carrying the same
-				    FileUp motif as the Import buttons. pointer-events-none keeps
-				    the drag itself untouched. */}
+                                    hovers the vault card (vaultDragDepth > 0) the whole section
+                                    lights up with the dashed violet target, carrying the same
+                                    FileUp motif as the Import buttons. pointer-events-none keeps
+                                    the drag itself untouched. */}
 				{vaultDragDepth > 0 && (
 					<div
 						aria-hidden
@@ -2321,9 +2365,9 @@ export function EncryptTab({
 				)}
 			</section>
 			{/* Hidden manifest picker (round 18): mounted at SECTION level —
-			    outside the CollapsibleContent — so collapsing the vault can't
-			    unmount it mid-pick. Re-armed after every read so picking the
-			    same file twice re-fires onChange. */}
+                            outside the CollapsibleContent — so collapsing the vault can't
+                            unmount it mid-pick. Re-armed after every read so picking the
+                            same file twice re-fires onChange. */}
 			<input
 				ref={vaultImportInputRef}
 				type="file"
@@ -2339,7 +2383,7 @@ export function EncryptTab({
 			/>
 
 			{/* Vault manifest import review (round 18) — a pure confirm dialog;
-			    Escape / outside click route through onOpenChange(false) = cancel. */}
+                            Escape / outside click route through onOpenChange(false) = cancel. */}
 			<VaultImportDialog
 				open={pendingImport !== null}
 				onOpenChange={(next) => {

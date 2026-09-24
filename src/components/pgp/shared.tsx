@@ -720,8 +720,9 @@ export function OutputBlock({
  *  tabs share it). aria-live off on purpose — announcing every keystroke
  *  would be noisy for screen readers. tabular-nums keeps every digit slot
  *  the same width, so the row doesn't jitter while typing (each keystroke
- *  changes the numbers but not the layout). */
-export function InputSizeCounter({ text }: { text: string }) {
+ *  changes the numbers but not the layout). `note` renders a transient
+ *  tick (e.g. "Draft saved") ahead of the count. */
+export function InputSizeCounter({ text, note }: { text: string; note?: string }) {
 	const trimmed = text.trim();
 	const words = trimmed ? trimmed.split(/\s+/).length : 0;
 	// Size segment: bytes under 1 KB ("~420 B") — "~0.0 KB" reads like a
@@ -735,6 +736,12 @@ export function InputSizeCounter({ text }: { text: string }) {
 				: ` · ~${(bytes / 1024).toFixed(1)} KB`;
 	return (
 		<div aria-live="off" className="mt-1 text-right text-[10px] tabular-nums text-muted-foreground">
+			{note && (
+				<span className="mr-2 inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+					<Check aria-hidden="true" className="size-3" />
+					{note}
+				</span>
+			)}
 			{text.length.toLocaleString()} chars
 			{words > 0 && ` · ${words.toLocaleString()} ${words === 1 ? "word" : "words"}`}
 			{sizeLabel}

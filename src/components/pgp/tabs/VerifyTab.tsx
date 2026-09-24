@@ -14,6 +14,7 @@ import {
 	SignerHashLegend,
 	DecryptedMessageView,
 	FingerprintWords,
+	PasteFromClipboardButton,
 } from "@/components/pgp/shared";
 import type {
 	PrivateKeyConfig,
@@ -233,6 +234,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 						<p className="mt-3 text-sm font-medium">
 							Paste a signature to verify, or drop a .asc file
 						</p>
+						<PasteFromClipboardButton
+							onPaste={(text) => {
+								setArmored(text);
+							}}
+						/>
 					</div>
 				)}
 				<Textarea

@@ -21,6 +21,7 @@ import {
 	ErrorBanner,
 	FileDownloadList,
 	SignerBadges,
+	PasteFromClipboardButton,
 	ZipDownloadButton,
 } from "@/components/pgp/shared";
 import type { PrivateKeyConfig, SignatureInfo } from "@/components/pgp/contracts";
@@ -381,6 +382,14 @@ export function DecryptTab({
 						<p className="mt-3 text-sm font-medium">
 							Paste an encrypted message, or drop a .asc file
 						</p>
+						<PasteFromClipboardButton
+							onPaste={(text) => {
+								setRepairedWith(null);
+								setError(null);
+								setOutput(null);
+								setArmored(text);
+							}}
+						/>
 					</div>
 				)}
 				<Textarea

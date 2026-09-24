@@ -22,6 +22,7 @@ import {
 	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
+	ClipboardPaste,
 	Copy,
 	FileSignature,
 	FileText,
@@ -785,6 +786,49 @@ export function DraftRestoredNote({
 				Discard
 			</Button>
 		</div>
+	);
+}
+
+/**
+ * Clipboard quick-paste for the Decrypt/Verify empty states. On phones the
+ * clipboard lives behind a long-press menu; an explicit button keeps the
+ * primary path to a one-tap action. Reads ONLY on click — the clipboard is
+ * never touched proactively — and replaces the input wholesale, which is
+ * always empty when the button is visible. Permission denial fails loud. */
+export function PasteFromClipboardButton({ onPaste }: { onPaste: (text: string) => void }) {
+	const [busy, setBusy] = useState(false);
+
+	const handlePaste = useCallback(async () => {
+		setBusy(true);
+		try {
+			const text = await navigator.clipboard.readText();
+			if (!text.trim()) {
+				toast({ title: "Clipboard is empty" });
+				return;
+			}
+			onPaste(text);
+		} catch {
+			toast({
+				title: "Couldn't read the clipboard",
+				description: "Your browser blocked clipboard access — paste with Ctrl+V instead.",
+			});
+		} finally {
+			setBusy(false);
+		}
+	}, [onPaste]);
+
+	return (
+		<Button
+			type="button"
+			variant="outline"
+			size="sm"
+			disabled={busy}
+			onClick={handlePaste}
+			className="mt-3 gap-1.5"
+		>
+			<ClipboardPaste aria-hidden="true" className="size-3.5" />
+			{busy ? "Pasting…" : "Paste from clipboard"}
+		</Button>
 	);
 }
 

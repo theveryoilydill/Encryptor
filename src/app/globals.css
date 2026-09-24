@@ -597,3 +597,23 @@
 .bn-editor .bn-block-content[data-content-type="codeBlock"] pre {
 	padding-top: 2.2rem;
 }
+
+/* Mobile formatting toolbar (BlockNote's experimental controller): the
+   controller already fixes it to the bottom of the viewport, but its bare
+   default read as a floating fragment. Sheet chrome instead — card
+   background, hairline top border, soft upward shadow — so it belongs to
+   the app. Buttons keep BlockNote's --bn theme, so dark mode follows the
+   editor automatically. */
+.bn-mobile-formatting-toolbar {
+	background: var(--card);
+	border-top: 1px solid var(--border);
+	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.08);
+	/* BlockNote centers the bar content for floating use; a docked sheet
+	   scrolls from the left edge instead. */
+	justify-content: flex-start;
+	gap: 2px;
+	padding-inline: 6px;
+}
+.dark .bn-mobile-formatting-toolbar {
+	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.4);
+}

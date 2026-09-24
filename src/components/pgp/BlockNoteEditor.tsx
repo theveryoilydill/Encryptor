@@ -48,6 +48,7 @@ import {
 	BasicTextStyleButton,
 	BlockTypeSelect,
 	CreateLinkButton,
+	ExperimentalMobileFormattingToolbarController,
 	FormattingToolbar,
 	FormattingToolbarController,
 	NestBlockButton,
@@ -314,6 +315,43 @@ function ComposerFormattingToolbar() {
 			<CreateLinkButton key="createLinkButton" />
 		</FormattingToolbar>
 	);
+}
+
+/** Compact toolbar for the mobile bottom bar. The desktop floating toolbar
+ *  clips off-viewport at phone widths (the link button falls off at 390px),
+ *  so below the sm breakpoint we dock the same actions to the bottom of the
+ *  screen instead — horizontally scrollable, above the virtual keyboard.
+ *  Alignment buttons are the cut: they need a visual anchor mobile users
+ *  don't have mid-typing, and the slash menu covers the rest. */
+function ComposerMobileFormattingToolbar() {
+	return (
+		<FormattingToolbar>
+			<BlockTypeSelect key={"blockTypeSelect"} />
+			<BasicTextStyleButton basicTextStyle="bold" key="boldStyleButton" />
+			<BasicTextStyleButton basicTextStyle="italic" key="italicStyleButton" />
+			<BasicTextStyleButton basicTextStyle="underline" key="underlineStyleButton" />
+			<BasicTextStyleButton basicTextStyle="code" key="codeStyleButton" />
+			<NestBlockButton key="nestBlockButton" />
+			<UnnestBlockButton key="unnestBlockButton" />
+			<CreateLinkButton key="createLinkButton" />
+		</FormattingToolbar>
+	);
+}
+
+/** Match the Tailwind sm breakpoint — the point where the floating toolbar's
+ *  widest row stops fitting the viewport. Listens live, so a window drag
+ *  across the threshold swaps the controllers without a reload. */
+function usePrefersMobileToolbar(): boolean {
+	const [mobile, setMobile] = useState(
+		() => typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches,
+	);
+	useEffect(() => {
+		const mq = window.matchMedia("(max-width: 640px)");
+		const onChange = (e: MediaQueryListEvent) => setMobile(e.matches);
+		mq.addEventListener("change", onChange);
+		return () => mq.removeEventListener("change", onChange);
+	}, []);
+	return mobile;
 }
 
 /** Hover "Copy" chip for code blocks. Fixed-positioned from the block's
@@ -662,6 +700,7 @@ export default function BlockNoteEditor({
 		[selectRange],
 	);
 	const codeCopyChip = useCodeCopyChip(viewRef);
+	const mobileToolbar = usePrefersMobileToolbar();
 	const editorShell =
 		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
@@ -712,7 +751,13 @@ export default function BlockNoteEditor({
 					triggerCharacter="/"
 					getItems={async (query) => getSlashMenuItems(editor, query, pickImage)}
 				/>
-				<FormattingToolbarController formattingToolbar={ComposerFormattingToolbar} />
+				{mobileToolbar ? (
+					<ExperimentalMobileFormattingToolbarController
+						formattingToolbar={ComposerMobileFormattingToolbar}
+					/>
+				) : (
+					<FormattingToolbarController formattingToolbar={ComposerFormattingToolbar} />
+				)}
 			</BlockNoteView>
 		</div>
 	);

@@ -43,6 +43,7 @@ export function SignTab({
 	const [output, setOutput] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [draftSaved, setDraftSaved] = useState(false);
 
 	// Debounced draft persistence (one write per typing pause).
 	useEffect(() => {
@@ -50,12 +51,20 @@ export function SignTab({
 			if (plaintext.trim() === "") {
 				clearDraft("sign");
 				setDraftRestored(false);
+				setDraftSaved(false);
 			} else {
 				saveDraft("sign", plaintext);
+				setDraftSaved(true);
 			}
 		}, 600);
 		return () => clearTimeout(t);
 	}, [plaintext]);
+	// Transient tick — "saved" stops being news after a moment.
+	useEffect(() => {
+		if (!draftSaved) return;
+		const t = setTimeout(() => setDraftSaved(false), 2000);
+		return () => clearTimeout(t);
+	}, [draftSaved]);
 
 	const handleSign = useCallback(async () => {
 		setError(null);
@@ -217,8 +226,9 @@ export function SignTab({
 						}}
 					/>
 				)}
-				{/* Char/word/size counter — parity with the Encrypt tab counter. */}
-				<InputSizeCounter text={plaintext} />
+				{/* Char/word/size counter — parity with the Encrypt tab counter,
+                                        including the transient draft-saved tick. */}
+				<InputSizeCounter text={plaintext} note={draftSaved ? "Draft saved" : undefined} />
 			</div>
 
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
@@ -273,9 +283,9 @@ export function SignTab({
 			)}
 
 			{/* ------------------------- Sign a file (round 20) -------------------------
-			    A second, self-contained flow: detached signature over a FILE's
-			    exact bytes (the classic gpg --detach-sig workflow). Session-only
-			    by design — the file is never stored, uploaded, or drafted. */}
+                            A second, self-contained flow: detached signature over a FILE's
+                            exact bytes (the classic gpg --detach-sig workflow). Session-only
+                            by design — the file is never stored, uploaded, or drafted. */}
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
 				<div className="mb-1.5 flex items-center gap-2">
 					<span
@@ -421,7 +431,7 @@ export function SignTab({
 				)}
 
 				{/* Hidden picker — re-armed after every read so picking the same
-				    file twice re-fires onChange. */}
+                                    file twice re-fires onChange. */}
 				<input
 					ref={fileInputRef}
 					type="file"

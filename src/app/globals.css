@@ -215,7 +215,12 @@
 }
 
 .animate-fade-up {
-	animation: fade-up 0.3s ease-out both;
+	/* `backwards`, not `both`: the end state IS the resting state, so
+	   forwards-fill buys nothing — and a forwards-filled transform keeps the
+	   element a containing block even at identity, which degrades every
+	   position: fixed descendant (BlockNote's mobile formatting toolbar
+	   docks by fixed positioning and ended up anchored to this div). */
+	animation: fade-up 0.3s ease-out backwards;
 }
 
 /* Reduced-motion contract (R11-b): the newer entrance utilities
@@ -325,7 +330,8 @@
 }
 
 .panel-enter {
-	animation: panel-enter 0.18s ease-out both;
+	/* Same fill-mode reasoning as .animate-fade-up above. */
+	animation: panel-enter 0.18s ease-out backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

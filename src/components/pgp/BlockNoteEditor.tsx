@@ -745,6 +745,11 @@ export default function BlockNoteEditor({
 				editor={editor}
 				theme={resolvedTheme === "dark" ? "dark" : "light"}
 				slashMenu={false}
+				// The child controllers own the toolbar; the built-in would
+				// otherwise ALSO render its default floating toolbar next to the
+				// experimental mobile controller (which doesn't register as an
+				// override and suppress it).
+				formattingToolbar={false}
 				aria-label="Message (markdown)"
 			>
 				<SuggestionMenuController

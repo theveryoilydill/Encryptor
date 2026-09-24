@@ -13,7 +13,6 @@ import {
 	Timer,
 	TriangleAlert,
 	Unlock,
-	Command as CommandIcon,
 	Keyboard,
 	X,
 } from "lucide-react";
@@ -27,7 +26,6 @@ import {
 	TABS,
 	type Tab,
 } from "@/components/pgp/contracts";
-import { CommandPalette } from "@/components/pgp/CommandPalette";
 import { ConfigureModal } from "@/components/pgp/ConfigureModal";
 import { LoginView } from "@/components/pgp/login/LoginView";
 import { ApiReferenceDialog } from "@/components/pgp/registry/ApiReferenceDialog";
@@ -332,8 +330,7 @@ export default function PgpApp() {
 	// after the first key of a session is set up — see the sign-in effect
 	// below. Replay lives in Settings → Help.
 	const [tourOpen, setTourOpen] = useState(false);
-	// Command palette (Ctrl/Cmd+K) + the shortcuts help it can open.
-	const [commandOpen, setCommandOpen] = useState(false);
+	// The shortcuts help dialog (opened from the header keyboard button).
 	const [shortcutsOpen, setShortcutsOpen] = useState(false);
 	const [includeSelf, setIncludeSelf] = useState<boolean>(loadIncludeSelfDefault);
 	// Own-key expiry banner dismissal (additive): keyed to
@@ -639,26 +636,14 @@ export default function PgpApp() {
 		[passphraseCached],
 	);
 
-	// Alt+1..5 switches tabs; Ctrl/Cmd+, opens the app Settings dialog;
-	// Ctrl/Cmd+K opens the command palette (unless a modal dialog already
-	// owns the keystroke); the key dialog stays on the header key button.
+	// Alt+1..4 switches tabs (TABS.length — see contracts.ts); Ctrl/Cmd+,
+	// opens the app Settings dialog; the key dialog stays on the header
+	// key button.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ",") {
 				e.preventDefault();
 				setSettingsOpen(true);
-				return;
-			}
-			if (
-				(e.ctrlKey || e.metaKey) &&
-				!e.altKey &&
-				!e.shiftKey &&
-				(e.key === "k" || e.key === "K")
-			) {
-				const target = e.target as HTMLElement | null;
-				if (target?.closest('[role="dialog"], [data-radix-popper-content-wrapper]')) return;
-				e.preventDefault();
-				setCommandOpen((v) => !v);
 				return;
 			}
 			if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -796,29 +781,6 @@ export default function PgpApp() {
 		setKeyHistory(removeKeyHistory(fingerprint));
 	}, []);
 
-	// Command palette: copy the public armor (same source the "Your key"
-	// dialog's CopyButton uses — info.armored). Toast feedback because the
-	// palette closes on activation, so there is no in-place button state.
-	const handleCopyPublicKey = useCallback(() => {
-		const armored = privateKey?.info?.armored;
-		if (!armored) return;
-		void navigator.clipboard
-			.writeText(armored)
-			.then(() =>
-				toast({
-					title: "Public key copied",
-					description: "Share it anywhere — the public half is meant to travel.",
-				}),
-			)
-			.catch(() =>
-				toast({
-					title: "Copy failed",
-					description: "The clipboard rejected the write — copy it from Your key instead.",
-					variant: "destructive",
-				}),
-			);
-	}, [privateKey, toast]);
-
 	const handleSelfTest = useCallback(async () => {
 		const result: SelfTestResult = await runCryptoSelfTest();
 		if (result.ok) {
@@ -851,7 +813,6 @@ export default function PgpApp() {
 			<Header
 				onConfigure={() => setConfigOpen(true)}
 				onOpenSettings={() => setSettingsOpen(true)}
-				onOpenCommand={() => setCommandOpen(true)}
 				onOpenShortcuts={() => setShortcutsOpen(true)}
 				privateKey={privateKey}
 				passphraseCached={passphraseCached}
@@ -894,7 +855,7 @@ export default function PgpApp() {
 
 					{/* All four panels stay MOUNTED for the whole session; inactive ones
             get the `hidden` attribute (display:none — unfocusable, out of
-            the a11y tree). Drafts and results survive tab switches: peeking
+            the a11y tree). Composers' text and results survive tab switches: peeking
             at another mode can no longer silently discard a half-written
             message, attachments, or pasted armor. The enter animation still
             plays on every switch because .panel-enter is re-added to the
@@ -922,6 +883,7 @@ export default function PgpApp() {
 										requestDecryptedKey={requestDecryptedKey}
 										onOpenInDecrypt={handleOpenInDecrypt}
 										settings={settings}
+										globalComposerChord={tab !== "sign"}
 									/>
 								)}
 								{t.id === "decrypt" && (
@@ -937,6 +899,7 @@ export default function PgpApp() {
 										privateKey={privateKey}
 										requestDecryptedKey={requestDecryptedKey}
 										markdownEditor={settings.markdownEditor}
+										globalComposerChord={tab === "sign"}
 									/>
 								)}
 								{t.id === "verify" && <VerifyTab privateKey={privateKey} />}
@@ -1019,24 +982,7 @@ export default function PgpApp() {
 				onTabChange={setTab}
 			/>
 
-			{/* Command palette (Ctrl/Cmd+K): app-wide actions in one place. */}
-			<CommandPalette
-				open={commandOpen}
-				onOpenChange={setCommandOpen}
-				onSwitchTab={setTab}
-				onOpenKeyModal={() => setConfigOpen(true)}
-				onCopyPublicKey={handleCopyPublicKey}
-				onOpenSettings={() => setSettingsOpen(true)}
-				onOpenShortcuts={() => setShortcutsOpen(true)}
-				onReplayTour={() => {
-					setTourOpen(true);
-				}}
-				onSelfTest={() => void handleSelfTest()}
-				passphraseCached={passphraseCached}
-				onLockNow={handleForgetCachedPassphrase}
-			/>
-
-			{/* Shortcuts help — opened from the header button or the palette. */}
+			{/* Shortcuts help — opened from the header keyboard button. */}
 			<ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
 		</div>
 	);
@@ -1047,7 +993,6 @@ export default function PgpApp() {
 function Header({
 	onConfigure,
 	onOpenSettings,
-	onOpenCommand,
 	onOpenShortcuts,
 	privateKey,
 	passphraseCached,
@@ -1056,9 +1001,7 @@ function Header({
 }: {
 	onConfigure: () => void;
 	onOpenSettings: () => void;
-	/** Opens the command palette (Ctrl/Cmd+K) — hidden on the sign-in gate. */
-	onOpenCommand: () => void;
-	/** Opens the keyboard-shortcuts help (also reachable from the palette). */
+	/** Opens the keyboard-shortcuts help. */
 	onOpenShortcuts: () => void;
 	privateKey: PrivateKeyConfig | null;
 	passphraseCached: boolean;
@@ -1097,7 +1040,7 @@ function Header({
 				? "animate-pulse border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
 				: autoLockMsLeft <= 120000
 					? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-					: "border-border bg-background text-muted-foreground";
+					: "border-border bg-muted text-muted-foreground";
 	return (
 		<header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
 			<div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
@@ -1133,7 +1076,7 @@ function Header({
 							{autoLockLabel !== null && (
 								<span
 									aria-hidden="true"
-									className={`absolute -right-1.5 -bottom-1 rounded-full border px-1 text-[8px] font-medium tabular-nums leading-[1.3] transition-colors duration-300 ${autoLockBadgeClass}`}
+									className={`absolute -right-0.5 -bottom-1 rounded-full border px-1 text-[8px] font-medium tabular-nums leading-[1.3] shadow-xs transition-colors duration-300 ${autoLockBadgeClass}`}
 								>
 									{autoLockLabel}
 								</span>
@@ -1155,24 +1098,6 @@ function Header({
 								<Keyboard className="size-4" aria-hidden />
 							</Button>
 						</div>
-					)}
-					{privateKey && (
-						<Button
-							variant="ghost"
-							size="icon"
-							onClick={onOpenCommand}
-							aria-label="Command palette (Ctrl+K)"
-							title="Command palette (Ctrl+K)"
-							className="hidden size-11 text-muted-foreground transition-colors hover:text-[#0055dc] press-effect sm:inline-flex sm:size-8 dark:hover:text-[#5e94ff]"
-						>
-							<CommandIcon className="size-4" aria-hidden />
-							<kbd
-								aria-hidden="true"
-								className="absolute -right-1 -bottom-1 rounded border bg-muted px-0.5 text-[8px] font-mono leading-[1.3] text-muted-foreground"
-							>
-								⌘K
-							</kbd>
-						</Button>
 					)}
 					{/* Dedicated settings entry (round 11 feedback): the gear owns app
               preferences; the key button next to it owns key/auth. Both are

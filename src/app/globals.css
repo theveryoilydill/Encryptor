@@ -215,7 +215,12 @@
 }
 
 .animate-fade-up {
-	animation: fade-up 0.3s ease-out both;
+	/* `backwards`, not `both`: the end state IS the resting state, so
+           forwards-fill buys nothing — and a forwards-filled transform keeps the
+           element a containing block even at identity, which degrades every
+           position: fixed descendant (BlockNote's mobile formatting toolbar
+           docks by fixed positioning and ended up anchored to this div). */
+	animation: fade-up 0.3s ease-out backwards;
 }
 
 /* Reduced-motion contract (R11-b): the newer entrance utilities
@@ -325,7 +330,8 @@
 }
 
 .panel-enter {
-	animation: panel-enter 0.18s ease-out both;
+	/* Same fill-mode reasoning as .animate-fade-up above. */
+	animation: panel-enter 0.18s ease-out backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -468,4 +474,250 @@
 .bn-block-group .bn-block-group {
 	border-left: 2px solid var(--border);
 	padding-left: 0.25rem;
+}
+
+/* Syntax-highlight token colors for rendered code blocks (rehype-highlight,
+   which appends .hljs-* spans AFTER sanitization — see lib/pgp/safe-html.ts).
+   Muted GitHub-like palette; the dark variants ride the .dark theme class. */
+.msg-md-view .hljs-comment,
+.msg-md-view .hljs-quote {
+	color: #6a737d;
+	font-style: italic;
+}
+.msg-md-view .hljs-keyword,
+.msg-md-view .hljs-selector-tag,
+.msg-md-view .hljs-doctag,
+.msg-md-view .hljs-meta .hljs-keyword {
+	color: #b5397c;
+}
+.msg-md-view .hljs-string,
+.msg-md-view .hljs-regexp,
+.msg-md-view .hljs-addition {
+	color: #2e7d4f;
+}
+.msg-md-view .hljs-number,
+.msg-md-view .hljs-literal,
+.msg-md-view .hljs-variable,
+.msg-md-view .hljs-template-variable,
+.msg-md-view .hljs-attr {
+	color: #b35900;
+}
+.msg-md-view .hljs-title,
+.msg-md-view .hljs-section,
+.msg-md-view .hljs-name,
+.msg-md-view .hljs-selector-id,
+.msg-md-view .hljs-selector-class {
+	color: #6f42c1;
+}
+.msg-md-view .hljs-built_in,
+.msg-md-view .hljs-type,
+.msg-md-view .hljs-symbol,
+.msg-md-view .hljs-bullet,
+.msg-md-view .hljs-meta {
+	color: #00667d;
+}
+.msg-md-view .hljs-deletion {
+	color: #b02a37;
+}
+.dark .msg-md-view .hljs-comment,
+.dark .msg-md-view .hljs-quote {
+	color: #8b949e;
+}
+.dark .msg-md-view .hljs-keyword,
+.dark .msg-md-view .hljs-selector-tag,
+.dark .msg-md-view .hljs-doctag,
+.dark .msg-md-view .hljs-meta .hljs-keyword {
+	color: #f472a5;
+}
+.dark .msg-md-view .hljs-string,
+.dark .msg-md-view .hljs-regexp,
+.dark .msg-md-view .hljs-addition {
+	color: #7ee2a8;
+}
+.dark .msg-md-view .hljs-number,
+.dark .msg-md-view .hljs-literal,
+.dark .msg-md-view .hljs-variable,
+.dark .msg-md-view .hljs-template-variable,
+.dark .msg-md-view .hljs-attr {
+	color: #ffb26b;
+}
+.dark .msg-md-view .hljs-title,
+.dark .msg-md-view .hljs-section,
+.dark .msg-md-view .hljs-name,
+.dark .msg-md-view .hljs-selector-id,
+.dark .msg-md-view .hljs-selector-class {
+	color: #c9a5ff;
+}
+.dark .msg-md-view .hljs-built_in,
+.dark .msg-md-view .hljs-type,
+.dark .msg-md-view .hljs-symbol,
+.dark .msg-md-view .hljs-bullet,
+.dark .msg-md-view .hljs-meta {
+	color: #6fd6e8;
+}
+.dark .msg-md-view .hljs-deletion {
+	color: #ff8b7b;
+}
+
+/* Editor code blocks: BlockNote renders the language <select> in a flex
+   row beside the code and fades it in on hover, effectively invisible in
+   dark mode. Overlay it as a quiet pill pinned to the block's top-right
+   (Notion-style language label); the code area gets extra top padding so
+   the pill never covers the first line. .bn-editor prefix + explicit
+   width keep the rules above BlockNote's own specificity. */
+.bn-block-content[data-content-type="codeBlock"] {
+	position: relative;
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] > div:has(> select) {
+	position: absolute;
+	top: 0.35rem;
+	right: 0.5rem;
+	width: fit-content;
+	z-index: 5;
+	line-height: 1;
+}
+/* .bn-editor prefix raises specificity above BlockNote's own
+   `.bn-block-content[data-content-type="codeBlock"] > div > select` rule. */
+.bn-editor .bn-block-content[data-content-type="codeBlock"] select {
+	/* BlockNote's own CSS absolutely positions the select with fixed offsets;
+           static inside the wrapper lets the pill shrink-wrap it instead. */
+	position: static;
+	appearance: auto;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: color-mix(in srgb, var(--background) 85%, transparent);
+	color: var(--muted-foreground);
+	font-size: 11px;
+	line-height: 1.2;
+	padding: 2px 6px;
+	cursor: pointer;
+	backdrop-filter: blur(4px);
+	transition:
+		color 0.15s ease,
+		border-color 0.15s ease;
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] select:hover {
+	color: var(--foreground);
+	border-color: var(--muted-foreground);
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] pre {
+	padding-top: 2.2rem;
+}
+
+/* Mobile formatting toolbar (BlockNote's experimental controller): the
+   controller already fixes it to the bottom of the viewport, but its bare
+   default read as a floating fragment. Sheet chrome instead — card
+   background, hairline top border, soft upward shadow — so it belongs to
+   the app. Buttons keep BlockNote's --bn theme, so dark mode follows the
+   editor automatically. */
+.bn-mobile-formatting-toolbar {
+	background: var(--card);
+	border-top: 1px solid var(--border);
+	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.08);
+	/* BlockNote centers the bar content for floating use; a docked sheet
+           scrolls from the left edge instead. */
+	justify-content: flex-start;
+	gap: 2px;
+	padding-inline: 6px;
+	/* Keyboard offset: BlockNote's experimental controller already tracks
+           the virtual keyboard (VirtualKeyboard API + visualViewport fallback)
+           and publishes --bn-mobile-keyboard-offset, which its own stylesheet
+           reads for `bottom`. Do NOT override top/bottom here — a custom
+           anchor would fight the native offset and break the rise animation. */
+}
+.dark .bn-mobile-formatting-toolbar {
+	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.4);
+}
+
+/* Print (round 4): the Decrypt result's "Print" button clones the rendered
+   message into a body-level #print-mount and swaps html.printing on for the
+   duration. In print, ONLY the clone survives — the app chrome, buttons,
+   and armor textareas all drop out — and the clone prints as a clean,
+   paper-friendly document regardless of the active theme (the handler also
+   strips the dark class while printing, so tokens resolve light). */
+@media print {
+	html.printing body > *:not(#print-mount) {
+		display: none !important;
+	}
+	html.printing,
+	html.printing body {
+		background: #fff !important;
+	}
+	#print-mount {
+		display: block !important;
+		color: #111 !important;
+		font-size: 12px;
+		line-height: 1.55;
+	}
+	#print-mount .print-header {
+		margin-bottom: 10px;
+		padding-bottom: 6px;
+		border-bottom: 1px solid #ddd;
+		font-size: 10px;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #555;
+	}
+	#print-mount .bg-card {
+		background: #fff !important;
+	}
+	#print-mount [class*="border"] {
+		border-color: #ddd !important;
+	}
+	#print-mount code,
+	#print-mount pre {
+		background: #f5f5f5 !important;
+		color: #111 !important;
+	}
+	#print-mount img {
+		max-width: 100% !important;
+	}
+	/* The click-to-zoom wrapper must vanish for layout in print so images
+           flow exactly like plain inline images. */
+	#print-mount button {
+		display: contents;
+	}
+	/* Attachments appendix (round 5): a titled block of framed figures —
+           name + size caption under each image; non-images are caption-only
+           rows so the paper trail lists every file even when it can't render. */
+	#print-mount .print-attachments {
+		margin-top: 14px;
+		padding-top: 8px;
+		border-top: 1px solid #ddd;
+	}
+	#print-mount .print-attachments-title {
+		margin-bottom: 8px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #555;
+	}
+	#print-mount .print-attachment {
+		margin: 0 0 10px;
+		page-break-inside: avoid;
+	}
+	#print-mount .print-attachment img {
+		display: block;
+		max-height: 3in;
+		width: auto;
+		max-width: 60%;
+		border: 1px solid #ddd;
+		border-radius: 4px;
+		padding: 4px;
+	}
+	#print-mount .print-attachment figcaption {
+		margin-top: 2px;
+		font-size: 10px;
+		color: #555;
+	}
+	/* Verification evidence footer: quiet closing line under the message —
+           who signed, which key, when it was checked. */
+	#print-mount .print-verification {
+		margin-top: 12px;
+		padding-top: 6px;
+		border-top: 1px solid #ddd;
+		font-size: 10px;
+		color: #0a7d33;
+	}
 }

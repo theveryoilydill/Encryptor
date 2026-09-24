@@ -14,13 +14,13 @@ import {
 	FileUp,
 	History,
 	LayoutTemplate,
-	List,
 	Loader2,
 	Lock,
 	Maximize2,
 	Minimize2,
 	Paperclip,
 	Pencil,
+	Search,
 	ShieldCheck,
 	ShieldX,
 	Sparkles,
@@ -38,7 +38,6 @@ import {
 	AttachmentList,
 	CopyButton,
 	DownloadButton,
-	DraftRestoredNote,
 	ErrorBanner,
 	InputSizeCounter,
 	OutputBlock,
@@ -88,7 +87,6 @@ import {
 	type ParsedVaultManifest,
 	type SealedHistoryEntry,
 } from "@/lib/pgp/sealed-history";
-import { clearDraft, loadDraft, saveDraft } from "@/lib/pgp/drafts";
 import {
 	decryptAndAutoVerify,
 	describeEncryptedMessage,
@@ -105,6 +103,12 @@ import {
 } from "@/lib/pgp/pq";
 import { fetchKeysFromAllSourcesWithLocal } from "@/lib/pgp/key-lookup";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
+import {
+	composerOverlayOwner,
+	isComposerToggleChord,
+	isNestedDialogTarget,
+	isPrimaryActionChord,
+} from "@/lib/pgp/composer-overlay";
 import {
 	buildPlaintextForEncryption,
 	formatFileSize,
@@ -261,37 +265,6 @@ const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] 
 	},
 ];
 
-/** GitHub-style anchor slug for a heading title: lowercase, strip every
- *  character that is not a letter, number, space or hyphen, then spaces
- *  become hyphens. Mirrors the anchors GitHub generates for its own
- *  headings, so TOC links keep working when the message is pasted into a
- *  GitHub issue, README or comment.
- *
- *  # Mr. AI Acting on s183173's Behalf
- */
-function githubSlug(title: string): string {
-	return title
-		.toLowerCase()
-		.replace(/[^\p{L}\p{N}\s-]/gu, "")
-		.replace(/\s+/g, "-");
-}
-
-/** Build a GitHub-style table of contents from the composer's markdown:
- *  every ATX heading (`#` through `######`) becomes an indented
- *  `- [Title](#slug)` row (2 spaces of indent per level below h1).
- *  Returns "" when the message has no headings — the caller toasts
- *  instead of inserting an empty TOC. */
-function buildTableOfContents(markdown: string): string {
-	const rows: string[] = [];
-	for (const line of markdown.split("\n")) {
-		const match = /^(#{1,6})\s+(.*)$/.exec(line);
-		if (!match) continue;
-		const title = match[2].trim();
-		rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${githubSlug(title)})`);
-	}
-	return rows.join("\n");
-}
-
 /** Small right-aligned utility above the composer: the template menu works
  *  for BOTH editor styles (Notion blocks + VS Code textarea) because it
  *  rides the same setPlaintext path as typing. Applying a template
@@ -404,8 +377,8 @@ function TemplateMenu({
 				className="max-h-[min(26rem,var(--radix-dropdown-menu-content-available-height))] w-72 overflow-y-auto"
 			>
 				{/* Plain-text disclosure (round-12 product pass): saved templates live
-				    in this browser's storage UNENCRYPTED. One line up front keeps the
-				    "no secrets in templates" rule visible wherever templates are used. */}
+                                    in this browser's storage UNENCRYPTED. One line up front keeps the
+                                    "no secrets in templates" rule visible wherever templates are used. */}
 				<p
 					role="note"
 					className="mx-1.5 mb-1 flex items-start gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] font-medium leading-relaxed text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
@@ -489,7 +462,7 @@ function TemplateMenu({
 					Backup
 				</DropdownMenuLabel>
 				{/* Export always works (even with zero templates — an empty backup is
-				     still a valid file); import feeds the merge + toast flow. */}
+                                     still a valid file); import feeds the merge + toast flow. */}
 				<DropdownMenuItem onSelect={handleExport} className="gap-1.5 py-2 text-xs">
 					<FileDown aria-hidden="true" className="size-3.5" />
 					Export templates
@@ -508,8 +481,8 @@ function TemplateMenu({
 			</DropdownMenuContent>
 
 			{/* Backup file input lives OUTSIDE the DropdownMenuContent: Radix
-			    unmounts the content on close, which would null the ref before the
-			    deferred picker click could fire. */}
+                            unmounts the content on close, which would null the ref before the
+                            deferred picker click could fire. */}
 			<input
 				ref={importInputRef}
 				type="file"
@@ -524,8 +497,8 @@ function TemplateMenu({
 				}}
 			/>
 			{/* Name prompt for "Save current message as template". Plain
-			    Dialog (not an inline menu editor) so mobile keyboards, focus
-			    trapping, and Escape handling all behave. */}
+                            Dialog (not an inline menu editor) so mobile keyboards, focus
+                            trapping, and Escape handling all behave. */}
 			<Dialog open={saveOpen} onOpenChange={setSaveOpen}>
 				<DialogContent className="sm:max-w-sm">
 					<DialogHeader>
@@ -573,16 +546,6 @@ function TemplateMenu({
 	);
 }
 
-/** True when a keyboard event started inside a nested Radix surface (a
- *  dialog, dropdown menu or listbox) that must keep Escape / shortcuts for
- *  itself — shared by the full-screen overlay's window + React handlers. */
-function isNestedDialogTarget(target: EventTarget | null): boolean {
-	const el = target as HTMLElement | null;
-	return !!el?.closest?.(
-		'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-	);
-}
-
 export function EncryptTab({
 	privateKey,
 	recipients,
@@ -592,6 +555,7 @@ export function EncryptTab({
 	requestDecryptedKey,
 	onOpenInDecrypt,
 	settings,
+	globalComposerChord = true,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	recipients: Recipient[];
@@ -607,26 +571,20 @@ export function EncryptTab({
 	/** App preferences (compression + editor style) — owned by PgpApp so a
 	 *  settings change re-renders the open tab immediately. */
 	settings: AppSettings;
+	/** Whether THIS tab owns the global Ctrl/Cmd+Shift+E expand chord right
+	 *  now. True everywhere except the Sign tab — since Sign grew its own
+	 *  full-screen composer, the chord must expand the composer of the ACTIVE
+	 *  tab, and PgpApp routes it (sign → SignTab, everything else → here as
+	 *  the legacy fallback for tabs without a composer of their own). */
+	globalComposerChord?: boolean;
 }) {
 	const { toast } = useToast();
-	// Draft resilience (sessionStorage, see lib/pgp/drafts.ts): the composer
-	// rehydrates whatever was typed before a refresh, and the restore is
-	// surfaced (and discardable) rather than silent. The initializer runs
-	// once per tab mount; the save effect below keeps storage in step.
-	const [initialDraft] = useState(() => loadDraft("encrypt"));
-	const [draftRestored, setDraftRestored] = useState(() => initialDraft !== null);
-	const [plaintext, setPlaintext] = useState(initialDraft?.text ?? "");
-	const [attachments, setAttachments] = useState<EnvelopeFile[]>(initialDraft?.files ?? []);
-	// Debounced draft persistence — one write per pause in typing, not per
-	// keystroke. Empty/whitespace text clears the stored draft instead of
-	// writing an empty one, so "cleared the message" never resurrects.
-	useEffect(() => {
-		const t = setTimeout(() => {
-			if (plaintext.trim() === "") clearDraft("encrypt");
-			else saveDraft("encrypt", plaintext, attachments);
-		}, 600);
-		return () => clearTimeout(t);
-	}, [plaintext, attachments]);
+	// Composer content. Plaintext is held in React state ONLY — nothing is
+	// persisted to storage (user request: "Don't save drafts, that is
+	// insecure"). A refresh loses unsent text by design; the seal-and-clear
+	// path also empties state so plaintext never outlives its use.
+	const [plaintext, setPlaintext] = useState("");
+	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
 	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
 	// image-paste bridge must return the FINAL (deduped) filename in the same
 	// tick it registers the file, but React state updates are async and the
@@ -687,6 +645,10 @@ export function EncryptTab({
 		const onWindowEscape = (e: KeyboardEvent) => {
 			if (e.key !== "Escape" || e.defaultPrevented) return;
 			if (isNestedDialogTarget(e.target)) return;
+			// Focus inside ANOTHER tab's overlay (both composers can stack):
+			// that overlay is on top and owns the key — stand down.
+			const owner = composerOverlayOwner(e.target);
+			if (owner !== null && owner !== "encrypt") return;
 			e.preventDefault();
 			setComposerExpanded(false);
 		};
@@ -698,33 +660,22 @@ export function EncryptTab({
 	// the tab components stay mounted across tab switches, so a window-level
 	// capture listener lets the composer open from ANY tab. Same dialog-safe
 	// guards as the section handler; the section + overlay handlers see
-	// defaultPrevented and skip, so the toggle never double-fires.
+	// defaultPrevented and skip, so the toggle never double-fires. Gated on
+	// globalComposerChord: while the Sign tab is active, its own composer
+	// takes the chord (see PgpApp).
 	//
 	// # Mr. AI Acting on s183173's Behalf
 	useEffect(() => {
+		if (!globalComposerChord) return;
 		const onKey = (e: KeyboardEvent) => {
-			if (
-				(e.ctrlKey || e.metaKey) &&
-				e.shiftKey &&
-				!e.altKey &&
-				(e.key === "E" || e.key === "e") &&
-				!e.defaultPrevented
-			) {
-				const target = e.target as HTMLElement | null;
-				if (
-					target?.closest(
-						'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-					)
-				) {
-					return;
-				}
-				e.preventDefault();
-				setComposerExpanded((v) => !v);
-			}
+			if (!isComposerToggleChord(e) || e.defaultPrevented) return;
+			if (isNestedDialogTarget(e.target)) return;
+			e.preventDefault();
+			setComposerExpanded((v) => !v);
 		};
 		window.addEventListener("keydown", onKey, true);
 		return () => window.removeEventListener("keydown", onKey, true);
-	}, []);
+	}, [globalComposerChord]);
 	// Success summary for the LAST output (recipient count + signed),
 	// rendered as a compact strip above the output block.
 	const [outputMeta, setOutputMeta] = useState<{
@@ -749,10 +700,30 @@ export function EncryptTab({
 	// earlier sealed message can be restored after the output block is
 	// reset or replaced by a newer one. Collapsed by default.
 	const [sealedHistory, setSealedHistory] = useState<SealedHistoryEntry[]>([]);
+	// Clear is destructive (wipes every saved sealed output), so the first
+	// click only arms it — second click within 3s confirms; blur disarms.
+	// Cheap insurance against a mis-tap next to the collapsible trigger.
+	const [confirmClear, setConfirmClear] = useState(false);
 	const [historyOpen, setHistoryOpen] = useState(false);
 	useEffect(() => {
 		setSealedHistory(loadSealedHistory());
 	}, []);
+
+	// Vault search (round 23): a client-side filter over the entry metadata
+	// people actually remember — recipient labels, the sticky note, the
+	// signer label. The armor/fingerprint bytes are NOT searched: the note
+	// field is the intended place for "what was this?" context.
+	const [vaultQuery, setVaultQuery] = useState("");
+	const filteredHistory = useMemo(() => {
+		const q = vaultQuery.trim().toLowerCase();
+		if (!q) return sealedHistory;
+		return sealedHistory.filter((e) => {
+			const haystack = [e.note ?? "", e.signer ?? "", ...(e.labels ?? [])]
+				.join(" \n ")
+				.toLowerCase();
+			return haystack.includes(q);
+		});
+	}, [sealedHistory, vaultQuery]);
 
 	// Vault summary-strip totals (round 16): computed over the (≤8) entries
 	// with a cheap useMemo — combined armor bytes (classical + PQ copies)
@@ -1073,19 +1044,6 @@ export function EncryptTab({
 		setPlaintext(body);
 	}, []);
 
-	// "Insert table of contents" (round-12 editor pass): parse the CURRENT
-	// composer markdown for ATX headings and PREPEND a GitHub-style TOC
-	// (slug anchors, one blank line after). Heading-less messages get a
-	// toast and are left completely untouched.
-	const insertTableOfContents = useCallback(() => {
-		const toc = buildTableOfContents(plaintext);
-		if (!toc) {
-			toast({ title: "No headings found — add some `#` headings first" });
-			return;
-		}
-		setPlaintext(`${toc}\n\n${plaintext}`);
-	}, [plaintext, toast]);
-
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
 		setOutput("");
@@ -1175,6 +1133,10 @@ export function EncryptTab({
 				}
 			}
 			setOutput(armored);
+			// Encrypted from the full-screen overlay: collapse it so the
+			// result (which renders in the inline layout BELOW the composer)
+			// is actually visible — the overlay would otherwise cover it.
+			setComposerExpanded(false);
 			// Display-only recipient labels for the "Sealed to: …" tooltip —
 			// capped like every other display list so a 50-recipient paste can't
 			// blow up the strip.
@@ -1220,11 +1182,7 @@ export function EncryptTab({
 
 			// The user can always decrypt their own copy (Include me) — so the
 			// plaintext is deleted from the composer as soon as the ciphertext
-			// exists. Only the output remains in memory. The draft goes with it
-			// (immediately, not on the debounced effect — closing the tab inside
-			// the debounce window must not resurrect a sealed message).
-			clearDraft("encrypt");
-			setDraftRestored(false);
+			// exists. Only the output remains in memory.
 			setPlaintext("");
 			setAttachments([]);
 			setHintDismissedFor(null);
@@ -1491,7 +1449,7 @@ export function EncryptTab({
 		[plaintext, attachments],
 	);
 
-	// The whole composer — utility row (TOC, Expand, template menu) + editor
+	// The whole composer — utility row (Expand, template menu) + editor
 	// + counter + smart-input hint — as one value, rendered EITHER inline OR
 	// inside the full-screen portal overlay further down. Moving it in and
 	// out of the overlay is therefore a pure re-mount: no state lives in the
@@ -1500,18 +1458,9 @@ export function EncryptTab({
 	// # Mr. AI Acting on s183173's Behalf
 	const composerBody = (
 		<>
-			{/* Composer utility row: table-of-contents insert, full-screen
-			    toggle and the template menu, right-aligned. */}
+			{/* Composer utility row: full-screen toggle and the template
+                            menu, right-aligned. */}
 			<div className="mb-1.5 flex items-center justify-end gap-2">
-				<button
-					type="button"
-					aria-label="Insert table of contents"
-					title="Insert table of contents"
-					onClick={insertTableOfContents}
-					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-				>
-					<List aria-hidden="true" className="size-3.5" />
-				</button>
 				<button
 					type="button"
 					aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
@@ -1528,7 +1477,7 @@ export function EncryptTab({
 				<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
 			</div>
 			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
-			    the viewport; plain block inline. */}
+                            the viewport; plain block inline. */}
 			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
 				<MessageEditor
 					value={plaintext}
@@ -1541,20 +1490,6 @@ export function EncryptTab({
 					expanded={composerExpanded}
 				/>
 			</div>
-			{/* Draft-resilience note — only after an actual restore, and gone
-			once the user discards or seals the message. */}
-			{draftRestored && (
-				<DraftRestoredNote
-					filesDropped={initialDraft?.filesDropped}
-					onDiscard={() => {
-						clearDraft("encrypt");
-						setDraftRestored(false);
-						setPlaintext("");
-						setAttachments([]);
-						setHintDismissedFor(null);
-					}}
-				/>
-			)}
 			{/* Char/word/size counter (visual feedback only). */}
 			<InputSizeCounter text={plaintext} />
 			{showEncryptHint && detectedBlock && (
@@ -1576,7 +1511,7 @@ export function EncryptTab({
 				// Ctrl/Cmd+Enter runs the primary action from anywhere in the tab
 				// (editor, attachment list, button). Skips while a run is in flight
 				// — same guard as the button's disabled state.
-				if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+				if (isPrimaryActionChord(e)) {
 					e.preventDefault();
 					if (!busy) void handleEncrypt();
 				}
@@ -1585,21 +1520,9 @@ export function EncryptTab({
 				// menu belong to that surface, never to us — and an already-handled
 				// (defaultPrevented) event is left alone. The composer overlay
 				// itself opts back in via the :not, just like its Escape guard.
-				if (
-					(e.ctrlKey || e.metaKey) &&
-					e.shiftKey &&
-					!e.altKey &&
-					(e.key === "E" || e.key === "e") &&
-					!e.defaultPrevented
-				) {
-					const target = e.target as HTMLElement | null;
-					if (
-						target?.closest(
-							'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-						)
-					) {
-						return;
-					}
+				// Shared chord/guard predicates live in lib/pgp/composer-overlay.ts
+				// (the Sign tab's overlay mirrors this exact wiring).
+				if (isComposerToggleChord(e) && !e.defaultPrevented && !isNestedDialogTarget(e.target)) {
 					e.preventDefault();
 					setComposerExpanded((v) => !v);
 				}
@@ -1653,17 +1576,17 @@ export function EncryptTab({
 				</div>
 			)}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
-			    dialog filling the viewport. Escape collapses it — EXCEPT when a
-			    Radix surface opened FROM the composer is on stage (template
-			    dropdown, save-template dialog, …): those consume Escape
-			    themselves and must never come back to a collapsed composer.
-			    Most Radix layers portal OUTSIDE this overlay, so their Escapes
-			    never even bubble through it; the target checks + the
-			    defaultPrevented guard cover the paths that still do. */}
+                            dialog filling the viewport. Escape collapses it — EXCEPT when a
+                            Radix surface opened FROM the composer is on stage (template
+                            dropdown, save-template dialog, …): those consume Escape
+                            themselves and must never come back to a collapsed composer.
+                            Most Radix layers portal OUTSIDE this overlay, so their Escapes
+                            never even bubble through it; the target checks + the
+                            defaultPrevented guard cover the paths that still do. */}
 			{composerExpanded &&
 				createPortal(
 					<div
-						data-composer-overlay
+						data-composer-overlay="encrypt"
 						role="dialog"
 						aria-modal="true"
 						aria-label="Composer, full screen"
@@ -1685,7 +1608,7 @@ export function EncryptTab({
 						onKeyDown={(e) => {
 							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
 							// portal sits outside the <section> keydown handler.
-							if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === "Enter") {
+							if (isPrimaryActionChord(e)) {
 								e.preventDefault();
 								if (!busy) void handleEncrypt();
 							}
@@ -1695,27 +1618,71 @@ export function EncryptTab({
 							// section: nested dialogs/popovers opened FROM the composer
 							// keep the keys for themselves.
 							if (
-								(e.ctrlKey || e.metaKey) &&
-								e.shiftKey &&
-								!e.altKey &&
-								(e.key === "E" || e.key === "e") &&
-								!e.defaultPrevented
+								isComposerToggleChord(e) &&
+								!e.defaultPrevented &&
+								!isNestedDialogTarget(e.target)
 							) {
-								const target = e.target as HTMLElement | null;
-								if (
-									target?.closest(
-										'[role="dialog"]:not([data-composer-overlay]), [data-radix-popper-content-wrapper], [role="menu"], [role="listbox"]',
-									)
-								) {
-									return;
-								}
 								e.preventDefault();
 								setComposerExpanded(false);
 							}
 						}}
 						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
 					>
-						<div className="mx-auto flex h-full min-h-0 w-full flex-col">{composerBody}</div>
+						{/* max-w-4xl: Notion-style reading column — the composer stays
+                            scannable on wide screens instead of stretching edge to
+                            edge. mt-auto pins the status bar to the bottom. */}
+						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
+							{composerBody}
+							{/* Overlay status bar (round 9): the configuration the action
+                                will run with (recipients / attachments / signing) plus the
+                                chords that work in here — so zen mode never blacks out
+                                context. Chips mirror the inline layout's live state. */}
+							<div className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3">
+								<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+									{recipients.length === 0 ? (
+										includeSelf ? (
+											<span className="rounded-full bg-muted/60 px-2 py-0.5">
+												encrypting to yourself
+											</span>
+										) : (
+											<span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+												No recipients yet
+											</span>
+										)
+									) : (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">
+											{recipients.length === 1 ? "1 recipient" : `${recipients.length} recipients`}
+										</span>
+									)}
+									{includeSelf && (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">includes you</span>
+									)}
+									{attachments.length > 0 && (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">
+											{attachments.length === 1
+												? "1 attachment"
+												: `${attachments.length} attachments`}
+										</span>
+									)}
+									{settings.autoSign && (
+										<span className="rounded-full bg-muted/60 px-2 py-0.5">+ sign</span>
+									)}
+								</div>
+								<div className="hidden shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
+									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+										Ctrl+↵
+									</kbd>
+									<span>Encrypt</span>
+									<span aria-hidden="true" className="text-border">
+										·
+									</span>
+									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
+										Esc
+									</kbd>
+									<span>Collapse</span>
+								</div>
+							</div>
+						</div>
 					</div>,
 					document.body,
 				)}
@@ -1828,7 +1795,7 @@ export function EncryptTab({
 							</span>
 						))}
 					{/* Paperclip icon (round 16): files chips read as attachments at
-					    a glance — strip + vault rows + summary strip share the motif. */}
+                                            a glance — strip + vault rows + summary strip share the motif. */}
 					{outputMeta.files !== undefined && outputMeta.files > 0 && (
 						<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
 							<Paperclip aria-hidden="true" className="size-3" />
@@ -1864,8 +1831,8 @@ export function EncryptTab({
 			)}
 
 			{/* Round 18 UX: the vault shell ALWAYS renders (collapsed default) —
-			    after a Clear (or on a fresh browser) Import used to be unreachable
-			    when the whole section unmounted at 0 entries. */}
+                            after a Clear (or on a fresh browser) Import used to be unreachable
+                            when the whole section unmounted at 0 entries. */}
 			<section
 				className="relative animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-sm"
 				aria-label="Recent sealed outputs"
@@ -1915,19 +1882,29 @@ export function EncryptTab({
 							/>
 						</CollapsibleTrigger>
 						{/* Round 18: Clear only makes sense with entries — hides at 0 so
-							    the empty state stays the single focus. */}
+                                                            the empty state stays the single focus. */}
 						{sealedHistory.length > 0 && (
 							<Button
 								variant="ghost"
 								size="sm"
 								onClick={() => {
+									if (!confirmClear) {
+										setConfirmClear(true);
+										return;
+									}
+									setConfirmClear(false);
 									setSealedHistory(clearSealedHistory());
 									toast({ title: "Sealed-output history cleared" });
 								}}
-								className="shrink-0 text-muted-foreground hover:text-foreground"
+								onBlur={() => setConfirmClear(false)}
+								className={
+									confirmClear
+										? "shrink-0 text-destructive hover:text-destructive"
+										: "shrink-0 text-muted-foreground hover:text-foreground"
+								}
 							>
 								<Trash2 aria-hidden="true" className="size-4" />
-								Clear
+								{confirmClear ? "Really clear?" : "Clear"}
 							</Button>
 						)}
 					</div>
@@ -1935,9 +1912,9 @@ export function EncryptTab({
 						{sealedHistory.length === 0 ? (
 							<div className="px-4 py-5">
 								{/* Round 18 UX discovery: the old shell only rendered when
-									    entries existed, so after a Clear (or on a fresh browser)
-									    Import was UNREACHABLE. The empty state gets its own dashed
-									    card + import button instead. */}
+                                                                            entries existed, so after a Clear (or on a fresh browser)
+                                                                            Import was UNREACHABLE. The empty state gets its own dashed
+                                                                            card + import button instead. */}
 								<div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-4 py-6 text-center">
 									<History aria-hidden="true" className="size-5 text-muted-foreground" />
 									<p className="text-sm font-medium">Nothing sealed yet</p>
@@ -1961,9 +1938,9 @@ export function EncryptTab({
 						) : (
 							<>
 								{/* Vault summary strip (round 16): a thin muted at-a-glance bar —
-							    "N entries · ~X KB sealed · N signed · N quantum-sealed · N
-							    attached". Only the segments that apply render; the size
-							    combines classical + PQ armor bytes. */}
+                                                            "N entries · ~X KB sealed · N signed · N quantum-sealed · N
+                                                            attached". Only the segments that apply render; the size
+                                                            combines classical + PQ armor bytes. */}
 								<div className="flex flex-wrap items-center gap-x-1 px-4 pb-1 pt-2 text-[11px] text-muted-foreground">
 									<span>
 										{sealedHistory.length} {sealedHistory.length === 1 ? "entry" : "entries"}
@@ -2058,235 +2035,278 @@ export function EncryptTab({
 										</Button>
 									</span>
 								</div>
-								<ul className="divide-y divide-border border-t border-border">
-									{sealedHistory.map((entry) => (
-										<li
-											key={entry.id}
-											className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
+								{/* Vault search row (round 23): renders with entries, under the
+                                                                    summary strip. Filters by recipient labels / note / signer;
+                                                                    shows an N-of-M tally while active. */}
+								<div className="flex items-center gap-2 px-4 pb-2">
+									<div className="relative min-w-0 flex-1">
+										<Search
+											aria-hidden="true"
+											className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+										/>
+										<Input
+											value={vaultQuery}
+											onChange={(e) => setVaultQuery(e.target.value)}
+											onKeyDown={(e) => {
+												if (e.key === "Escape") {
+													e.preventDefault();
+													setVaultQuery("");
+												}
+											}}
+											placeholder="Filter by recipient, note, or signer"
+											aria-label="Filter vault entries"
+											className="h-8 bg-background pl-8 text-xs dark:bg-input/20"
+										/>
+									</div>
+									{vaultQuery.trim() !== "" && (
+										<span
+											className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
+											aria-live="polite"
 										>
-											{/* PQ edge accent (round 14): a violet gradient strip on the left
-										    edge mirrors the PQ chip/badge color language — rows carrying a
-										    quantum-sealed copy are spottable at a glance. */}
-											{entry.sealedArmor && (
-												<span
-													aria-hidden="true"
-													className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
-												/>
-											)}
-											<time
-												dateTime={new Date(entry.at).toISOString()}
-												title={formatHistoryTime(entry.at)}
-												className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
+											{filteredHistory.length} of {sealedHistory.length}
+										</span>
+									)}
+								</div>
+								<ul className="divide-y divide-border border-t border-border">
+									{filteredHistory.length === 0 && vaultQuery.trim() !== "" ? (
+										<li className="px-4 py-5 text-center">
+											<p className="text-xs text-muted-foreground">
+												No vault entries match “{vaultQuery.trim()}”. The filter covers recipient
+												labels, notes, and the signer — not the ciphertext.
+											</p>
+										</li>
+									) : (
+										filteredHistory.map((entry) => (
+											<li
+												key={entry.id}
+												className="relative flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 transition-colors odd:bg-muted/25 hover:bg-muted/40"
 											>
-												{formatRelativeHistoryTime(entry.at)}
-											</time>
-											<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-												<span
-													title={
-														entry.labels && entry.labels.length > 0
-															? `Sealed to: ${entry.labels.join(", ")}`
-															: undefined
-													}
-													className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
-												>
-													{entry.keys} {entry.keys === 1 ? "key" : "keys"}
-												</span>
-												{entry.signed &&
-													(entry.signer ? (
-														<span
-															title={
-																entry.signerFp
-																	? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
-																	: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
-															}
-															className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
-														>
-															signed by {entry.signer}
-														</span>
-													) : (
-														<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-															signed
-														</span>
-													))}
-												{entry.pqSealed && (
-													<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-														PQ
-													</span>
-												)}
-												{entry.files !== undefined && entry.files > 0 && (
-													<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
-														<Paperclip aria-hidden="true" className="size-3" />
-														{entry.files} {entry.files === 1 ? "file" : "files"}
-													</span>
-												)}
-												<HealthVerdictChip verdict={healthMap[entry.id]} />
-												<span className="font-mono text-[10px] text-muted-foreground">
-													~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
-												</span>
-											</span>
-											{/* User note line (round 22): basis-full drops it onto its own
-										    row under the auto chips. Annotation voice — amber accent +
-										    italic — deliberately distinct from the seal-time chip family.
-										    Clicking the note re-opens the editor. */}
-											{noteEditingId !== entry.id && entry.note && (
-												<button
-													type="button"
-													onClick={() => {
-														setNoteEditingId(entry.id);
-														setNoteDraft(entry.note ?? "");
-													}}
-													aria-label={`Edit the note on this entry: ${entry.note}`}
-													className="flex w-full basis-full cursor-pointer items-start gap-1.5 border-l-2 border-amber-400/60 pl-2 text-left"
-												>
-													<StickyNote
+												{/* PQ edge accent (round 14): a violet gradient strip on the left
+                                                                                    edge mirrors the PQ chip/badge color language — rows carrying a
+                                                                                    quantum-sealed copy are spottable at a glance. */}
+												{entry.sealedArmor && (
+													<span
 														aria-hidden="true"
-														className="mt-0.5 size-3.5 shrink-0 text-amber-500 dark:text-amber-400/80"
+														className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-gradient-to-b from-violet-500 to-fuchsia-500"
 													/>
-													<span className="text-[11px] italic leading-snug text-muted-foreground">
-														{entry.note}
+												)}
+												<time
+													dateTime={new Date(entry.at).toISOString()}
+													title={formatHistoryTime(entry.at)}
+													className="w-[7.5rem] shrink-0 cursor-help font-mono text-[11px] text-muted-foreground"
+												>
+													{formatRelativeHistoryTime(entry.at)}
+												</time>
+												<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+													<span
+														title={
+															entry.labels && entry.labels.length > 0
+																? `Sealed to: ${entry.labels.join(", ")}`
+																: undefined
+														}
+														className="cursor-help rounded-full bg-[#0055dc]/8 px-2 py-0.5 text-[10px] font-medium text-[#0055dc] underline decoration-dotted decoration-[#0055dc]/40 underline-offset-2 dark:bg-[#5e94ff]/10 dark:text-[#5e94ff] dark:decoration-[#5e94ff]/40"
+													>
+														{entry.keys} {entry.keys === 1 ? "key" : "keys"}
 													</span>
-												</button>
-											)}
-											{noteEditingId === entry.id && (
-												<span className="flex w-full basis-full flex-wrap items-center gap-1.5">
-													<Input
-														value={noteDraft}
-														onChange={(e) => setNoteDraft(e.target.value)}
-														onKeyDown={(e) => {
-															if (e.key === "Enter") {
-																e.preventDefault();
-																handleSaveNote(entry.id);
-															} else if (e.key === "Escape") {
-																e.preventDefault();
+													{entry.signed &&
+														(entry.signer ? (
+															<span
+																title={
+																	entry.signerFp
+																		? `Signed by ${entry.signer} at seal time · fingerprint ${formatFingerprint(entry.signerFp)}`
+																		: `Signed by ${entry.signer} — display label captured at seal time (not verified here).`
+																}
+																className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-500"
+															>
+																signed by {entry.signer}
+															</span>
+														) : (
+															<span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+																signed
+															</span>
+														))}
+													{entry.pqSealed && (
+														<span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+															PQ
+														</span>
+													)}
+													{entry.files !== undefined && entry.files > 0 && (
+														<span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-600 dark:text-zinc-400">
+															<Paperclip aria-hidden="true" className="size-3" />
+															{entry.files} {entry.files === 1 ? "file" : "files"}
+														</span>
+													)}
+													<HealthVerdictChip verdict={healthMap[entry.id]} />
+													<span className="font-mono text-[10px] text-muted-foreground">
+														~{Math.max(1, Math.round(entry.armor.length / 1024))} KB
+													</span>
+												</span>
+												{/* User note line (round 22): basis-full drops it onto its own
+                                                                                    row under the auto chips. Annotation voice — amber accent +
+                                                                                    italic — deliberately distinct from the seal-time chip family.
+                                                                                    Clicking the note re-opens the editor. */}
+												{noteEditingId !== entry.id && entry.note && (
+													<button
+														type="button"
+														onClick={() => {
+															setNoteEditingId(entry.id);
+															setNoteDraft(entry.note ?? "");
+														}}
+														aria-label={`Edit the note on this entry: ${entry.note}`}
+														className="flex w-full basis-full cursor-pointer items-start gap-1.5 border-l-2 border-amber-400/60 pl-2 text-left"
+													>
+														<StickyNote
+															aria-hidden="true"
+															className="mt-0.5 size-3.5 shrink-0 text-amber-500 dark:text-amber-400/80"
+														/>
+														<span className="text-[11px] italic leading-snug text-muted-foreground">
+															{entry.note}
+														</span>
+													</button>
+												)}
+												{noteEditingId === entry.id && (
+													<span className="flex w-full basis-full flex-wrap items-center gap-1.5">
+														<Input
+															value={noteDraft}
+															onChange={(e) => setNoteDraft(e.target.value)}
+															onKeyDown={(e) => {
+																if (e.key === "Enter") {
+																	e.preventDefault();
+																	handleSaveNote(entry.id);
+																} else if (e.key === "Escape") {
+																	e.preventDefault();
+																	setNoteEditingId(null);
+																	setNoteDraft("");
+																}
+															}}
+															maxLength={MAX_SEALED_NOTE_CHARS}
+															placeholder="e.g. Contract for Alice — emailed 9/23"
+															aria-label="Vault entry note"
+															className="h-8 min-w-0 flex-1 bg-background text-xs dark:bg-input/20"
+															autoFocus
+														/>
+														<Button
+															variant="outline"
+															size="sm"
+															onClick={() => handleSaveNote(entry.id)}
+															className="h-8 px-2.5 text-xs"
+														>
+															Save
+														</Button>
+														<Button
+															variant="ghost"
+															size="sm"
+															onClick={() => {
 																setNoteEditingId(null);
 																setNoteDraft("");
-															}
-														}}
-														maxLength={MAX_SEALED_NOTE_CHARS}
-														placeholder="e.g. Contract for Alice — emailed 9/23"
-														aria-label="Vault entry note"
-														className="h-8 min-w-0 flex-1 bg-background text-xs dark:bg-input/20"
-														autoFocus
-													/>
-													<Button
-														variant="outline"
-														size="sm"
-														onClick={() => handleSaveNote(entry.id)}
-														className="h-8 px-2.5 text-xs"
-													>
-														Save
-													</Button>
+															}}
+															className="h-8 px-2.5 text-xs"
+														>
+															Cancel
+														</Button>
+													</span>
+												)}
+												{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
+                                                                                    actions the group must wrap at narrow widths — nowrap plus the
+                                                                                    section's overflow-hidden silently clipped the trailing
+                                                                                    txt/remove buttons at 390 px. */}
+												<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
 													<Button
 														variant="ghost"
 														size="sm"
 														onClick={() => {
-															setNoteEditingId(null);
-															setNoteDraft("");
+															setOutput(entry.armor);
+															setSealedCopy(entry.sealedArmor ?? "");
+															setOutputMeta({
+																keys: entry.keys,
+																signed: entry.signed,
+																labels: entry.labels ?? [],
+																signer: entry.signer,
+																signerFp: entry.signerFp,
+																files: entry.files,
+															});
+															setError(null);
+															toast({
+																title: "Sealed output restored",
+																description:
+																	"The ciphertext is back in the output box — copy or download it from there.",
+															});
 														}}
-														className="h-8 px-2.5 text-xs"
+														className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
 													>
-														Cancel
+														<History aria-hidden="true" className="size-3.5" />
+														Restore
+													</Button>
+													<Button
+														variant="ghost"
+														size="sm"
+														onClick={() =>
+															onOpenInDecrypt?.({
+																armor: entry.sealedArmor ?? entry.armor,
+																seq: Date.now(),
+															})
+														}
+														title={
+															healthMap[entry.id] === "ok"
+																? "Verified decryptable by the last health check, so this is one click to plaintext."
+																: "Opens this sealed output in the Decrypt tab — auto-decrypts with your key."
+														}
+														className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
+													>
+														<ArrowRight aria-hidden="true" className="size-3.5" />
+														{healthMap[entry.id] === "ok" && (
+															// Emerald glow-dot (round 19): this entry passed the last
+															// health check, so the deep-link is one click to plaintext.
+															<span
+																aria-hidden="true"
+																className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_4px] shadow-emerald-500/60"
+															/>
+														)}
+														<span className="whitespace-nowrap">Open in Decrypt</span>
+													</Button>
+													<CopyButton
+														text={entry.armor}
+														label="Copy"
+														ariaLabel="Copy sealed output to clipboard"
+													/>
+													{entry.sealedArmor && (
+														<SealedCopyButton sealedArmor={entry.sealedArmor} />
+													)}
+													<DownloadButton text={entry.armor} title="sealed output" />
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() => {
+															setNoteEditingId(noteEditingId === entry.id ? null : entry.id);
+															setNoteDraft(entry.note ?? "");
+														}}
+														aria-label={
+															entry.note
+																? `Edit the note on this entry: ${entry.note}`
+																: "Add a note to this vault entry"
+														}
+														title={entry.note ? "Edit note" : "Add note"}
+														className={`size-7 ${
+															noteEditingId === entry.id
+																? "text-amber-600 dark:text-amber-400"
+																: "text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400"
+														}`}
+													>
+														<Pencil aria-hidden="true" className="size-3.5" />
+													</Button>
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
+														aria-label="Remove this entry from the sealed-output history"
+														className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
+													>
+														<X aria-hidden="true" className="size-3.5" />
 													</Button>
 												</span>
-											)}
-											{/* min-w-0 + flex-wrap (was shrink-0 nowrap): with two new per-row
-										    actions the group must wrap at narrow widths — nowrap plus the
-										    section's overflow-hidden silently clipped the trailing
-										    txt/remove buttons at 390 px. */}
-											<span className="flex min-w-0 flex-wrap items-center justify-end gap-1">
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() => {
-														setOutput(entry.armor);
-														setSealedCopy(entry.sealedArmor ?? "");
-														setOutputMeta({
-															keys: entry.keys,
-															signed: entry.signed,
-															labels: entry.labels ?? [],
-															signer: entry.signer,
-															signerFp: entry.signerFp,
-															files: entry.files,
-														});
-														setError(null);
-														toast({
-															title: "Sealed output restored",
-															description:
-																"The ciphertext is back in the output box — copy or download it from there.",
-														});
-													}}
-													className="h-7 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
-												>
-													<History aria-hidden="true" className="size-3.5" />
-													Restore
-												</Button>
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() =>
-														onOpenInDecrypt?.({
-															armor: entry.sealedArmor ?? entry.armor,
-															seq: Date.now(),
-														})
-													}
-													title={
-														healthMap[entry.id] === "ok"
-															? "Verified decryptable by the last health check, so this is one click to plaintext."
-															: "Opens this sealed output in the Decrypt tab — auto-decrypts with your key."
-													}
-													className="h-7 gap-1.5 px-2 text-xs text-[#0055dc] hover:bg-[#0055dc]/8 hover:text-[#0055dc] dark:text-[#5e94ff] dark:hover:bg-[#5e94ff]/10"
-												>
-													<ArrowRight aria-hidden="true" className="size-3.5" />
-													{healthMap[entry.id] === "ok" && (
-														// Emerald glow-dot (round 19): this entry passed the last
-														// health check, so the deep-link is one click to plaintext.
-														<span
-															aria-hidden="true"
-															className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_4px] shadow-emerald-500/60"
-														/>
-													)}
-													<span className="whitespace-nowrap">Open in Decrypt</span>
-												</Button>
-												<CopyButton
-													text={entry.armor}
-													label="Copy"
-													ariaLabel="Copy sealed output to clipboard"
-												/>
-												{entry.sealedArmor && <SealedCopyButton sealedArmor={entry.sealedArmor} />}
-												<DownloadButton text={entry.armor} title="sealed output" />
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() => {
-														setNoteEditingId(noteEditingId === entry.id ? null : entry.id);
-														setNoteDraft(entry.note ?? "");
-													}}
-													aria-label={
-														entry.note
-															? `Edit the note on this entry: ${entry.note}`
-															: "Add a note to this vault entry"
-													}
-													title={entry.note ? "Edit note" : "Add note"}
-													className={`size-7 ${
-														noteEditingId === entry.id
-															? "text-amber-600 dark:text-amber-400"
-															: "text-muted-foreground hover:text-amber-600 dark:hover:text-amber-400"
-													}`}
-												>
-													<Pencil aria-hidden="true" className="size-3.5" />
-												</Button>
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() => setSealedHistory(removeSealedEntry(entry.id))}
-													aria-label="Remove this entry from the sealed-output history"
-													className="size-7 text-muted-foreground hover:text-red-600 dark:hover:text-red-400"
-												>
-													<X aria-hidden="true" className="size-3.5" />
-												</Button>
-											</span>
-										</li>
-									))}
+											</li>
+										))
+									)}
 								</ul>
 								<p className="border-t border-border bg-muted/25 px-4 py-2 text-[11px] text-muted-foreground">
 									Ciphertext only, kept in this browser (last {MAX_SEALED_ENTRIES}). Plaintext is
@@ -2304,10 +2324,10 @@ export function EncryptTab({
 					</CollapsibleContent>
 				</Collapsible>
 				{/* Round 19: violet manifest-dropzone overlay - while a Files drag
-				    hovers the vault card (vaultDragDepth > 0) the whole section
-				    lights up with the dashed violet target, carrying the same
-				    FileUp motif as the Import buttons. pointer-events-none keeps
-				    the drag itself untouched. */}
+                                    hovers the vault card (vaultDragDepth > 0) the whole section
+                                    lights up with the dashed violet target, carrying the same
+                                    FileUp motif as the Import buttons. pointer-events-none keeps
+                                    the drag itself untouched. */}
 				{vaultDragDepth > 0 && (
 					<div
 						aria-hidden
@@ -2321,9 +2341,9 @@ export function EncryptTab({
 				)}
 			</section>
 			{/* Hidden manifest picker (round 18): mounted at SECTION level —
-			    outside the CollapsibleContent — so collapsing the vault can't
-			    unmount it mid-pick. Re-armed after every read so picking the
-			    same file twice re-fires onChange. */}
+                            outside the CollapsibleContent — so collapsing the vault can't
+                            unmount it mid-pick. Re-armed after every read so picking the
+                            same file twice re-fires onChange. */}
 			<input
 				ref={vaultImportInputRef}
 				type="file"
@@ -2339,7 +2359,7 @@ export function EncryptTab({
 			/>
 
 			{/* Vault manifest import review (round 18) — a pure confirm dialog;
-			    Escape / outside click route through onOpenChange(false) = cancel. */}
+                            Escape / outside click route through onOpenChange(false) = cancel. */}
 			<VaultImportDialog
 				open={pendingImport !== null}
 				onOpenChange={(next) => {

@@ -148,6 +148,17 @@ export function MessageEditor({
 		return () => cancelAnimationFrame(id);
 	}, [editorKind]);
 
+	// Full-screen overlay just opened (vscode engine): move focus into the
+	// textarea so keyboard users are not left behind the aria-modal
+	// surface. The Notion engine does the same inside BlockNoteEditor.
+	useEffect(() => {
+		if (!expanded || editorKind !== "vscode") return;
+		const id = requestAnimationFrame(() => {
+			vsWrapRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+		});
+		return () => cancelAnimationFrame(id);
+	}, [expanded, editorKind]);
+
 	// VS Code mode -------------------------------------------------------------
 	const handleMDEditorChange = useCallback(
 		(next?: string) => {

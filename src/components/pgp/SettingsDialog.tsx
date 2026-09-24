@@ -18,10 +18,12 @@
  */
 import { useMemo, useRef, useState } from "react";
 import {
+	CalendarDays,
 	ChevronsDown,
 	CircleHelp,
 	Download,
 	FileCog,
+	FileJson,
 	KeyRound,
 	Loader2,
 	RotateCcw,
@@ -36,6 +38,7 @@ import {
 	Dialog,
 	DialogContent,
 	DialogDescription,
+	DialogFooter,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
@@ -100,9 +103,32 @@ function SettingRow({ title, description, children }: RowProps) {
 
 /* ------------------------------ backup section ----------------------------- */
 
+/** Manifest summary shown in the review dialog BEFORE anything is replaced. */
+interface PendingImport {
+	/** File name the user picked (shown for orientation). */
+	fileName: string;
+	/** Top-level exportedAt from the backup, formatted for display. */
+	exportedAt: string | null;
+	/** Number of known settings keys the import will write. */
+	count: number;
+	/** Pre-filtered backup payload, applied verbatim on confirm. */
+	data: Record<string, unknown>;
+	/** Profile label stored in the backup's key config, when present. */
+	label: string | null;
+	/** Key ID from the backup's key config, when present. */
+	keyId: string | null;
+	/** Whether the backup carries passphrase-encrypted private key material. */
+	hasPrivateKey: boolean;
+}
+
 function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
 	const [importBusy, setImportBusy] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	// Picked-and-parsed backup awaiting user confirmation. Importing replaces
+	// EVERY known setting including the key, so (like the vault manifest
+	// import and Restore defaults) it must be a reviewed, explicit action —
+	// never a silent file-picker side effect.
+	const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
 	// Two-step confirm for "Restore defaults": the first click arms the
 	// confirm state; a second click within a 4s window completes it.
 	const [confirmReset, setConfirmReset] = useState(false);
@@ -132,11 +158,8 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 	const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
 		const input = event.target;
 		const file = input.files?.[0] ?? null;
-		if (!file) {
-			input.value = "";
-			return;
-		}
-		setImportBusy(true);
+		input.value = ""; // allow re-picking the same file later
+		if (!file) return;
 		try {
 			const text = await file.text();
 			const parsed = parseConfigBackup(text);
@@ -148,13 +171,46 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 				});
 				return;
 			}
-			const applied = applyConfigBackup(parsed.data);
+			// Stage a manifest summary for the review dialog. NOTHING is
+			// written yet — applyConfigBackup only runs on explicit confirm.
+			const config = parsed.data[STORAGE_KEYS.config];
+			const cfg =
+				typeof config === "object" && config !== null
+					? (config as { label?: unknown; encryptedArmored?: unknown; info?: { keyID?: unknown } })
+					: null;
+			// The persisted config stores the key ID as its hex string; any
+			// other shape is treated as absent rather than stringified.
+			const rawKeyId = cfg?.info?.keyID;
+			setPendingImport({
+				fileName: file.name,
+				exportedAt: parsed.exportedAt,
+				count: parsed.count,
+				data: parsed.data,
+				label: typeof cfg?.label === "string" ? cfg.label : null,
+				keyId: typeof rawKeyId === "string" && rawKeyId.length > 0 ? rawKeyId : null,
+				hasPrivateKey: typeof cfg?.encryptedArmored === "string" && cfg.encryptedArmored.length > 0,
+			});
+		} catch (e) {
+			toast({
+				title: "Import failed",
+				description: (e as Error)?.message || "Import unavailable",
+				variant: "destructive",
+			});
+		}
+	};
+
+	/** Confirm the reviewed import: apply, toast, reload (PgpApp re-reads
+	 *  localStorage — config, include-self, recents, last tab). */
+	const handleConfirmImport = () => {
+		if (!pendingImport) return;
+		setImportBusy(true);
+		try {
+			const applied = applyConfigBackup(pendingImport.data);
 			toast({
 				title: "Settings imported",
 				description: `${applied} setting${applied === 1 ? "" : "s"} restored.`,
 			});
-			// Give the success toast a beat to paint, then reload so PgpApp
-			// re-reads localStorage (config, include-self, recents, last tab).
+			// Give the success toast a beat to paint, then reload.
 			setTimeout(() => window.location.reload(), 700);
 		} catch (e) {
 			toast({
@@ -162,9 +218,8 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 				description: (e as Error)?.message || "Import unavailable",
 				variant: "destructive",
 			});
-		} finally {
 			setImportBusy(false);
-			input.value = ""; // allow re-picking the same file
+			setPendingImport(null);
 		}
 	};
 
@@ -199,71 +254,176 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 	};
 
 	return (
-		<div className="space-y-3 py-3">
-			<div>
-				<p className="text-sm font-medium">Backup &amp; restore</p>
-				<p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">
-					Download all Encryptor settings — recipients, your key, and preferences — as a JSON file.
-					Importing replaces the current settings.
-				</p>
+		<>
+			<div className="space-y-3 py-3">
+				<div>
+					<p className="text-sm font-medium">Backup &amp; restore</p>
+					<p className="mt-0.5 max-w-md text-xs leading-relaxed text-muted-foreground">
+						Download all Encryptor settings — recipients, your key, and preferences — as a JSON
+						file. Importing replaces the current settings.
+					</p>
+				</div>
+				{privateKey?.encryptedArmored && (
+					<p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+						<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+						Backups include your passphrase-encrypted private key.
+					</p>
+				)}
+				<div className="flex flex-wrap gap-2">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={handleExportBackup}
+						className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+						title="Download all settings as a JSON backup file"
+						aria-label="Export backup"
+					>
+						<Download className="size-3.5" aria-hidden />
+						Export backup
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={() => fileInputRef.current?.click()}
+						disabled={importBusy}
+						className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+						title="Restore settings from a JSON backup file"
+						aria-label="Import backup"
+					>
+						<Upload className="size-3.5" aria-hidden />
+						Import backup
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={handleRestoreDefaults}
+						className={`h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8 text-destructive hover:text-destructive ${
+							confirmReset
+								? "border-destructive/40 bg-destructive/10 hover:bg-destructive/15 dark:bg-destructive/10 dark:hover:bg-destructive/20"
+								: ""
+						}`}
+						title="Clear all saved settings (recipients, key, preferences)"
+					>
+						<RotateCcw className="size-3.5" aria-hidden />
+						{confirmReset ? "Click again to confirm" : "Restore defaults"}
+					</Button>
+					<input
+						ref={fileInputRef}
+						type="file"
+						accept="application/json,.json"
+						className="sr-only"
+						tabIndex={-1}
+						onChange={(e) => void handleImportFile(e)}
+					/>
+				</div>
 			</div>
-			{privateKey?.encryptedArmored && (
-				<p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-					<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-					Backups include your passphrase-encrypted private key.
-				</p>
-			)}
-			<div className="flex flex-wrap gap-2">
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={handleExportBackup}
-					className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
-					title="Download all settings as a JSON backup file"
-					aria-label="Export backup"
-				>
-					<Download className="size-3.5" aria-hidden />
-					Export backup
-				</Button>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={() => fileInputRef.current?.click()}
-					disabled={importBusy}
-					className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
-					title="Restore settings from a JSON backup file"
-					aria-label="Import backup"
-				>
-					<Upload className="size-3.5" aria-hidden />
-					{importBusy ? "Importing…" : "Import backup"}
-				</Button>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={handleRestoreDefaults}
-					className={`h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8 text-destructive hover:text-destructive ${
-						confirmReset
-							? "border-destructive/40 bg-destructive/10 hover:bg-destructive/15 dark:bg-destructive/10 dark:hover:bg-destructive/20"
-							: ""
-					}`}
-					title="Clear all saved settings (recipients, key, preferences)"
-				>
-					<RotateCcw className="size-3.5" aria-hidden />
-					{confirmReset ? "Click again to confirm" : "Restore defaults"}
-				</Button>
-				<input
-					ref={fileInputRef}
-					type="file"
-					accept="application/json,.json"
-					className="sr-only"
-					tabIndex={-1}
-					onChange={(e) => void handleImportFile(e)}
-				/>
-			</div>
-		</div>
+
+			{/* Review-before-replace: picking a file only OPENS this dialog. The
+                            manifest summary shows what the backup contains (and warns that
+                            importing swaps out the key), and the destructive button is the
+                            only path that touches localStorage. */}
+			<Dialog
+				open={pendingImport !== null}
+				onOpenChange={(o) => {
+					if (!o) setPendingImport(null);
+				}}
+			>
+				<DialogContent aria-describedby={undefined} className="sm:max-w-md">
+					<DialogHeader>
+						<DialogTitle className="flex items-center gap-2">
+							<FileJson className="size-4 text-muted-foreground" aria-hidden />
+							Review backup
+						</DialogTitle>
+						<DialogDescription>
+							Nothing has been replaced yet. Check the manifest, then confirm.
+						</DialogDescription>
+					</DialogHeader>
+					{pendingImport && (
+						<div className="space-y-2.5 text-sm">
+							<div className="grid gap-2 rounded-lg border bg-muted/30 p-3">
+								<div className="flex items-center justify-between gap-3">
+									<span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+										<FileJson className="size-3.5" aria-hidden />
+										File
+									</span>
+									<span className="truncate font-mono text-xs" title={pendingImport.fileName}>
+										{pendingImport.fileName}
+									</span>
+								</div>
+								{pendingImport.exportedAt && (
+									<div className="flex items-center justify-between gap-3">
+										<span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+											<CalendarDays className="size-3.5" aria-hidden />
+											Exported
+										</span>
+										<span className="text-xs font-medium">
+											{new Date(pendingImport.exportedAt).toLocaleString()}
+										</span>
+									</div>
+								)}
+								{(pendingImport.label || pendingImport.keyId) && (
+									<div className="flex items-center justify-between gap-3">
+										<span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+											<KeyRound className="size-3.5" aria-hidden />
+											Key
+										</span>
+										<span className="min-w-0 truncate text-xs font-medium">
+											{pendingImport.label || "Key"}
+											{pendingImport.keyId && (
+												<span className="ml-1.5 font-mono text-muted-foreground">
+													{pendingImport.keyId}
+												</span>
+											)}
+										</span>
+									</div>
+								)}
+								<div className="flex items-center justify-between gap-3">
+									<span className="text-xs text-muted-foreground">Entries</span>
+									<span className="text-xs font-medium">
+										{pendingImport.count} setting{pendingImport.count === 1 ? "" : "s"}
+									</span>
+								</div>
+							</div>
+							{pendingImport.hasPrivateKey && (
+								<p className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+									<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+									This backup contains the private key (passphrase-encrypted). Importing swaps out
+									the key on this device.
+								</p>
+							)}
+							<p className="text-xs leading-relaxed text-muted-foreground">
+								Importing replaces ALL current settings — recipients, preferences, and the key
+								above. This cannot be undone.
+							</p>
+						</div>
+					)}
+					<DialogFooter className="gap-2 sm:gap-0">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={() => setPendingImport(null)}
+							disabled={importBusy}
+						>
+							Cancel
+						</Button>
+						<Button
+							type="button"
+							variant="destructive"
+							size="sm"
+							onClick={handleConfirmImport}
+							disabled={importBusy}
+						>
+							{importBusy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
+							Replace everything
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+		</>
 	);
 }
 

@@ -39,7 +39,13 @@ export interface ConfigBackupFile {
 
 /** Result of parseConfigBackup (discriminated on `ok`). */
 export type ConfigBackupParseResult =
-	| { ok: true; data: Record<string, unknown>; count: number }
+	| {
+			ok: true;
+			data: Record<string, unknown>;
+			count: number;
+			/** Top-level `exportedAt` ISO string from the file, when present. */
+			exportedAt: string | null;
+	  }
 	| { ok: false; error: string };
 
 /** Known storage keys, as a Set for O(1) filtering. */
@@ -148,7 +154,12 @@ export function parseConfigBackup(text: string): ConfigBackupParseResult {
 	if (Object.keys(data).length === 0) {
 		return { ok: false, error: "This backup doesn't contain any settings." };
 	}
-	return { ok: true, data, count: Object.keys(data).length };
+	return {
+		ok: true,
+		data,
+		count: Object.keys(data).length,
+		exportedAt: typeof obj.exportedAt === "string" ? obj.exportedAt : null,
+	};
 }
 
 /**

@@ -14,6 +14,7 @@ import {
 	SignerHashLegend,
 	DecryptedMessageView,
 	FingerprintWords,
+	PasteFromClipboardButton,
 } from "@/components/pgp/shared";
 import type {
 	PrivateKeyConfig,
@@ -233,6 +234,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 						<p className="mt-3 text-sm font-medium">
 							Paste a signature to verify, or drop a .asc file
 						</p>
+						<PasteFromClipboardButton
+							onPaste={(text) => {
+								setArmored(text);
+							}}
+						/>
 					</div>
 				)}
 				<Textarea
@@ -591,7 +597,10 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 											: null;
 									return (
 										<li key={i} className="space-y-0.5">
-											<div className="flex items-center gap-2">
+											{/* flex-wrap: on narrow screens the Key ID (mono, unsquishable)
+                        wraps to its own line instead of pushing the row past
+                        the viewport — parity with SignerBadges in shared.tsx. */}
+											<div className="flex flex-wrap items-center gap-2">
 												<span className="font-medium text-[#0055dc] dark:text-[#5e94ff]">
 													{displayName}
 												</span>

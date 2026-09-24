@@ -9,9 +9,18 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 
-import { Download, Loader2, Lock, LockKeyholeOpen, LockOpen, WandSparkles, X } from "lucide-react";
+import {
+	Download,
+	Loader2,
+	Lock,
+	LockKeyholeOpen,
+	LockOpen,
+	Printer,
+	WandSparkles,
+	X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,7 +30,14 @@ import {
 	ErrorBanner,
 	FileDownloadList,
 	SignerBadges,
+	PasteFromClipboardButton,
 	ZipDownloadButton,
+	READ_FONT_PX,
+	ReadSizeControl,
+	applyStoredFontSize,
+	printPreviewCard,
+	readStoredFontSize,
+	type ReadFontSize,
 } from "@/components/pgp/shared";
 import type { PrivateKeyConfig, SignatureInfo } from "@/components/pgp/contracts";
 import { PROXIES } from "@/components/pgp/contracts";
@@ -77,6 +93,11 @@ export function DecryptTab({
 	// instead of the rendered view. Defaults to false — an advanced toggle,
 	// visually de-emphasized (small, muted text).
 	const [showRaw, setShowRaw] = useState(false);
+	// Reading-size preference (S/M/L) for the rendered message, persisted in
+	// localStorage so the comfort choice survives reloads. The ref points at
+	// the rendered card for the print handler.
+	const [readFontSize, setReadFontSize] = useState<ReadFontSize>(readStoredFontSize);
+	const viewCardRef = useRef<HTMLDivElement | null>(null);
 	// Smart-input hint dismissal, keyed to the exact input content: clearing
 	// the textarea (or pasting different content) re-arms the hint without
 	// needing a state-reset effect.
@@ -89,6 +110,15 @@ export function DecryptTab({
 	// keyed to the input, mirroring the hint-dismissal pattern above.
 	const [repairedWith, setRepairedWith] = useState<ArmorFix[] | null>(null);
 	const [repairDismissedFor, setRepairDismissedFor] = useState<string | null>(null);
+	// "Nothing recognizable" guidance (anti-dead-end): text that is not any
+	// PGP block never reaches auto-decrypt, which used to be a SILENT state —
+	// no hint, no error, no button. Once the input settles, say so honestly.
+	const [unknownDismissedFor, setUnknownDismissedFor] = useState<string | null>(null);
+	const [settledArmored, setSettledArmored] = useState(armored);
+	useEffect(() => {
+		const timer = setTimeout(() => setSettledArmored(armored), 1200);
+		return () => clearTimeout(timer);
+	}, [armored]);
 
 	// Drag & drop: load a .asc armor file onto the input card. Shared hook
 	// (ascii-drop.tsx) sniffs for a PGP armor header; a successful load also
@@ -279,12 +309,31 @@ export function DecryptTab({
 	// Hints never appear for empty input, nor when the text already looks like
 	// a normal encrypted message. Dismissal is keyed to the input text, so
 	// clearing the field re-arms the hint.
+	// Printout verification line: "QA Bot (qa@example.com) · Key ID … ·
+	// signed … · checked …" — null when the message is unsigned, so the
+	// print carries evidence only when there is something to evidence.
+	const printVerification = useMemo(() => {
+		if (!output || output.signatures.length !== 1) return null;
+		const sig = output.signatures[0];
+		if (sig.verified !== "valid") return null;
+		const who = sig.username || sig.name || sig.email || sig.userID || "unknown signer";
+		const signedAt = sig.timestampIso ? new Date(sig.timestampIso) : null;
+		return `${who} · Key ID ${sig.keyID} · checked ${new Date().toLocaleString()}${signedAt ? ` · signed ${signedAt.toLocaleString()}` : ""}`;
+	}, [output]);
+
 	const detectedBlock = detectPgpBlock(armored);
 	const showDecryptHint =
 		armored.trim() !== "" &&
 		detectedBlock !== null &&
 		detectedBlock !== "encrypted" &&
 		hintDismissedFor !== armored;
+	const showUnknownHint =
+		settledArmored.trim() !== "" &&
+		detectPgpBlock(settledArmored) === null &&
+		!isQuantumSealed(settledArmored) &&
+		!busy &&
+		!error &&
+		unknownDismissedFor !== settledArmored;
 
 	// Armor damage detection (cheap, render-time, same pattern as
 	// detectPgpBlock): offer the one-click repair only when the pasted
@@ -365,6 +414,14 @@ export function DecryptTab({
 						<p className="mt-3 text-sm font-medium">
 							Paste an encrypted message, or drop a .asc file
 						</p>
+						<PasteFromClipboardButton
+							onPaste={(text) => {
+								setRepairedWith(null);
+								setError(null);
+								setOutput(null);
+								setArmored(text);
+							}}
+						/>
 					</div>
 				)}
 				<Textarea
@@ -398,6 +455,12 @@ export function DecryptTab({
 						{detectedBlock === "signed"
 							? "This looks like a signed (not encrypted) message. The Verify tab is designed for that."
 							: "This looks like a PGP key rather than an encrypted message. Keys are managed in the key configuration dialog."}
+					</InputHint>
+				)}
+				{showUnknownHint && (
+					<InputHint tone="amber" onDismiss={() => setUnknownDismissedFor(settledArmored)}>
+						This doesn't look like a PGP-encrypted message. Paste the full block, including the
+						“-----BEGIN PGP MESSAGE-----” line — or seal one on the Encrypt tab.
 					</InputHint>
 				)}
 				{showRepairHint && (
@@ -472,14 +535,23 @@ export function DecryptTab({
 									Decrypted message
 								</Label>
 							</div>
-							<button
-								type="button"
-								onClick={() => setShowRaw((v) => !v)}
-								className="text-[10px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors duration-150"
-								title="Toggle between rendered view and raw text (advanced)"
-							>
-								{showRaw ? "Show rendered" : "Show raw text"}
-							</button>
+							<div className="flex shrink-0 items-center gap-2.5">
+								<ReadSizeControl
+									value={readFontSize}
+									onChange={(next) => {
+										setReadFontSize(next);
+										applyStoredFontSize(next);
+									}}
+								/>
+								<button
+									type="button"
+									onClick={() => setShowRaw((v) => !v)}
+									className="text-[10px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors duration-150"
+									title="Toggle between rendered view and raw text (advanced)"
+								>
+									{showRaw ? "Show rendered" : "Show raw text"}
+								</button>
+							</div>
 						</div>
 						{showRaw ? (
 							<Textarea
@@ -490,8 +562,15 @@ export function DecryptTab({
 								className="text-xs leading-relaxed field-sizing-fixed bg-muted/40"
 							/>
 						) : (
-							<div className="rounded-xl border border-border bg-card p-4 shadow-sm min-h-[100px]">
-								<DecryptedMessageView text={output.plaintext} files={output.files} />
+							<div
+								ref={viewCardRef}
+								className="rounded-xl border border-border bg-card p-4 shadow-sm min-h-[100px]"
+							>
+								<DecryptedMessageView
+									text={output.plaintext}
+									files={output.files}
+									fontSize={READ_FONT_PX[readFontSize]}
+								/>
 							</div>
 						)}
 					</div>
@@ -503,6 +582,22 @@ export function DecryptTab({
 					{/* Compact action row — the armored input is NOT echoed back as an
               output block anymore. */}
 					<div className="flex flex-wrap gap-2">
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() =>
+								printPreviewCard(viewCardRef.current, "Decrypted message", {
+									attachments: output.files,
+									verification: printVerification,
+								})
+							}
+							aria-label="Print the decrypted message"
+							title="Print the decrypted message — or save as PDF from the print dialog"
+							className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"
+						>
+							<Printer aria-hidden="true" className="size-3.5" />
+							Print
+						</Button>
 						<CopyButton
 							text={output.plaintext}
 							label="Copy text"

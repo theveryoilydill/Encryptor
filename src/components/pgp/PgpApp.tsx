@@ -1037,7 +1037,7 @@ function Header({
 				? "animate-pulse border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
 				: autoLockMsLeft <= 120000
 					? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-					: "border-border bg-background text-muted-foreground";
+					: "border-border bg-muted text-muted-foreground";
 	return (
 		<header className="relative sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
 			<div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-2">
@@ -1073,7 +1073,7 @@ function Header({
 							{autoLockLabel !== null && (
 								<span
 									aria-hidden="true"
-									className={`absolute -right-1.5 -bottom-1 rounded-full border px-1 text-[8px] font-medium tabular-nums leading-[1.3] transition-colors duration-300 ${autoLockBadgeClass}`}
+									className={`absolute -right-0.5 -bottom-1 rounded-full border px-1 text-[8px] font-medium tabular-nums leading-[1.3] shadow-xs transition-colors duration-300 ${autoLockBadgeClass}`}
 								>
 									{autoLockLabel}
 								</span>

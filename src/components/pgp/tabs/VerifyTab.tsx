@@ -597,7 +597,10 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 											: null;
 									return (
 										<li key={i} className="space-y-0.5">
-											<div className="flex items-center gap-2">
+											{/* flex-wrap: on narrow screens the Key ID (mono, unsquishable)
+                        wraps to its own line instead of pushing the row past
+                        the viewport — parity with SignerBadges in shared.tsx. */}
+											<div className="flex flex-wrap items-center gap-2">
 												<span className="font-medium text-[#0055dc] dark:text-[#5e94ff]">
 													{displayName}
 												</span>

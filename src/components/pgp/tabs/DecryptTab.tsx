@@ -9,7 +9,7 @@
  *
  * # Mr. AI Acting on s183173's Behalf
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 
 import {
 	Download,
@@ -309,6 +309,18 @@ export function DecryptTab({
 	// Hints never appear for empty input, nor when the text already looks like
 	// a normal encrypted message. Dismissal is keyed to the input text, so
 	// clearing the field re-arms the hint.
+	// Printout verification line: "QA Bot (qa@example.com) · Key ID … ·
+	// signed … · checked …" — null when the message is unsigned, so the
+	// print carries evidence only when there is something to evidence.
+	const printVerification = useMemo(() => {
+		if (!output || output.signatures.length !== 1) return null;
+		const sig = output.signatures[0];
+		if (sig.verified !== "valid") return null;
+		const who = sig.username || sig.name || sig.email || sig.userID || "unknown signer";
+		const signedAt = sig.timestampIso ? new Date(sig.timestampIso) : null;
+		return `${who} · Key ID ${sig.keyID} · checked ${new Date().toLocaleString()}${signedAt ? ` · signed ${signedAt.toLocaleString()}` : ""}`;
+	}, [output]);
+
 	const detectedBlock = detectPgpBlock(armored);
 	const showDecryptHint =
 		armored.trim() !== "" &&
@@ -573,7 +585,12 @@ export function DecryptTab({
 						<Button
 							type="button"
 							variant="outline"
-							onClick={() => printPreviewCard(viewCardRef.current, "Decrypted message")}
+							onClick={() =>
+								printPreviewCard(viewCardRef.current, "Decrypted message", {
+									attachments: output.files,
+									verification: printVerification,
+								})
+							}
 							aria-label="Print the decrypted message"
 							title="Print the decrypted message — or save as PDF from the print dialog"
 							className="h-11 gap-1.5 px-3 text-xs transition-colors sm:h-8"

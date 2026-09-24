@@ -672,4 +672,47 @@
 	#print-mount button {
 		display: contents;
 	}
+	/* Attachments appendix (round 5): a titled block of framed figures —
+	   name + size caption under each image; non-images are caption-only
+	   rows so the paper trail lists every file even when it can't render. */
+	#print-mount .print-attachments {
+		margin-top: 14px;
+		padding-top: 8px;
+		border-top: 1px solid #ddd;
+	}
+	#print-mount .print-attachments-title {
+		margin-bottom: 8px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #555;
+	}
+	#print-mount .print-attachment {
+		margin: 0 0 10px;
+		page-break-inside: avoid;
+	}
+	#print-mount .print-attachment img {
+		display: block;
+		max-height: 3in;
+		width: auto;
+		max-width: 60%;
+		border: 1px solid #ddd;
+		border-radius: 4px;
+		padding: 4px;
+	}
+	#print-mount .print-attachment figcaption {
+		margin-top: 2px;
+		font-size: 10px;
+		color: #555;
+	}
+	/* Verification evidence footer: quiet closing line under the message —
+	   who signed, which key, when it was checked. */
+	#print-mount .print-verification {
+		margin-top: 12px;
+		padding-top: 6px;
+		border-top: 1px solid #ddd;
+		font-size: 10px;
+		color: #0a7d33;
+	}
 }

@@ -24,6 +24,7 @@ import {
 	ChevronRight,
 	ClipboardPaste,
 	Copy,
+	Download,
 	FileSignature,
 	FileText,
 	GitCompare,
@@ -197,26 +198,35 @@ export function ImageViewer({
 								</button>
 							</>
 						)}
+						{/* No custom close here — DialogContent already renders an
+							accessible close (top-right X); a second one read as a
+							duplicate. The counter takes the right edge. */}
 						<figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
 							<span className="truncate text-xs font-medium">{file.name}</span>
 							<span className="shrink-0 text-[11px] text-muted-foreground">
 								{formatFileSize(file.size)}
 							</span>
+							{/* Save-without-closing: the same guard-passing data URL as the
+								img, as a plain download anchor — no second decode, no new
+								path for the bytes. */}
+							{safeSrc && (
+								<a
+									href={safeSrc}
+									download={file.name}
+									className="ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs transition-colors hover:bg-muted hover:text-foreground"
+									aria-label={`Download ${file.name}`}
+									title="Download this image"
+								>
+									<Download className="size-4" aria-hidden />
+								</a>
+							)}
 							{many && (
-								<span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+								<span
+									className={`shrink-0 text-[11px] tabular-nums text-muted-foreground ${safeSrc ? "" : "ml-auto"}`}
+								>
 									{Math.min(index ?? 0, images.length - 1) + 1} / {images.length}
 								</span>
 							)}
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								onClick={onClose}
-								className="ml-auto size-7 text-muted-foreground"
-								aria-label="Close image viewer"
-							>
-								<X className="size-4" aria-hidden />
-							</Button>
 						</figcaption>
 					</figure>
 				)}
@@ -525,9 +535,17 @@ export function ReadSizeControl({
 /** Print just the rendered message: clone the preview card into a body-level
  *  #print-mount, drop the dark theme so tokens resolve to paper-friendly
  *  light values, and lean on the @media print rules in globals.css (only
- *  #print-mount shows). Cleanup rides afterprint, with a 60 s safety net for
- *  engines that never fire it (the Safari cancel path). */
-export function printPreviewCard(node: HTMLElement | null, label: string) {
+ *  #print-mount shows). When `attachments` is provided, an appendix lists
+ *  every file (name + size) and renders image attachments as framed figures
+ *  — so a paper/PDF printout carries the whole message, not just the text.
+ *  Cleanup rides afterprint, with a 60 s safety net for engines that never
+ *  fire it (the Safari cancel path). */
+export function printPreviewCard(
+	node: HTMLElement | null,
+	label: string,
+	opts?: { attachments?: EnvelopeFile[]; verification?: string | null },
+) {
+	const attachments = opts?.attachments;
 	if (typeof window === "undefined" || !node) return;
 	const mount = document.createElement("div");
 	mount.id = "print-mount";
@@ -536,6 +554,46 @@ export function printPreviewCard(node: HTMLElement | null, label: string) {
 	header.textContent = `${label} · decrypted with Encryptor · ${new Date().toLocaleString()}`;
 	mount.appendChild(header);
 	mount.appendChild(node.cloneNode(true));
+
+	// Attachments appendix (built imperatively — the mount is plain DOM, the
+	// React tree is not involved). Same data-URL guards as the on-screen
+	// viewer: an attachment only prints when it is a provably safe image;
+	// everything else gets a name row so the paper trail stays complete.
+	if (attachments && attachments.length > 0) {
+		const section = document.createElement("div");
+		section.className = "print-attachments";
+		const title = document.createElement("div");
+		title.className = "print-attachments-title";
+		title.textContent = `Attachments (${attachments.length})`;
+		section.appendChild(title);
+		for (const file of attachments) {
+			const figure = document.createElement("figure");
+			figure.className = "print-attachment";
+			const url = file.type.startsWith("image/") ? envelopeFileToDataUrl(file) : null;
+			if (url && SAFE_DATA_IMAGE_RE.test(url) && isSafeImageUrl(url) !== null) {
+				const img = document.createElement("img");
+				img.src = url;
+				img.alt = file.name;
+				figure.appendChild(img);
+			}
+			const caption = document.createElement("figcaption");
+			caption.textContent = `${file.name} · ${formatFileSize(file.size)}`;
+			figure.appendChild(caption);
+			section.appendChild(figure);
+		}
+		mount.appendChild(section);
+	}
+
+	// Verification evidence line: makes a printout a self-contained trust
+	// record — WHO signed, WHICH key, WHEN it was checked. Quiet single
+	// footer line; omitted when the message is unsigned.
+	const verification = opts?.verification;
+	if (verification) {
+		const foot = document.createElement("div");
+		foot.className = "print-verification";
+		foot.textContent = `Signature verified ✓ ${verification}`;
+		mount.appendChild(foot);
+	}
 	const html = document.documentElement;
 	const prevClass = html.className;
 	html.className = `${prevClass.replace(/\bdark\b/g, "").trim()} printing`.trim();

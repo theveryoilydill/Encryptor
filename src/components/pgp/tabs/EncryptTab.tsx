@@ -763,6 +763,10 @@ export function EncryptTab({
 	// earlier sealed message can be restored after the output block is
 	// reset or replaced by a newer one. Collapsed by default.
 	const [sealedHistory, setSealedHistory] = useState<SealedHistoryEntry[]>([]);
+	// Clear is destructive (wipes every saved sealed output), so the first
+	// click only arms it — second click within 3s confirms; blur disarms.
+	// Cheap insurance against a mis-tap next to the collapsible trigger.
+	const [confirmClear, setConfirmClear] = useState(false);
 	const [historyOpen, setHistoryOpen] = useState(false);
 	useEffect(() => {
 		setSealedHistory(loadSealedHistory());
@@ -1965,13 +1969,23 @@ export function EncryptTab({
 								variant="ghost"
 								size="sm"
 								onClick={() => {
+									if (!confirmClear) {
+										setConfirmClear(true);
+										return;
+									}
+									setConfirmClear(false);
 									setSealedHistory(clearSealedHistory());
 									toast({ title: "Sealed-output history cleared" });
 								}}
-								className="shrink-0 text-muted-foreground hover:text-foreground"
+								onBlur={() => setConfirmClear(false)}
+								className={
+									confirmClear
+										? "shrink-0 text-destructive hover:text-destructive"
+										: "shrink-0 text-muted-foreground hover:text-foreground"
+								}
 							>
 								<Trash2 aria-hidden="true" className="size-4" />
-								Clear
+								{confirmClear ? "Really clear?" : "Clear"}
 							</Button>
 						)}
 					</div>

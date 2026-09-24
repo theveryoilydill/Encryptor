@@ -29,11 +29,12 @@ import {
 	GitCompare,
 	History,
 	Lock,
+	Printer,
 	Sparkles,
 	Volume2,
 	X,
 } from "lucide-react";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { rehypeSecureHtml } from "@/lib/pgp/safe-html";
@@ -459,6 +460,99 @@ export function DownloadButton({ text, title }: { text: string; title: string })
  *  (single) output box's content by default — a small in-box switch flips
  *  between the sealed and the recipient armor; Copy/Download act on
  *  whichever view is shown. # Mr. AI Acting on s183173's Behalf */
+/* ----------------------- Read-view text size + print ----------------------- */
+
+/** localStorage key for the decrypt-side reading-size preference (S/M/L). */
+export const READ_FONT_STORAGE_KEY = "encryptor.readFontSize";
+export type ReadFontSize = "s" | "m" | "l";
+export const READ_FONT_PX: Record<ReadFontSize, number> = { s: 13, m: 14, l: 16 };
+
+export function readStoredFontSize(): ReadFontSize {
+	try {
+		const v = typeof window === "undefined" ? null : localStorage.getItem(READ_FONT_STORAGE_KEY);
+		return v === "s" || v === "l" ? v : "m";
+	} catch {
+		return "m";
+	}
+}
+
+/** Persist the reading-size choice; in-session state still applies when
+ *  storage is denied (private mode). */
+export function applyStoredFontSize(next: ReadFontSize) {
+	try {
+		localStorage.setItem(READ_FONT_STORAGE_KEY, next);
+	} catch {
+		// Private-mode storage denial: the in-session state still applies.
+	}
+}
+
+/** Reading-size segmented control (Notion-pattern Aa control): three steps,
+ *  aria-pressed, same segmented family as OutputBlock's sealed-copy switch.
+ *  Shared by the Decrypt result header and OutputBlock's preview header. */
+export function ReadSizeControl({
+	value,
+	onChange,
+}: {
+	value: ReadFontSize;
+	onChange: (next: ReadFontSize) => void;
+}) {
+	return (
+		<span
+			role="group"
+			aria-label="Preview text size"
+			className="flex shrink-0 items-center overflow-hidden rounded-md border border-border bg-background/60"
+		>
+			{(["s", "m", "l"] as const).map((sz) => (
+				<button
+					key={sz}
+					type="button"
+					aria-pressed={value === sz}
+					onClick={() => onChange(sz)}
+					title={`Preview text: ${sz === "s" ? "small" : sz === "m" ? "default" : "large"}`}
+					className={
+						value === sz
+							? "h-6 bg-foreground px-2 text-[10px] font-medium text-background transition-colors"
+							: "h-6 px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+					}
+				>
+					{sz.toUpperCase()}
+				</button>
+			))}
+		</span>
+	);
+}
+
+/** Print just the rendered message: clone the preview card into a body-level
+ *  #print-mount, drop the dark theme so tokens resolve to paper-friendly
+ *  light values, and lean on the @media print rules in globals.css (only
+ *  #print-mount shows). Cleanup rides afterprint, with a 60 s safety net for
+ *  engines that never fire it (the Safari cancel path). */
+export function printPreviewCard(node: HTMLElement | null, label: string) {
+	if (typeof window === "undefined" || !node) return;
+	const mount = document.createElement("div");
+	mount.id = "print-mount";
+	const header = document.createElement("div");
+	header.className = "print-header";
+	header.textContent = `${label} · decrypted with Encryptor · ${new Date().toLocaleString()}`;
+	mount.appendChild(header);
+	mount.appendChild(node.cloneNode(true));
+	const html = document.documentElement;
+	const prevClass = html.className;
+	html.className = `${prevClass.replace(/\bdark\b/g, "").trim()} printing`.trim();
+	let cleaned = false;
+	const cleanup = () => {
+		if (cleaned) return;
+		cleaned = true;
+		html.className = prevClass;
+		window.removeEventListener("afterprint", cleanup);
+		mount.remove();
+	};
+	window.addEventListener("afterprint", cleanup);
+	document.body.appendChild(mount);
+	window.print();
+	setTimeout(cleanup, 60_000);
+}
+
 export function OutputBlock({
 	title,
 	output,
@@ -503,6 +597,17 @@ export function OutputBlock({
 	inputBytes?: number;
 }) {
 	const [showRaw, setShowRaw] = useState(false);
+	// Reading-size preference for the rendered message (S/M/L), persisted so
+	// the comfort choice survives reloads. Applied via DecryptedMessageView's
+	// fontSize prop — an inline style on the view root, so the relative sizes
+	// inside (code at 0.85em) scale along with it.
+	const [readFontSize, setReadFontSize] = useState<ReadFontSize>(readStoredFontSize);
+	// The rendered-preview card node — cloned by the print handler.
+	const previewCardRef = useRef<HTMLDivElement | null>(null);
+	const applyReadFontSize = (next: ReadFontSize) => {
+		setReadFontSize(next);
+		applyStoredFontSize(next);
+	};
 	// Which armor fills the box when a sealed copy exists — the sealed copy
 	// is the default ("if I said I wanted it in settings, I want it").
 	const [showSealed, setShowSealed] = useState(true);
@@ -585,14 +690,17 @@ export function OutputBlock({
 						)}
 					</span>
 					{preview && (
-						<button
-							type="button"
-							onClick={() => setShowRaw((v) => !v)}
-							className="inline-flex min-h-11 items-center text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:min-h-0"
-							title="Toggle between rendered preview and raw text (advanced)"
-						>
-							{showRaw ? "Show preview" : "Show raw text"}
-						</button>
+						<span className="flex shrink-0 items-center gap-2.5">
+							<ReadSizeControl value={readFontSize} onChange={applyReadFontSize} />
+							<button
+								type="button"
+								onClick={() => setShowRaw((v) => !v)}
+								className="inline-flex min-h-11 items-center text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:min-h-0"
+								title="Toggle between rendered preview and raw text (advanced)"
+							>
+								{showRaw ? "Show preview" : "Show raw text"}
+							</button>
+						</span>
 					)}
 				</div>
 				{preview && !showRaw ? (
@@ -601,8 +709,15 @@ export function OutputBlock({
 					// use the elevated card token like every sibling preview pane
 					// (Decrypt-tab preview, SignerBadges) — light mode is unchanged
 					// (#ffffff == #ffffff).
-					<div className="min-h-[100px] rounded-xl border bg-card px-3.5 py-3 shadow-sm">
-						<DecryptedMessageView text={previewText} files={previewFiles} />
+					<div
+						ref={previewCardRef}
+						className="min-h-[100px] rounded-xl border bg-card px-3.5 py-3 shadow-sm"
+					>
+						<DecryptedMessageView
+							text={previewText}
+							files={previewFiles}
+							fontSize={READ_FONT_PX[readFontSize]}
+						/>
 					</div>
 				) : sealedCopy ? (
 					// ONE output box, two armors: the quantum-sealed copy REPLACES the
@@ -695,6 +810,20 @@ export function OutputBlock({
 					/>
 				)}
 				<div className="mt-2 flex justify-end gap-2">
+					{preview && (
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={() => printPreviewCard(previewCardRef.current, title)}
+							aria-label="Print the rendered message"
+							title="Print the rendered message — or save as PDF from the print dialog"
+							className="press-effect h-8 gap-1.5 rounded-lg px-2.5 text-xs"
+						>
+							<Printer aria-hidden="true" className="size-3.5" />
+							Print
+						</Button>
+					)}
 					{operation && (
 						<ZipDownloadButton
 							files={files ?? []}
@@ -976,7 +1105,27 @@ const headingAnchors = {
  *  URL that reaches an <img src> passes through isSafeImageUrl (CodeQL
  *  js/xss-through-dom guard) exactly as before.
  */
-export function DecryptedMessageView({ text, files }: { text: string; files: EnvelopeFile[] }) {
+/** react-markdown's default URL transform strips data:/envelope: URLs, which
+ *  would gut the read-side inline-image path entirely (the composer exports
+ *  pasted images as data: figure HTML). This transform lets envelope markers
+ *  and STRICT data:image URLs through to the img guard, which still enforces
+ *  the charset-checked allow-list before anything reaches the DOM. Every
+ *  other scheme falls back to the default transform (link-safe behavior). */
+const readViewUrlTransform = (url: string) =>
+	url.startsWith("envelope://") || SAFE_DATA_IMAGE_RE.test(url) ? url : defaultUrlTransform(url);
+
+export function DecryptedMessageView({
+	text,
+	files,
+	fontSize,
+}: {
+	text: string;
+	files: EnvelopeFile[];
+	/** Root font size in px for the read view (reading-size preference).
+	 *  Relative sizes inside (code at 0.85em) scale along; headings stay
+	 *  at their own scale. */
+	fontSize?: number;
+}) {
 	// Build a filename → data URL map. First match wins (matching the
 	// Encrypt-side behavior where deduplicated names are unique).
 	const fileMap = useMemo(() => {
@@ -989,14 +1138,23 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 		return m;
 	}, [files]);
 
+	// Click-to-zoom lightbox state. The dialog shows the SAME allow-listed
+	// data URL the inline <img> already renders — nothing new reaches the
+	// DOM, it is only re-rendered larger.
+	const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null);
+
 	return (
-		<div className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
+		<div
+			style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
+			className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6"
+		>
 			<Markdown
 				remarkPlugins={[remarkGfm, remarkBreaks]}
 				// Secure raw-HTML support: parse the HTML the sender wrote, then
 				// strip everything the strict schema disallows. Never renders
 				// scripts, styles, event handlers, or unsafe URLs.
 				rehypePlugins={rehypeSecureHtml}
+				urlTransform={readViewUrlTransform}
 				components={{
 					...headingAnchors,
 					a: ({ node: _node, children, ...props }) => (
@@ -1047,26 +1205,56 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 						// src allow-list above. Only alt/src/style/className/title (ours)
 						// reach the DOM. loading=lazy also defers offscreen inline images.
 						return (
-							<img
-								title={title}
-								src={safeSrc}
-								alt={meta.displayName}
-								loading="lazy"
-								decoding="async"
-								style={{
-									width: `${meta.scale}%`,
-									maxWidth: "100%",
-									minHeight: "20px",
-									transform: `translate(${meta.dx}px, ${meta.dy}px)`,
-								}}
-								className="inline-block rounded border border-border align-middle"
-							/>
+							// Click-to-zoom (Notion pattern): the button wraps the SAME
+							// allow-listed data URL — the lightbox adds no new image
+							// source, it only re-renders the one already verified above.
+							<button
+								type="button"
+								onClick={() => setZoom({ src: safeSrc, alt: meta.displayName })}
+								title="Click to view full size"
+								aria-label={`View image full size: ${meta.displayName}`}
+								className="mx-0.5 inline-block cursor-zoom-in rounded align-middle transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc] focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
+							>
+								<img
+									title={title}
+									src={safeSrc}
+									alt={meta.displayName}
+									loading="lazy"
+									decoding="async"
+									style={{
+										width: `${meta.scale}%`,
+										maxWidth: "100%",
+										minHeight: "20px",
+										transform: `translate(${meta.dx}px, ${meta.dy}px)`,
+									}}
+									className="inline-block rounded border border-border align-middle"
+								/>
+							</button>
 						);
 					},
 				}}
 			>
 				{text}
 			</Markdown>
+			{/* Read-view lightbox. DialogTitle is sr-only (the image itself is
+			    the content); Escape, backdrop, and the close button all restore
+			    the view without losing scroll position — the dialog overlays,
+			    the page stays mounted underneath. */}
+			<Dialog open={zoom !== null} onOpenChange={(open) => !open && setZoom(null)}>
+				<DialogContent
+					aria-describedby={undefined}
+					className="max-w-[min(92vw,960px)] rounded-xl border-border/80 bg-card p-2"
+				>
+					<DialogTitle className="sr-only">{zoom?.alt ?? "Image preview"}</DialogTitle>
+					{zoom && (
+						<img
+							src={zoom.src}
+							alt={zoom.alt}
+							className="mx-auto max-h-[78vh] w-auto max-w-full rounded-lg object-contain"
+						/>
+					)}
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

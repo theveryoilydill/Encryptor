@@ -469,3 +469,86 @@
 	border-left: 2px solid var(--border);
 	padding-left: 0.25rem;
 }
+
+/* Syntax-highlight token colors for rendered code blocks (rehype-highlight,
+   which appends .hljs-* spans AFTER sanitization — see lib/pgp/safe-html.ts).
+   Muted GitHub-like palette; the dark variants ride the .dark theme class. */
+.msg-md-view .hljs-comment,
+.msg-md-view .hljs-quote {
+	color: #6a737d;
+	font-style: italic;
+}
+.msg-md-view .hljs-keyword,
+.msg-md-view .hljs-selector-tag,
+.msg-md-view .hljs-doctag,
+.msg-md-view .hljs-meta .hljs-keyword {
+	color: #b5397c;
+}
+.msg-md-view .hljs-string,
+.msg-md-view .hljs-regexp,
+.msg-md-view .hljs-addition {
+	color: #2e7d4f;
+}
+.msg-md-view .hljs-number,
+.msg-md-view .hljs-literal,
+.msg-md-view .hljs-variable,
+.msg-md-view .hljs-template-variable,
+.msg-md-view .hljs-attr {
+	color: #b35900;
+}
+.msg-md-view .hljs-title,
+.msg-md-view .hljs-section,
+.msg-md-view .hljs-name,
+.msg-md-view .hljs-selector-id,
+.msg-md-view .hljs-selector-class {
+	color: #6f42c1;
+}
+.msg-md-view .hljs-built_in,
+.msg-md-view .hljs-type,
+.msg-md-view .hljs-symbol,
+.msg-md-view .hljs-bullet,
+.msg-md-view .hljs-meta {
+	color: #00667d;
+}
+.msg-md-view .hljs-deletion {
+	color: #b02a37;
+}
+.dark .msg-md-view .hljs-comment,
+.dark .msg-md-view .hljs-quote {
+	color: #8b949e;
+}
+.dark .msg-md-view .hljs-keyword,
+.dark .msg-md-view .hljs-selector-tag,
+.dark .msg-md-view .hljs-doctag,
+.dark .msg-md-view .hljs-meta .hljs-keyword {
+	color: #f472a5;
+}
+.dark .msg-md-view .hljs-string,
+.dark .msg-md-view .hljs-regexp,
+.dark .msg-md-view .hljs-addition {
+	color: #7ee2a8;
+}
+.dark .msg-md-view .hljs-number,
+.dark .msg-md-view .hljs-literal,
+.dark .msg-md-view .hljs-variable,
+.dark .msg-md-view .hljs-template-variable,
+.dark .msg-md-view .hljs-attr {
+	color: #ffb26b;
+}
+.dark .msg-md-view .hljs-title,
+.dark .msg-md-view .hljs-section,
+.dark .msg-md-view .hljs-name,
+.dark .msg-md-view .hljs-selector-id,
+.dark .msg-md-view .hljs-selector-class {
+	color: #c9a5ff;
+}
+.dark .msg-md-view .hljs-built_in,
+.dark .msg-md-view .hljs-type,
+.dark .msg-md-view .hljs-symbol,
+.dark .msg-md-view .hljs-bullet,
+.dark .msg-md-view .hljs-meta {
+	color: #6fd6e8;
+}
+.dark .msg-md-view .hljs-deletion {
+	color: #ff8b7b;
+}

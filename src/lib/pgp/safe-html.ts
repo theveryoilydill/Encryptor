@@ -18,6 +18,7 @@
  * data:image URL.
  */
 import type { Pluggable } from "unified";
+import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 
@@ -58,6 +59,14 @@ export const messageSanitizeSchema = {
 };
 
 /** rehype plugin pair ready to spread into react-markdown's rehypePlugins:
- *  rehype-raw parses the raw HTML the sender wrote, then rehype-sanitize
- *  strips everything the schema does not explicitly allow. */
-export const rehypeSecureHtml: Pluggable[] = [rehypeRaw, [rehypeSanitize, messageSanitizeSchema]];
+ *  rehype-raw parses the HTML the sender wrote, then rehype-sanitize
+ *  strips everything the schema does not explicitly allow. rehype-highlight
+ *  runs LAST — after sanitization — so the token spans it injects
+ *  (className="hljs-*") never need their own sanitize rules: nothing
+ *  sender-controlled can influence them (the language class must already
+ *  match the strict code.className allow-list to survive sanitization). */
+export const rehypeSecureHtml: Pluggable[] = [
+	rehypeRaw,
+	[rehypeSanitize, messageSanitizeSchema],
+	[rehypeHighlight, { detect: false }],
+];

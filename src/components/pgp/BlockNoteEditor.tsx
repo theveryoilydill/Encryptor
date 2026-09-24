@@ -16,16 +16,45 @@
  * envelope marker, so the encrypted wire format carries attachments exactly
  * as before. Scale metadata travels in the marker's alt text (the image's
  * caption in the editor).
+ *
+ * Notion-grade touches (this pass):
+ *   - The custom `placeholder` prop reaches the editor via the dictionary
+ *     (the per-tab copy shows on the empty, unfocused composer).
+ *   - Table header rows are enabled (`tables.headers`) — they export as GFM
+ *     `th` and survive the markdown bridge.
+ *   - Code blocks carry a language <select> (exports as the fence info
+ *     string) and a hover "Copy" chip.
+ *   - The slash menu's image entry is device-upload only: the URL-embed
+ *     panel let remote https images into the wire, which every recipient
+ *     silently blocks (tracking-pixel posture) — a dead end for the sender.
+ *   - The formatting toolbar drops the color picker: colors never survive
+ *     the markdown bridge, so the button advertised something the
+ *     recipient would never see.
+ *   - A callout block (amber card) exports as `> 💡 …`, so it degrades to
+ *     an honest quoted line for recipients and the sanitize schema stays
+ *     untouched.
  */
 import {
 	BlockNoteSchema,
+	createCodeBlockSpec,
 	defaultBlockSpecs,
 	filterSuggestionItems,
+	insertOrUpdateBlockForSlashMenu,
 	type BlockNoteEditor as BlockNoteEditorType,
 } from "@blocknote/core";
+import { en } from "@blocknote/core/locales";
 import { BlockNoteView } from "@blocknote/mantine";
 import {
+	BasicTextStyleButton,
+	BlockTypeSelect,
+	CreateLinkButton,
+	FormattingToolbar,
+	FormattingToolbarController,
+	NestBlockButton,
 	SuggestionMenuController,
+	TextAlignButton,
+	UnnestBlockButton,
+	createReactBlockSpec,
 	getDefaultReactSlashMenuItems,
 	useCreateBlockNote,
 	type DefaultReactSuggestionItem,
@@ -40,7 +69,7 @@ import {
 	type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useTheme } from "next-themes";
-import { ListTree } from "lucide-react";
+import { Check, Copy, ImagePlus, Lightbulb, ListTree } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
@@ -48,16 +77,142 @@ import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./
 // Drop the media blocks the composer never needs — the envelope wire format
 // carries text + IMAGE attachments only. (audio/video/file blocks would
 // inline payloads as non-image data URLs that the reconcile step can't
-// carry into the envelope.)
-const { audio, video, file, ...keptBlockSpecs } = defaultBlockSpecs;
+// carry into the envelope.) The default codeBlock is replaced further down
+// with a language-aware spec.
+const { audio, video, file, codeBlock: _defaultCodeBlock, ...keptBlockSpecs } = defaultBlockSpecs;
 
 void audio;
 void video;
 void file;
+void _defaultCodeBlock;
+
+/** Languages offered by the code block's language select. The key is the
+ *  fence info string on the wire (```python …), the name is the <option>
+ *  label. Text first = the default. Aliases cover the common short forms
+ *  people type after three backticks (```py …). */
+const CODE_LANGUAGES = {
+	text: { name: "Text", aliases: ["plain", "txt"] },
+	javascript: { name: "JavaScript", aliases: ["js", "jsx", "node"] },
+	typescript: { name: "TypeScript", aliases: ["ts", "tsx"] },
+	python: { name: "Python", aliases: ["py"] },
+	bash: { name: "Bash", aliases: ["sh", "shell", "zsh"] },
+	json: { name: "JSON" },
+	html: { name: "HTML" },
+	css: { name: "CSS" },
+	markdown: { name: "Markdown", aliases: ["md"] },
+};
+
+/** Language-aware code block. BlockNote's built-in spec THROWS when a block
+ *  carries a language outside supportedLanguages — and the fence input rule
+ *  happily sets any language the user typed (```ruby). The render override
+ *  downgrades unknown languages to the plain text look instead of crashing
+ *  the editor; the markdown keeps the original fence untouched. */
+const codeBlockSpec = createCodeBlockSpec({
+	defaultLanguage: "text",
+	supportedLanguages: CODE_LANGUAGES,
+});
+
+// (cast) The render is a method that reads `this`-provided context, so the
+// wrapper must forward it — extracting it as a free function crashes.
+type CodeBlockRenderFn = (
+	this: unknown,
+	block: { id: string; props: { language: string } },
+	controller: unknown,
+) => unknown;
+const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlockRenderFn;
+(codeBlockSpec.implementation as unknown as { render: CodeBlockRenderFn }).render = function (
+	this: unknown,
+	block,
+	controller,
+) {
+	if (block.props.language in CODE_LANGUAGES) {
+		return originalRender.call(this, block, controller);
+	}
+	return originalRender.call(
+		this,
+		{ ...block, props: { ...block.props, language: "text" } },
+		controller,
+	);
+};
+
+/** Callout block: an amber "note" card with a fixed 💡 decoration. Exports
+ *  as `> 💡 …` — a GFM quote every recipient renders — and parses back
+ *  from emoji-prefixed quotes so editor round-trips keep their intent.
+ *  Zero sanitizer changes by design. */
+const calloutBlockSpec = createReactBlockSpec(
+	{
+		type: "callout",
+		propSchema: {},
+		content: "inline",
+	},
+	{
+		render: ({ contentRef }) => (
+			<div
+				data-callout
+				className="my-1 flex gap-2.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/30"
+			>
+				<Lightbulb
+					aria-hidden="true"
+					className="mt-1 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+				/>
+				<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+			</div>
+		),
+		toExternalHTML: ({ contentRef }) => (
+			<blockquote>
+				💡&nbsp;
+				<div ref={contentRef} />
+			</blockquote>
+		),
+		parse: (element) => {
+			if (element.tagName !== "BLOCKQUOTE") return undefined;
+			if (!element.textContent?.trimStart().startsWith("💡")) return undefined;
+			return {};
+		},
+	},
+)();
 
 const schema = BlockNoteSchema.create({
-	blockSpecs: keptBlockSpecs,
+	blockSpecs: {
+		...keptBlockSpecs,
+		codeBlock: codeBlockSpec,
+		callout: calloutBlockSpec,
+	},
 });
+
+type Editor = BlockNoteEditorType<
+	typeof schema.blockSchema,
+	typeof schema.inlineContentSchema,
+	typeof schema.styleSchema
+>;
+
+/** FileReader as a promise — shared by the paste, drop and slash-insert
+ *  image paths (DRY). */
+function fileToDataUrl(file: File): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+		reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
+		reader.readAsDataURL(file);
+	});
+}
+
+/** Register a local image as an attachment and insert it at the cursor.
+ *  One code path for paste, drop and the slash-menu insert. */
+async function insertLocalImage(
+	editor: Editor,
+	file: File,
+	register: OnNewImageDataUrl,
+): Promise<void> {
+	const dataUrl = await fileToDataUrl(file);
+	const stored = register(dataUrl, file.name);
+	const cursor = editor.getTextCursorPosition().block;
+	editor.insertBlocks(
+		[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
+		cursor,
+		"after",
+	);
+}
 
 /** "Insert table of contents" as a / command — TOC insertion lives in the
  *  slash menu, not only in the composer utility row. Builds a GitHub-style
@@ -93,19 +248,132 @@ const insertTableOfContentsSlashItem = (editor: Editor): DefaultReactSuggestionI
 	icon: <ListTree size={18} />,
 });
 
-/** Slash menu = the defaults + the TOC item. */
-function getSlashMenuItems(editor: Editor, query: string) {
-	return filterSuggestionItems(
-		[...getDefaultReactSlashMenuItems(editor), insertTableOfContentsSlashItem(editor)],
-		query,
+/** Device-upload "Insert image" — replaces the default Image item whose
+ *  URL-embed panel could put remote https images on the wire that
+ *  recipients then refuse to render. */
+const insertImageSlashItem = (pickImage: () => void): DefaultReactSuggestionItem => ({
+	title: "Insert image",
+	subtext: "Upload an image from this device",
+	aliases: ["image", "picture", "photo", "upload"],
+	group: "Media",
+	icon: <ImagePlus size={18} />,
+	onItemClick: pickImage,
+});
+
+/** Callout slash item — turns the current block into the amber note card. */
+const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
+	title: "Callout",
+	subtext: "Make the block a highlighted note",
+	aliases: ["callout", "note", "highlight"],
+	group: "Basic blocks",
+	icon: <Lightbulb size={18} />,
+	onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: "callout" }),
+});
+
+/** Slash menu = defaults (minus the URL-embed image trap) + insert-image +
+ *  callout + TOC. The title check matches the shipped English dictionary.
+ *  Items are stable-sorted by group so each group renders exactly one
+ *  header (custom items appended blindly produce duplicate "Basic blocks"/
+ *  "Advanced" sections — and React duplicate-key errors). */
+const GROUP_ORDER = ["Headings", "Subheadings", "Basic blocks", "Advanced", "Media", "Others"];
+
+/** Group rank for the stable sort; unknown groups sort last (before only
+ *  undefined ones). */
+const rank = (group: string | undefined): number => {
+	const idx = group ? GROUP_ORDER.indexOf(group) : -1;
+	return idx === -1 ? GROUP_ORDER.length : idx;
+};
+
+function getSlashMenuItems(editor: Editor, query: string, pickImage: () => void) {
+	const defaults = getDefaultReactSlashMenuItems(editor).filter((item) => item.title !== "Image");
+	const items = [
+		...defaults,
+		insertImageSlashItem(pickImage),
+		calloutSlashItem(editor),
+		insertTableOfContentsSlashItem(editor),
+	].sort((a, b) => rank(a.group) - rank(b.group));
+	return filterSuggestionItems(items, query);
+}
+
+/** Formatting toolbar minus ColorStyleButton: text/background colors die in
+ *  the markdown bridge, so the picker advertised styling recipients would
+ *  never see. Inline code style is kept — it round-trips as backticks. */
+function ComposerFormattingToolbar() {
+	return (
+		<FormattingToolbar>
+			<BlockTypeSelect key={"blockTypeSelect"} />
+			<BasicTextStyleButton basicTextStyle="bold" key="boldStyleButton" />
+			<BasicTextStyleButton basicTextStyle="italic" key="italicStyleButton" />
+			<BasicTextStyleButton basicTextStyle="underline" key="underlineStyleButton" />
+			<BasicTextStyleButton basicTextStyle="strike" key="strikeStyleButton" />
+			<BasicTextStyleButton basicTextStyle="code" key="codeStyleButton" />
+			<TextAlignButton textAlignment="left" key="textAlignLeftButton" />
+			<TextAlignButton textAlignment="center" key="textAlignCenterButton" />
+			<NestBlockButton key="nestBlockButton" />
+			<UnnestBlockButton key="unnestBlockButton" />
+			<CreateLinkButton key="createLinkButton" />
+		</FormattingToolbar>
 	);
 }
 
-type Editor = BlockNoteEditorType<
-	typeof schema.blockSchema,
-	typeof schema.inlineContentSchema,
-	typeof schema.styleSchema
->;
+/** Hover "Copy" chip for code blocks. Fixed-positioned from the block's
+ *  bounding rect; hidden on scroll (cheap, always correct). */
+function useCodeCopyChip(viewRef: React.RefObject<HTMLDivElement | null>) {
+	const [chip, setChip] = useState<{ top: number; left: number; text: string } | null>(null);
+	const [copied, setCopied] = useState(false);
+
+	useEffect(() => {
+		const root = viewRef.current;
+		if (!root) return;
+		const findBlock = (target: EventTarget | null) =>
+			target instanceof HTMLElement
+				? target.closest<HTMLElement>('[data-content-type="codeBlock"]')
+				: null;
+		const onOver = (e: MouseEvent) => {
+			const block = findBlock(e.target);
+			if (!block) {
+				setChip(null);
+				return;
+			}
+			const rect = block.getBoundingClientRect();
+			setChip({ top: rect.top + 6, left: rect.right - 34, text: block.textContent ?? "" });
+		};
+		const hide = () => setChip(null);
+		root.addEventListener("mouseover", onOver);
+		window.addEventListener("scroll", hide, true);
+		return () => {
+			root.removeEventListener("mouseover", onOver);
+			window.removeEventListener("scroll", hide, true);
+		};
+	}, [viewRef]);
+
+	const copy = useCallback(() => {
+		if (!chip) return;
+		void navigator.clipboard.writeText(chip.text).then(() => {
+			setCopied(true);
+			setTimeout(() => setCopied(false), 1200);
+		});
+	}, [chip]);
+
+	const chipElement = chip ? (
+		<button
+			type="button"
+			onClick={copy}
+			aria-label="Copy code"
+			title="Copy code"
+			className="fixed z-30 flex size-7 items-center justify-center rounded-md border border-border bg-background/95 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+			style={{ top: chip.top, left: chip.left }}
+		>
+			{copied ? (
+				<Check aria-hidden className="size-3.5 text-emerald-600" />
+			) : (
+				<Copy aria-hidden className="size-3.5" />
+			)}
+		</button>
+	) : null;
+
+	return chipElement;
+}
 
 export default function BlockNoteEditor({
 	value,
@@ -113,6 +381,7 @@ export default function BlockNoteEditor({
 	files,
 	onNewImageDataUrl,
 	onFilesDropped,
+	placeholder,
 	expanded = false,
 }: {
 	value: string;
@@ -158,8 +427,22 @@ export default function BlockNoteEditor({
 		}
 	}, []);
 
+	// Hidden image picker for the slash-menu "Insert image" item. The
+	// change handler lives below the editor creation (it needs the editor).
+	const imageInputRef = useRef<HTMLInputElement>(null);
+	const pickImage = useCallback(() => imageInputRef.current?.click(), []);
+
 	const editor: Editor = useCreateBlockNote({
 		schema,
+		tables: { headers: true },
+		dictionary: {
+			...en,
+			placeholders: {
+				...en.placeholders,
+				// Empty + unfocused composer hint (the per-tab copy).
+				emptyDocument: placeholder ?? en.placeholders.default,
+			},
+		},
 		pasteHandler: ({ event, defaultPasteHandler }) => {
 			const items = event.clipboardData?.items;
 			if (!items) return defaultPasteHandler();
@@ -199,29 +482,34 @@ export default function BlockNoteEditor({
 			// reconcile below rewrites the data URL to an envelope marker.
 			void (async () => {
 				for (const f of imageFiles) {
-					const dataUrl = await new Promise<string>((resolve, reject) => {
-						const reader = new FileReader();
-						reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-						reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
-						reader.readAsDataURL(f);
-					});
-					let stored: EnvelopeFile;
 					try {
-						stored = latest.current.onNewImageDataUrl(dataUrl);
+						await insertLocalImage(editor, f, (dataUrl, suggestedName) =>
+							latest.current.onNewImageDataUrl(dataUrl, suggestedName),
+						);
 					} catch {
 						continue;
 					}
-					const cursor = editor.getTextCursorPosition().block;
-					editor.insertBlocks(
-						[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
-						cursor,
-						"after",
-					);
 				}
 			})();
 			return true;
 		},
 	});
+
+	// Image picker change handler — after the editor exists.
+	const handleImagePick = useCallback(
+		(e: React.ChangeEvent<HTMLInputElement>) => {
+			const picked = Array.from(e.target.files ?? []).filter((f) => f.type.startsWith("image/"));
+			e.target.value = ""; // re-picking the same file must re-fire change
+			for (const f of picked) {
+				void insertLocalImage(editor, f, (dataUrl, suggestedName) =>
+					latest.current.onNewImageDataUrl(dataUrl, suggestedName),
+				).catch(() => {
+					// A skipped image is better than a broken composer.
+				});
+			}
+		},
+		[editor],
+	);
 
 	// Value the editor currently reflects — guards the sync effect against
 	// feedback loops with our own onChange output.
@@ -266,7 +554,7 @@ export default function BlockNoteEditor({
 			}
 		});
 		return unsub;
-	}, [editor]);
+	}, [editor, value]);
 
 	// Round 18: file drops are consumed BY THE EDITOR — images insert
 	// inline blocks (paste parity) keeping their REAL filename via
@@ -288,24 +576,13 @@ export default function BlockNoteEditor({
 		e.stopPropagation();
 		void (async () => {
 			for (const f of images) {
-				const dataUrl = await new Promise<string>((resolve, reject) => {
-					const reader = new FileReader();
-					reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-					reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
-					reader.readAsDataURL(f);
-				});
-				let stored: EnvelopeFile;
 				try {
-					stored = latest.current.onNewImageDataUrl(dataUrl, f.name);
+					await insertLocalImage(editor, f, (dataUrl, suggestedName) =>
+						latest.current.onNewImageDataUrl(dataUrl, suggestedName),
+					);
 				} catch {
 					continue;
 				}
-				const cursor = editor.getTextCursorPosition().block;
-				editor.insertBlocks(
-					[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
-					cursor,
-					"after",
-				);
 			}
 			// ALWAYS notify when the bridge exists — even with an EMPTY list
 			// (image-only drop): the parent resets its drag overlay on the
@@ -384,6 +661,7 @@ export default function BlockNoteEditor({
 		},
 		[selectRange],
 	);
+	const codeCopyChip = useCodeCopyChip(viewRef);
 	const editorShell =
 		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
@@ -399,6 +677,16 @@ export default function BlockNoteEditor({
 					: `${editorShell} min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 			}
 		>
+			<input
+				ref={imageInputRef}
+				type="file"
+				accept="image/*"
+				multiple
+				onChange={handleImagePick}
+				className="sr-only"
+				aria-hidden="true"
+				tabIndex={-1}
+			/>
 			{/* Left-margin drag-select surface: sits beside the blocks, never on
                             top of them (pointer-events only on the 24px strip). */}
 			<div
@@ -413,6 +701,7 @@ export default function BlockNoteEditor({
 					style={{ left: dragBox.x, top: dragBox.y, width: dragBox.w, height: dragBox.h }}
 				/>
 			)}
+			{codeCopyChip}
 			<BlockNoteView
 				editor={editor}
 				theme={resolvedTheme === "dark" ? "dark" : "light"}
@@ -421,8 +710,9 @@ export default function BlockNoteEditor({
 			>
 				<SuggestionMenuController
 					triggerCharacter="/"
-					getItems={async (query) => getSlashMenuItems(editor, query)}
+					getItems={async (query) => getSlashMenuItems(editor, query, pickImage)}
 				/>
+				<FormattingToolbarController formattingToolbar={ComposerFormattingToolbar} />
 			</BlockNoteView>
 		</div>
 	);

@@ -199,16 +199,16 @@ export function ImageViewer({
 							</>
 						)}
 						{/* No custom close here — DialogContent already renders an
-							accessible close (top-right X); a second one read as a
-							duplicate. The counter takes the right edge. */}
+                                                        accessible close (top-right X); a second one read as a
+                                                        duplicate. The counter takes the right edge. */}
 						<figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
 							<span className="truncate text-xs font-medium">{file.name}</span>
 							<span className="shrink-0 text-[11px] text-muted-foreground">
 								{formatFileSize(file.size)}
 							</span>
 							{/* Save-without-closing: the same guard-passing data URL as the
-								img, as a plain download anchor — no second decode, no new
-								path for the bytes. */}
+                                                                img, as a plain download anchor — no second decode, no new
+                                                                path for the bytes. */}
 							{safeSrc && (
 								<a
 									href={safeSrc}
@@ -1198,8 +1198,9 @@ export function DecryptedMessageView({
 
 	// Click-to-zoom lightbox state. The dialog shows the SAME allow-listed
 	// data URL the inline <img> already renders — nothing new reaches the
-	// DOM, it is only re-rendered larger.
-	const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null);
+	// DOM, it is only re-rendered larger. `name` drives the caption bar and
+	// the download anchor (parity with the attachment ImageViewer).
+	const [zoom, setZoom] = useState<{ src: string; alt: string; name: string } | null>(null);
 
 	return (
 		<div
@@ -1262,15 +1263,16 @@ export function DecryptedMessageView({
 						// the <img> — a crafted srcset/sizes attribute would bypass the
 						// src allow-list above. Only alt/src/style/className/title (ours)
 						// reach the DOM. loading=lazy also defers offscreen inline images.
+						const displayName = meta.displayName || "image";
 						return (
 							// Click-to-zoom (Notion pattern): the button wraps the SAME
 							// allow-listed data URL — the lightbox adds no new image
 							// source, it only re-renders the one already verified above.
 							<button
 								type="button"
-								onClick={() => setZoom({ src: safeSrc, alt: meta.displayName })}
+								onClick={() => setZoom({ src: safeSrc, alt: displayName, name: displayName })}
 								title="Click to view full size"
-								aria-label={`View image full size: ${meta.displayName}`}
+								aria-label={`View image full size: ${displayName}`}
 								className="mx-0.5 inline-block cursor-zoom-in rounded align-middle transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc] focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
 							>
 								<img
@@ -1295,21 +1297,41 @@ export function DecryptedMessageView({
 				{text}
 			</Markdown>
 			{/* Read-view lightbox. DialogTitle is sr-only (the image itself is
-			    the content); Escape, backdrop, and the close button all restore
-			    the view without losing scroll position — the dialog overlays,
-			    the page stays mounted underneath. */}
+                            the content); Escape, backdrop, and the close button all restore
+                            the view without losing scroll position — the dialog overlays,
+                            the page stays mounted underneath. The caption bar mirrors the
+                            attachment ImageViewer: file name + a download anchor that
+                            reuses the SAME guard-passing data URL (no second decode). */}
 			<Dialog open={zoom !== null} onOpenChange={(open) => !open && setZoom(null)}>
 				<DialogContent
 					aria-describedby={undefined}
-					className="max-w-[min(92vw,960px)] rounded-xl border-border/80 bg-card p-2"
+					className="max-w-[min(92vw,960px)] overflow-hidden rounded-xl border-border/80 bg-card p-0"
 				>
 					<DialogTitle className="sr-only">{zoom?.alt ?? "Image preview"}</DialogTitle>
 					{zoom && (
-						<img
-							src={zoom.src}
-							alt={zoom.alt}
-							className="mx-auto max-h-[78vh] w-auto max-w-full rounded-lg object-contain"
-						/>
+						<figure className="space-y-0">
+							<div className="flex max-h-[78vh] items-center justify-center overflow-auto bg-muted/40 p-2">
+								<img
+									src={zoom.src}
+									alt={zoom.alt}
+									className="mx-auto max-h-[76vh] w-auto max-w-full rounded-lg object-contain"
+								/>
+							</div>
+							<figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
+								<span className="truncate text-xs font-medium">{zoom.name}</span>
+								{/* Save-without-closing: the same verified data URL as
+                                                                    the inline img — one decode path, zero new bytes. */}
+								<a
+									href={zoom.src}
+									download={zoom.name}
+									className="ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs transition-colors hover:bg-muted hover:text-foreground"
+									aria-label={`Download ${zoom.name}`}
+									title="Download this image"
+								>
+									<Download className="size-4" aria-hidden />
+								</a>
+							</figcaption>
+						</figure>
 					)}
 				</DialogContent>
 			</Dialog>

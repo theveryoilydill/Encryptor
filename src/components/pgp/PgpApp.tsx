@@ -855,7 +855,7 @@ export default function PgpApp() {
 
 					{/* All four panels stay MOUNTED for the whole session; inactive ones
             get the `hidden` attribute (display:none — unfocusable, out of
-            the a11y tree). Drafts and results survive tab switches: peeking
+            the a11y tree). Composers' text and results survive tab switches: peeking
             at another mode can no longer silently discard a half-written
             message, attachments, or pasted armor. The enter animation still
             plays on every switch because .panel-enter is re-added to the

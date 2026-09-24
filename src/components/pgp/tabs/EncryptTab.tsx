@@ -14,10 +14,8 @@ import {
 	FileUp,
 	History,
 	LayoutTemplate,
-	List,
 	Loader2,
 	Lock,
-	ClipboardCopy as CopyMarkdownIcon,
 	Maximize2,
 	Minimize2,
 	Paperclip,
@@ -40,7 +38,6 @@ import {
 	AttachmentList,
 	CopyButton,
 	DownloadButton,
-	DraftRestoredNote,
 	ErrorBanner,
 	InputSizeCounter,
 	OutputBlock,
@@ -90,7 +87,6 @@ import {
 	type ParsedVaultManifest,
 	type SealedHistoryEntry,
 } from "@/lib/pgp/sealed-history";
-import { clearDraft, loadDraft, saveDraft } from "@/lib/pgp/drafts";
 import {
 	decryptAndAutoVerify,
 	describeEncryptedMessage,
@@ -268,37 +264,6 @@ const COMPOSER_TEMPLATES: { name: string; description: string; body: string }[] 
 		].join("\n"),
 	},
 ];
-
-/** GitHub-style anchor slug for a heading title: lowercase, strip every
- *  character that is not a letter, number, space or hyphen, then spaces
- *  become hyphens. Mirrors the anchors GitHub generates for its own
- *  headings, so TOC links keep working when the message is pasted into a
- *  GitHub issue, README or comment.
- *
- *  # Mr. AI Acting on s183173's Behalf
- */
-function githubSlug(title: string): string {
-	return title
-		.toLowerCase()
-		.replace(/[^\p{L}\p{N}\s-]/gu, "")
-		.replace(/\s+/g, "-");
-}
-
-/** Build a GitHub-style table of contents from the composer's markdown:
- *  every ATX heading (`#` through `######`) becomes an indented
- *  `- [Title](#slug)` row (2 spaces of indent per level below h1).
- *  Returns "" when the message has no headings — the caller toasts
- *  instead of inserting an empty TOC. */
-function buildTableOfContents(markdown: string): string {
-	const rows: string[] = [];
-	for (const line of markdown.split("\n")) {
-		const match = /^(#{1,6})\s+(.*)$/.exec(line);
-		if (!match) continue;
-		const title = match[2].trim();
-		rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${githubSlug(title)})`);
-	}
-	return rows.join("\n");
-}
 
 /** Small right-aligned utility above the composer: the template menu works
  *  for BOTH editor styles (Notion blocks + VS Code textarea) because it
@@ -614,37 +579,12 @@ export function EncryptTab({
 	globalComposerChord?: boolean;
 }) {
 	const { toast } = useToast();
-	// Draft resilience (sessionStorage, see lib/pgp/drafts.ts): the composer
-	// rehydrates whatever was typed before a refresh, and the restore is
-	// surfaced (and discardable) rather than silent. The initializer runs
-	// once per tab mount; the save effect below keeps storage in step.
-	const [initialDraft] = useState(() => loadDraft("encrypt"));
-	const [draftRestored, setDraftRestored] = useState(() => initialDraft !== null);
-	const [plaintext, setPlaintext] = useState(initialDraft?.text ?? "");
-	const [attachments, setAttachments] = useState<EnvelopeFile[]>(initialDraft?.files ?? []);
-	// Debounced draft persistence — one write per pause in typing, not per
-	// keystroke. Empty/whitespace text clears the stored draft instead of
-	// writing an empty one, so "cleared the message" never resurrects. The
-	// transient "Draft saved" tick in the counter row makes the (otherwise
-	// silent) autosave visible without ever interrupting typing.
-	const [draftSaved, setDraftSaved] = useState(false);
-	useEffect(() => {
-		const t = setTimeout(() => {
-			if (plaintext.trim() === "") {
-				clearDraft("encrypt");
-				setDraftSaved(false);
-			} else {
-				saveDraft("encrypt", plaintext, attachments);
-				setDraftSaved(true);
-			}
-		}, 600);
-		return () => clearTimeout(t);
-	}, [plaintext, attachments]);
-	useEffect(() => {
-		if (!draftSaved) return;
-		const t = setTimeout(() => setDraftSaved(false), 2000);
-		return () => clearTimeout(t);
-	}, [draftSaved]);
+	// Composer content. Plaintext is held in React state ONLY — nothing is
+	// persisted to storage (user request: "Don't save drafts, that is
+	// insecure"). A refresh loses unsent text by design; the seal-and-clear
+	// path also empties state so plaintext never outlives its use.
+	const [plaintext, setPlaintext] = useState("");
+	const [attachments, setAttachments] = useState<EnvelopeFile[]>([]);
 	// Mirror of the attachment list for SYNCHRONOUS readers — the editor's
 	// image-paste bridge must return the FINAL (deduped) filename in the same
 	// tick it registers the file, but React state updates are async and the
@@ -1104,39 +1044,6 @@ export function EncryptTab({
 		setPlaintext(body);
 	}, []);
 
-	// "Insert table of contents" (round-12 editor pass): parse the CURRENT
-	// composer markdown for ATX headings and PREPEND a GitHub-style TOC
-	// (slug anchors, one blank line after). Heading-less messages get a
-	// toast and are left completely untouched.
-	const insertTableOfContents = useCallback(() => {
-		const toc = buildTableOfContents(plaintext);
-		if (!toc) {
-			toast({ title: "No headings found — add some `#` headings first" });
-			return;
-		}
-		setPlaintext(`${toc}\n\n${plaintext}`);
-	}, [plaintext, toast]);
-
-	// Copy the composer's markdown SOURCE (what the recipient will see
-	// rendered). Works without sealing — for pasting the message anywhere
-	// else, archiving it, or moving it to another tool.
-	const handleCopyMarkdown = useCallback(() => {
-		if (!plaintext.trim()) {
-			toast({ title: "Nothing to copy — the composer is empty" });
-			return;
-		}
-		void navigator.clipboard
-			.writeText(plaintext)
-			.then(() => toast({ title: "Markdown copied" }))
-			.catch(() =>
-				toast({
-					title: "Copy failed",
-					description: "The clipboard rejected the write — select the text and copy manually.",
-					variant: "destructive",
-				}),
-			);
-	}, [plaintext, toast]);
-
 	const handleEncrypt = useCallback(async () => {
 		setError(null);
 		setOutput("");
@@ -1275,11 +1182,7 @@ export function EncryptTab({
 
 			// The user can always decrypt their own copy (Include me) — so the
 			// plaintext is deleted from the composer as soon as the ciphertext
-			// exists. Only the output remains in memory. The draft goes with it
-			// (immediately, not on the debounced effect — closing the tab inside
-			// the debounce window must not resurrect a sealed message).
-			clearDraft("encrypt");
-			setDraftRestored(false);
+			// exists. Only the output remains in memory.
 			setPlaintext("");
 			setAttachments([]);
 			setHintDismissedFor(null);
@@ -1546,7 +1449,7 @@ export function EncryptTab({
 		[plaintext, attachments],
 	);
 
-	// The whole composer — utility row (TOC, Expand, template menu) + editor
+	// The whole composer — utility row (Expand, template menu) + editor
 	// + counter + smart-input hint — as one value, rendered EITHER inline OR
 	// inside the full-screen portal overlay further down. Moving it in and
 	// out of the overlay is therefore a pure re-mount: no state lives in the
@@ -1555,27 +1458,9 @@ export function EncryptTab({
 	// # Mr. AI Acting on s183173's Behalf
 	const composerBody = (
 		<>
-			{/* Composer utility row: copy-markdown, table-of-contents insert,
-                            full-screen toggle and the template menu, right-aligned. */}
+			{/* Composer utility row: full-screen toggle and the template
+                            menu, right-aligned. */}
 			<div className="mb-1.5 flex items-center justify-end gap-2">
-				<button
-					type="button"
-					aria-label="Copy message as markdown"
-					title="Copy message as markdown"
-					onClick={handleCopyMarkdown}
-					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-				>
-					<CopyMarkdownIcon aria-hidden="true" className="size-3.5" />
-				</button>
-				<button
-					type="button"
-					aria-label="Insert table of contents"
-					title="Insert table of contents"
-					onClick={insertTableOfContents}
-					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-				>
-					<List aria-hidden="true" className="size-3.5" />
-				</button>
 				<button
 					type="button"
 					aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
@@ -1605,23 +1490,8 @@ export function EncryptTab({
 					expanded={composerExpanded}
 				/>
 			</div>
-			{/* Draft-resilience note — only after an actual restore, and gone
-                        once the user discards or seals the message. */}
-			{draftRestored && (
-				<DraftRestoredNote
-					filesDropped={initialDraft?.filesDropped}
-					onDiscard={() => {
-						clearDraft("encrypt");
-						setDraftRestored(false);
-						setPlaintext("");
-						setAttachments([]);
-						setHintDismissedFor(null);
-					}}
-				/>
-			)}
-			{/* Char/word/size counter (visual feedback only) + the transient
-                            "Draft saved" tick from the debounced autosave. */}
-			<InputSizeCounter text={plaintext} note={draftSaved ? "Draft saved" : undefined} />
+			{/* Char/word/size counter (visual feedback only). */}
+			<InputSizeCounter text={plaintext} />
 			{showEncryptHint && detectedBlock && (
 				<InputHint
 					tone={detectedBlock === "encrypted" ? "amber" : "info"}

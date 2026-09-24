@@ -395,8 +395,8 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 								</p>
 							)}
 							<p className="text-xs leading-relaxed text-muted-foreground">
-								Importing replaces ALL current settings — recipients, drafts, preferences, and the
-								key above. This cannot be undone.
+								Importing replaces ALL current settings — recipients, preferences, and the key
+								above. This cannot be undone.
 							</p>
 						</div>
 					)}

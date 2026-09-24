@@ -3,27 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import {
-	ClipboardCopy as CopyMarkdownIcon,
-	FileSignature,
-	FileUp,
-	Maximize2,
-	Minimize2,
-	ShieldCheck,
-	X,
-} from "lucide-react";
+import { FileSignature, FileUp, Maximize2, Minimize2, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import {
-	CopyButton,
-	DraftRestoredNote,
-	ErrorBanner,
-	InputSizeCounter,
-	OutputBlock,
-} from "@/components/pgp/shared";
+import { CopyButton, ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
-import { clearDraft, loadDraft, saveDraft } from "@/lib/pgp/drafts";
 import { formatFileSize } from "@/lib/pgp/envelope";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import type { MarkdownEditorKind } from "@/lib/pgp/settings";
@@ -53,39 +38,15 @@ export function SignTab({
 	 *  routing). */
 	globalComposerChord?: boolean;
 }) {
-	// Draft resilience (same pattern as the Encrypt tab — see
-	// lib/pgp/drafts.ts). Signing intentionally does NOT clear the
-	// composer on success, so the draft simply mirrors it: saved while
-	// typing, cleared when the text is emptied or discarded.
-	const [initialDraft] = useState(() => loadDraft("sign"));
-	const [draftRestored, setDraftRestored] = useState(() => initialDraft !== null);
-	const [plaintext, setPlaintext] = useState(initialDraft?.text ?? "");
+	// Composer content. Plaintext is held in React state ONLY — nothing is
+	// persisted to storage (user request: "Don't save drafts, that is
+	// insecure"). Signing intentionally does NOT clear the composer on
+	// success, but a refresh still loses unsent text by design.
+	const [plaintext, setPlaintext] = useState("");
 	const [detached, setDetached] = useState(false);
 	const [output, setOutput] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [draftSaved, setDraftSaved] = useState(false);
-
-	// Debounced draft persistence (one write per typing pause).
-	useEffect(() => {
-		const t = setTimeout(() => {
-			if (plaintext.trim() === "") {
-				clearDraft("sign");
-				setDraftRestored(false);
-				setDraftSaved(false);
-			} else {
-				saveDraft("sign", plaintext);
-				setDraftSaved(true);
-			}
-		}, 600);
-		return () => clearTimeout(t);
-	}, [plaintext]);
-	// Transient tick — "saved" stops being news after a moment.
-	useEffect(() => {
-		if (!draftSaved) return;
-		const t = setTimeout(() => setDraftSaved(false), 2000);
-		return () => clearTimeout(t);
-	}, [draftSaved]);
 	// Full-screen composer overlay (parity with the Encrypt tab): when
 	// expanded, the whole "Text to sign" composer — header row, editor,
 	// counter — moves into a portal dialog filling the viewport. The state
@@ -171,26 +132,6 @@ export function SignTab({
 			setBusy(false);
 		}
 	}, [plaintext, privateKey, detached, requestDecryptedKey]);
-
-	// Copy the text-to-sign markdown SOURCE — parity with the Encrypt
-	// composer's utility row (works without signing, for pasting the text
-	// anywhere else or archiving it).
-	const handleCopyMarkdown = useCallback(() => {
-		if (!plaintext.trim()) {
-			toast({ title: "Nothing to copy — the composer is empty" });
-			return;
-		}
-		void navigator.clipboard
-			.writeText(plaintext)
-			.then(() => toast({ title: "Markdown copied" }))
-			.catch(() =>
-				toast({
-					title: "Copy failed",
-					description: "The clipboard rejected the write — select the text and copy manually.",
-					variant: "destructive",
-				}),
-			);
-	}, [plaintext, toast]);
 
 	// ------------------------- File signing (round 20) -------------------------
 	// A self-contained second flow at the bottom of the tab: pick ANY file,
@@ -285,15 +226,6 @@ export function SignTab({
 				<div className="flex items-center gap-2">
 					<button
 						type="button"
-						aria-label="Copy message as markdown"
-						title="Copy message as markdown"
-						onClick={handleCopyMarkdown}
-						className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-					>
-						<CopyMarkdownIcon aria-hidden="true" className="size-3.5" />
-					</button>
-					<button
-						type="button"
 						aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
 						title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
 						onClick={() => setComposerExpanded((v) => !v)}
@@ -308,7 +240,7 @@ export function SignTab({
 				</div>
 			</div>
 			{/* Hidden while the full-screen overlay is up — the editor's own
-			    placeholder already covers "empty" in zen mode (Encrypt parity). */}
+                            placeholder already covers "empty" in zen mode (Encrypt parity). */}
 			{!composerExpanded && !plaintext.trim() && !output && (
 				<div className="animate-fade-up mb-3 flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border bg-muted/30 p-6 text-center sm:p-8">
 					<div className="grid size-12 place-items-center rounded-full bg-[#0055dc]/10 dark:bg-[#5e94ff]/10">
@@ -321,10 +253,10 @@ export function SignTab({
 				</div>
 			)}
 			{/* Markdown editor for signing ("markdown for signing too") — same
-				    two engines as the Encrypt composer. Signing has no attachment
-				    pipeline, so image registration intentionally fails closed:
-				    pasted images stay inline as data URLs inside the signed text.
-				    flex-1 min-h-0 in the overlay lets the engine fill the viewport. */}
+                                    two engines as the Encrypt composer. Signing has no attachment
+                                    pipeline, so image registration intentionally fails closed:
+                                    pasted images stay inline as data URLs inside the signed text.
+                                    flex-1 min-h-0 in the overlay lets the engine fill the viewport. */}
 			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
 				<MessageEditor
 					value={plaintext}
@@ -338,19 +270,8 @@ export function SignTab({
 					expanded={composerExpanded}
 				/>
 			</div>
-			{/* Draft-resilience note — only after an actual restore. */}
-			{draftRestored && (
-				<DraftRestoredNote
-					onDiscard={() => {
-						clearDraft("sign");
-						setDraftRestored(false);
-						setPlaintext("");
-					}}
-				/>
-			)}
-			{/* Char/word/size counter — parity with the Encrypt tab counter,
-				    including the transient draft-saved tick. */}
-			<InputSizeCounter text={plaintext} note={draftSaved ? "Draft saved" : undefined} />
+			{/* Char/word/size counter — parity with the Encrypt tab counter. */}
+			<InputSizeCounter text={plaintext} />
 		</>
 	);
 
@@ -379,11 +300,11 @@ export function SignTab({
 				</div>
 			)}
 			{/* Full-screen composer overlay — same pattern as the Encrypt tab:
-				    a portal dialog filling the viewport. Click-off + Escape collapse
-				    (both dialog-safe), Ctrl/Cmd+Enter signs from inside, Ctrl/Cmd+Shift+E
-				    collapses. The passphrase prompt opened by requestDecryptedKey
-				    portals OUTSIDE this overlay and keeps its own Escape via the
-				    nested-dialog guard. */}
+                                    a portal dialog filling the viewport. Click-off + Escape collapse
+                                    (both dialog-safe), Ctrl/Cmd+Enter signs from inside, Ctrl/Cmd+Shift+E
+                                    collapses. The passphrase prompt opened by requestDecryptedKey
+                                    portals OUTSIDE this overlay and keeps its own Escape via the
+                                    nested-dialog guard. */}
 			{composerExpanded &&
 				createPortal(
 					<div

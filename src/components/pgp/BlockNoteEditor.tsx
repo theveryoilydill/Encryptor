@@ -70,7 +70,7 @@ import {
 	type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useTheme } from "next-themes";
-import { Check, Copy, ImagePlus, Lightbulb, ListTree } from "lucide-react";
+import { Check, Copy, ImagePlus, Lightbulb } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
@@ -136,39 +136,86 @@ const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlo
 	);
 };
 
-/** Callout block: an amber "note" card with a fixed 💡 decoration. Exports
- *  as `> 💡 …` — a GFM quote every recipient renders — and parses back
- *  from emoji-prefixed quotes so editor round-trips keep their intent.
- *  Zero sanitizer changes by design. */
+/** Callout block: an amber "note" card with a Notion-style icon chip.
+ *  Exports as `> <emoji> …` — a GFM quote every recipient renders — and
+ *  parses back from ANY emoji-prefixed quote so editor round-trips keep
+ *  the chosen icon. Zero sanitizer changes by design.
+ *
+ *  # Mr. AI Acting on s183173's Behalf */
+
+/** Notion-style icon palette — clicking the chip on a callout card cycles
+ *  through it. The emoji rides the wire inside the quote text, so the
+ *  recipient's plain-markdown renderer shows exactly this character. */
+const CALLOUT_ICONS = ["💡", "ℹ️", "⚠️", "✅", "🔥", "❌", "📌", "🎯"];
+
+/** Leading-emoji matcher for parsing quotes back into callouts. Accepts a
+ *  pictographic head (with optional FE0F/ZWJ sequences) followed by
+ *  whitespace — plain quotes never become callouts. */
+const CALLOUT_EMOJI_PREFIX_RE =
+	/^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)[\s\u00A0]+/u;
+
+/** Strip a leading emoji (plus trailing whitespace) out of the parsed
+ *  blockquote's DOM so the icon becomes the block's `emoji` PROP instead of
+ *  literal inline content — otherwise the card would render the icon twice
+ *  after every markdown round-trip. */
+function stripCalloutEmoji(element: Element, emoji: string): void {
+	for (const node of Array.from(element.childNodes)) {
+		if (node.nodeType !== Node.TEXT_NODE) continue;
+		const text = node.textContent ?? "";
+		const idx = text.indexOf(emoji);
+		if (idx === -1) continue;
+		const rest = text.slice(idx + emoji.length).replace(/^[\s\u00A0]+/, "");
+		if (rest) node.textContent = rest;
+		else element.removeChild(node);
+		return;
+	}
+}
+
 const calloutBlockSpec = createReactBlockSpec(
 	{
 		type: "callout",
-		propSchema: {},
+		propSchema: { emoji: { default: "💡" } },
 		content: "inline",
 	},
 	{
-		render: ({ contentRef }) => (
-			<div
-				data-callout
-				className="my-1 flex gap-2.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/30"
-			>
-				<Lightbulb
-					aria-hidden="true"
-					className="mt-1 size-4 shrink-0 text-amber-600 dark:text-amber-400"
-				/>
-				<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
-			</div>
-		),
-		toExternalHTML: ({ contentRef }) => (
+		render: ({ block, editor, contentRef }) => {
+			const emoji = block.props.emoji || "💡";
+			return (
+				<div
+					data-callout
+					className="my-1 flex gap-2.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/30"
+				>
+					<button
+						type="button"
+						contentEditable={false}
+						aria-label="Change callout icon"
+						title="Click to change the callout icon"
+						onMouseDown={(e) => e.preventDefault()}
+						onClick={() => {
+							const idx = CALLOUT_ICONS.indexOf(emoji);
+							const next = CALLOUT_ICONS[(idx + 1) % CALLOUT_ICONS.length] ?? CALLOUT_ICONS[0];
+							editor.updateBlock(block, { props: { emoji: next } });
+						}}
+						className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+					>
+						{emoji}
+					</button>
+					<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+				</div>
+			);
+		},
+		toExternalHTML: ({ block, contentRef }) => (
 			<blockquote>
-				💡&nbsp;
+				{block.props.emoji || "💡"}&nbsp;
 				<div ref={contentRef} />
 			</blockquote>
 		),
 		parse: (element) => {
 			if (element.tagName !== "BLOCKQUOTE") return undefined;
-			if (!element.textContent?.trimStart().startsWith("💡")) return undefined;
-			return {};
+			const match = CALLOUT_EMOJI_PREFIX_RE.exec(element.textContent?.trimStart() ?? "");
+			if (!match) return undefined;
+			stripCalloutEmoji(element, match[1]);
+			return { emoji: match[1] };
 		},
 	},
 )();
@@ -215,40 +262,6 @@ async function insertLocalImage(
 	);
 }
 
-/** "Insert table of contents" as a / command — TOC insertion lives in the
- *  slash menu, not only in the composer utility row. Builds a GitHub-style
- *  TOC from the document's headings and prepends it.
- *
- *  # Mr. AI Acting on s183173's Behalf */
-const insertTableOfContentsSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
-	title: "Table of contents",
-	subtext: "Insert a TOC from the document headings",
-	onItemClick: () => {
-		void (async () => {
-			const md = await editor.blocksToMarkdownLossy();
-			const rows: string[] = [];
-			for (const line of md.split("\n")) {
-				const match = /^(#{1,6})\s+(.*)$/.exec(line);
-				if (!match) continue;
-				const title = match[2].trim().replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
-				const slug = title
-					.toLowerCase()
-					.replace(/[^\p{L}\p{N}\s-]/gu, "")
-					.replace(/\s+/g, "-");
-				rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${slug})`);
-			}
-			if (rows.length === 0) return;
-			const tocBlocks = await editor.tryParseMarkdownToBlocks(`${rows.join("\n")}\n`);
-			if (tocBlocks && tocBlocks.length > 0) {
-				editor.insertBlocks(tocBlocks, editor.document[0], "before");
-			}
-		})();
-	},
-	aliases: ["toc", "table of contents", "outline"],
-	group: "Advanced",
-	icon: <ListTree size={18} />,
-});
-
 /** Device-upload "Insert image" — replaces the default Image item whose
  *  URL-embed panel could put remote https images on the wire that
  *  recipients then refuse to render. */
@@ -261,20 +274,22 @@ const insertImageSlashItem = (pickImage: () => void): DefaultReactSuggestionItem
 	onItemClick: pickImage,
 });
 
-/** Callout slash item — turns the current block into the amber note card. */
+/** Callout slash item — turns the current block into the amber note card.
+ *  The icon chip on the card cycles the emoji (Notion's change-icon
+ *  affordance), so a single menu item covers all callout flavors. */
 const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
 	title: "Callout",
-	subtext: "Make the block a highlighted note",
-	aliases: ["callout", "note", "highlight"],
+	subtext: "Highlighted note — click the icon on the card to change it",
+	aliases: ["callout", "note", "highlight", "info", "warning"],
 	group: "Basic blocks",
 	icon: <Lightbulb size={18} />,
 	onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: "callout" }),
 });
 
 /** Slash menu = defaults (minus the URL-embed image trap) + insert-image +
- *  callout + TOC. The title check matches the shipped English dictionary.
- *  Items are stable-sorted by group so each group renders exactly one
- *  header (custom items appended blindly produce duplicate "Basic blocks"/
+ *  callout. The title check matches the shipped English dictionary. Items
+ *  are stable-sorted by group so each group renders exactly one header
+ *  (custom items appended blindly produce duplicate "Basic blocks"/
  *  "Advanced" sections — and React duplicate-key errors). */
 const GROUP_ORDER = ["Headings", "Subheadings", "Basic blocks", "Advanced", "Media", "Others"];
 
@@ -287,12 +302,9 @@ const rank = (group: string | undefined): number => {
 
 function getSlashMenuItems(editor: Editor, query: string, pickImage: () => void) {
 	const defaults = getDefaultReactSlashMenuItems(editor).filter((item) => item.title !== "Image");
-	const items = [
-		...defaults,
-		insertImageSlashItem(pickImage),
-		calloutSlashItem(editor),
-		insertTableOfContentsSlashItem(editor),
-	].sort((a, b) => rank(a.group) - rank(b.group));
+	const items = [...defaults, insertImageSlashItem(pickImage), calloutSlashItem(editor)].sort(
+		(a, b) => rank(a.group) - rank(b.group),
+	);
 	return filterSuggestionItems(items, query);
 }
 
@@ -411,6 +423,44 @@ function useCodeCopyChip(viewRef: React.RefObject<HTMLDivElement | null>) {
 	) : null;
 
 	return chipElement;
+}
+
+/** Quote blocks that carry an emoji prefix must become callout blocks.
+ *
+ *  WHY: ProseMirror tries parse rules in schema order, and the built-in
+ *  `quote` block (registered before our custom `callout`) claims every
+ *  <blockquote> first — the callout's own `parse` never runs on the
+ *  markdown→blocks path. Without this pass, every remount of the editor
+ *  (expand/collapse the composer, switch engines, template apply) silently
+ *  degraded callouts to plain quotes — the "callouts look different big
+ *  mode vs small mode" report: the block literally changed TYPE.
+ *
+ *  The pass walks the parsed tree (recursing into children) and rewrites
+ *  emoji-prefixed quotes into callouts, moving the emoji into the `emoji`
+ *  prop so the card doesn't render the icon twice. Plain quotes pass
+ *  through untouched. */
+function promoteCalloutQuotes(blocks: Editor["document"]): Editor["document"] {
+	return blocks.map((block) => {
+		const withChildren =
+			"children" in block && Array.isArray(block.children)
+				? { ...block, children: promoteCalloutQuotes(block.children as Editor["document"]) }
+				: block;
+		if (withChildren.type !== "quote") return withChildren;
+		const content = withChildren.content;
+		if (!Array.isArray(content) || content.length === 0) return withChildren;
+		const first = content[0];
+		if (first.type !== "text") return withChildren;
+		const match = CALLOUT_EMOJI_PREFIX_RE.exec(first.text);
+		if (!match) return withChildren;
+		const restText = first.text.slice(match[0].length);
+		const restContent = [...(restText ? [{ ...first, text: restText }] : []), ...content.slice(1)];
+		return {
+			id: withChildren.id,
+			type: "callout" as const,
+			props: { emoji: match[1] },
+			content: restContent,
+		} as Editor["document"][number];
+	});
 }
 
 export default function BlockNoteEditor({
@@ -574,6 +624,7 @@ export default function BlockNoteEditor({
 		let blocks: Editor["document"] | undefined;
 		try {
 			blocks = editor.tryParseMarkdownToBlocks(md);
+			if (blocks && blocks.length > 0) blocks = promoteCalloutQuotes(blocks);
 		} catch {
 			blocks = undefined;
 		}

@@ -43,6 +43,7 @@ export function ComposerOverlay({
 	open,
 	onClose,
 	onPrimaryAction,
+	topRight,
 	children,
 }: {
 	/** Which composer owns the overlay — routes stacked-overlay Escape/chords. */
@@ -51,6 +52,10 @@ export function ComposerOverlay({
 	onClose: () => void;
 	/** Ctrl/Cmd+Enter inside the overlay (Encrypt → encrypt, Sign → sign). */
 	onPrimaryAction: () => void;
+	/** Floating control pinned to the overlay's top-right corner — the
+	 *  collapse toggle lives there in full-screen mode (feedback mockup:
+	 *  the whole screen is recipients + editor, nothing else). */
+	topRight?: ReactNode;
 	children: ReactNode;
 }) {
 	// Rendered = actually in the DOM (includes the exit-animation window).
@@ -127,9 +132,10 @@ export function ComposerOverlay({
 			}
 		>
 			{/* Full-bleed screen container ("the whole screen"): a single rounded
-			    card filling the viewport. Callers stack the recipients bar, the
-			    editor (flex-1) and the status bar inside; no reading-column cap. */}
-			<div className="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden rounded-2xl border border-border bg-card shadow-xl sm:gap-3">
+                            card filling the viewport. Callers stack the recipients bar and
+                            the editor (flex-1) inside; no reading-column cap. */}
+			<div className="relative flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden rounded-2xl border border-border bg-card shadow-xl sm:gap-3">
+				{topRight && <div className="absolute right-3 top-2.5 z-10">{topRight}</div>}
 				{children}
 			</div>
 		</div>,

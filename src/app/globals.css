@@ -673,3 +673,135 @@
 		color: #0a7d33;
 	}
 }
+
+/* ---- Editor contrast + list-marker cycle (annotation round) ---- */
+
+/* "Dark mode vision = bad": BlockNote's own dark palette renders body text
+   at #cfcfcf and hardcodes quote text at #7d797a — both wash out on the
+   app's near-black card. Lift the editor text to a high-contrast near-white
+   and give quotes a readable gray. Light mode keeps BlockNote's defaults. */
+/* .dark prefix out-specifies BlockNote's own `.bn-root[data-color-scheme]`
+   rule (same specificity, later cascade would win for BlockNote). */
+.dark .bn-root[data-color-scheme="dark"],
+.bn-root.dark[data-color-scheme="dark"] {
+	--bn-colors-editor-text: #ededf2;
+	--bn-colors-side-menu: #8b8b96;
+}
+.dark .bn-root[data-color-scheme="dark"] [data-content-type="quote"] blockquote,
+.bn-root.dark[data-color-scheme="dark"] [data-content-type="quote"] blockquote {
+	color: #b9b9c4;
+	border-left-color: #6e6e7a;
+}
+.dark .bn-root[data-color-scheme="dark"] [data-content-type="divider"] hr,
+.bn-root.dark[data-color-scheme="dark"] [data-content-type="divider"] hr {
+	border-top-color: #6e6e7a;
+}
+
+/* "Make cycle": bullet markers cycle disc/circle/square per nesting depth
+   instead of sticking to square from depth 3 down. BlockNote hardcodes
+   depths 1-3; each rule below extends its shipped selector chain one more
+   `[data-content-type=bulletListItem]~.bn-block-group` per level, and the
+   longer chain out-specifies BlockNote's shallower rules. Depths beyond 9
+   stay square — deep enough for any sane message. */
+/* depth 4 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\2022";
+}
+/* depth 5 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25e6";
+}
+/* depth 6 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25aa\fe0e";
+}
+/* depth 7 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\2022";
+}
+/* depth 8 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25e6";
+}
+/* depth 9 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25aa\fe0e";
+}

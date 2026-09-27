@@ -71,6 +71,10 @@ import {
 } from "react";
 import { useTheme } from "next-themes";
 import { Check, Copy, ImagePlus, Lightbulb } from "lucide-react";
+
+/** Full picker palette: every fully-qualified emoji at base skin tone with
+ *  an English search name (generated — see lib/pgp/emoji-list.ts). */
+import { FULL_EMOJI_LIST } from "@/lib/pgp/emoji-list";
 import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
@@ -144,71 +148,22 @@ const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlo
  *  # Mr. AI Acting on s183173's Behalf */
 
 /** The callout's default icon (Notion's 💡). The chip on the card opens a
- *  searchable picker with ANY emoji — the old fixed cycle palette is gone. */
+ *  searchable picker over the FULL Unicode emoji set — owner feedback said
+ *  the old 50-emoji palette was too limited ("Limited emojis. Add all."). */
 const CALLOUT_DEFAULT_EMOJI = "💡";
 
-/** Searchable picker palette: [emoji, names…]. Names are lowercase match
- *  targets — the query filters with a plain substring test. Groups exist
- *  only for curation; the grid renders one flat, deduplicated list. */
-const CALLOUT_EMOJI_CHOICES: Array<[string, string]> = [
-	["💡", "lightbulb idea note"],
-	["ℹ️", "info information"],
-	["⚠️", "warning caution alert"],
-	["✅", "check done yes ok complete"],
-	["❌", "x cross no wrong cancel"],
-	["🔥", "fire hot flame"],
-	["📌", "pin important stick"],
-	["🎯", "target goal aim"],
-	["⭐", "star favorite important"],
-	["❗", "exclamation important urgent"],
-	["❓", "question help ask"],
-	["📝", "memo note write pencil"],
-	["📅", "calendar date schedule"],
-	["⏰", "clock time alarm deadline"],
-	["🔒", "lock secure private key"],
-	["🔑", "key password unlock"],
-	["✉️", "mail email letter message"],
-	["📦", "package box ship"],
-	["🚀", "rocket launch ship fast"],
-	["✨", "sparkles shiny new clean"],
-	["⚡", "zap lightning fast power"],
-	["🐛", "bug error fix insect"],
-	["🔧", "wrench fix tool repair"],
-	["🎉", "tada party celebrate confetti"],
-	["👍", "thumbsup yes like good approve"],
-	["👎", "thumbsdown no dislike bad"],
-	["👀", "eyes look watch read"],
-	["💬", "speech comment chat say"],
-	["🧠", "brain think idea smart"],
-	["📚", "books read study docs"],
-	["🔍", "magnify search find zoom"],
-	["📎", "paperclip attach attach"],
-	["🗂️", "files folder organize"],
-	["📊", "chart data stats graph"],
-	["💰", "money dollar cost budget"],
-	["🎁", "gift present reward"],
-	["🔔", "bell notify alert ring"],
-	["🏁", "finish flag done end"],
-	["🌊", "wave water ocean flow"],
-	["🌱", "seedling grow plant start"],
-	["🍅", "tomato pomodoro timer"],
-	["☕", "coffee break drink"],
-	["🍕", "pizza food lunch"],
-	["🐶", "dog pet"],
-	["🐱", "cat pet"],
-	["🌍", "earth world global web"],
-	["🌈", "rainbow pride color"],
-	["☀️", "sun sunny day bright"],
-	["🌙", "moon night dark"],
-];
+/** How many grid buttons to render at once. The full set is ~1.9k emojis;
+ *  without a cap an empty query would mount the whole grid (and its hover
+ *  handlers) in one paint. Search narrows below the cap naturally. */
+const EMOJI_RENDER_CAP = 200;
 
-/** Filter the palette by query (matches the emoji itself or any name). */
+/** Filter the full palette by query (matches the emoji itself or its name). */
 function filterCalloutEmojis(query: string): string[] {
 	const q = query.trim().toLowerCase();
-	if (!q) return CALLOUT_EMOJI_CHOICES.map(([emoji]) => emoji);
-	return CALLOUT_EMOJI_CHOICES.filter(
-		([emoji, names]) => emoji.includes(q) || names.includes(q),
-	).map(([emoji]) => emoji);
+	if (!q) return FULL_EMOJI_LIST.map(([emoji]) => emoji);
+	return FULL_EMOJI_LIST.filter(([emoji, name]) => emoji.includes(q) || name.includes(q)).map(
+		([emoji]) => emoji,
+	);
 }
 
 /** Leading-emoji matcher for parsing quotes back into callouts. Accepts a
@@ -291,7 +246,7 @@ function CalloutEmojiPicker({
 				className="mb-1.5 h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-[#0055dc]/30 dark:focus-visible:ring-[#5e94ff]/30"
 			/>
 			<div className="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto" role="listbox">
-				{results.map((emoji) => (
+				{results.slice(0, EMOJI_RENDER_CAP).map((emoji) => (
 					<button
 						key={emoji}
 						type="button"
@@ -308,6 +263,11 @@ function CalloutEmojiPicker({
 						{emoji}
 					</button>
 				))}
+				{results.length > EMOJI_RENDER_CAP && (
+					<p className="col-span-8 py-1.5 text-center text-[10px] text-muted-foreground">
+						{results.length.toLocaleString()} matches — keep typing to narrow
+					</p>
+				)}
 				{results.length === 0 && (
 					<p className="col-span-8 py-3 text-center text-xs text-muted-foreground">
 						No emoji found
@@ -445,8 +405,22 @@ const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
  *  callout. The title check matches the shipped English dictionary. Items
  *  are stable-sorted by group so each group renders exactly one header
  *  (custom items appended blindly produce duplicate "Basic blocks"/
- *  "Advanced" sections — and React duplicate-key errors). */
-const GROUP_ORDER = ["Headings", "Subheadings", "Basic blocks", "Advanced", "Media", "Others"];
+ *  "Advanced" sections — and React duplicate-key errors).
+ *
+ *  Owner-specified order (annotation round): bullet points, numbers, todo,
+ *  toggle, then all the other basic stuff, with quotes LAST. Two mechanisms
+ *  deliver that: "Basic blocks" ranks before the heading groups, and within
+ *  it the four list items get explicit priority; Quote moves to its own
+ *  "Quotes" group ranked dead last. */
+const GROUP_ORDER = [
+	"Basic blocks",
+	"Headings",
+	"Subheadings",
+	"Advanced",
+	"Media",
+	"Others",
+	"Quotes",
+];
 
 /** Group rank for the stable sort; unknown groups sort last (before only
  *  undefined ones). */
@@ -455,11 +429,27 @@ const rank = (group: string | undefined): number => {
 	return idx === -1 ? GROUP_ORDER.length : idx;
 };
 
+/** Within-"Basic blocks" priority: the four list flavors lead, then the
+ *  rest of the basic blocks. Titles match the shipped English dictionary. */
+const BASIC_BLOCKS_PRIORITY = ["Bullet List", "Numbered List", "Check List", "Toggle List"];
+const basicRank = (title: string): number => {
+	const idx = BASIC_BLOCKS_PRIORITY.indexOf(title);
+	return idx === -1 ? BASIC_BLOCKS_PRIORITY.length : idx;
+};
+
 function getSlashMenuItems(editor: Editor, query: string, pickImage: () => void) {
 	const defaults = getDefaultReactSlashMenuItems(editor).filter((item) => item.title !== "Image");
-	const items = [...defaults, insertImageSlashItem(pickImage), calloutSlashItem(editor)].sort(
-		(a, b) => rank(a.group) - rank(b.group),
-	);
+	const items = [...defaults, insertImageSlashItem(pickImage), calloutSlashItem(editor)]
+		.map((item) =>
+			// Quote rides last, in its own group (owner order).
+			item.title === "Quote" ? { ...item, group: "Quotes" } : item,
+		)
+		.sort((a, b) => {
+			const byGroup = rank(a.group) - rank(b.group);
+			if (byGroup !== 0) return byGroup;
+			if (a.group === "Basic blocks") return basicRank(a.title) - basicRank(b.title);
+			return 0;
+		});
 	return filterSuggestionItems(items, query);
 }
 

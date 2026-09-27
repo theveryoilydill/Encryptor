@@ -879,7 +879,6 @@ export default function PgpApp() {
 										recipients={recipients}
 										setRecipients={setRecipients}
 										includeSelf={includeSelf}
-										onIncludeSelfChange={handleSetIncludeSelf}
 										requestDecryptedKey={requestDecryptedKey}
 										onOpenInDecrypt={handleOpenInDecrypt}
 										settings={settings}
@@ -946,6 +945,8 @@ export default function PgpApp() {
 					setSettingsOpen(false);
 					setTourOpen(true);
 				}}
+				includeSelf={includeSelf}
+				onIncludeSelfChange={handleSetIncludeSelf}
 			/>
 
 			{keyRequest && privateKey && (

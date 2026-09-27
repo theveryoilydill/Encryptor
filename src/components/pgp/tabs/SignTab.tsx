@@ -224,19 +224,17 @@ export function SignTab({
 					</Label>
 				</div>
 				<div className="flex items-center gap-2">
-					<button
-						type="button"
-						aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
-						title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
-						onClick={() => setComposerExpanded((v) => !v)}
-						className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-					>
-						{composerExpanded ? (
-							<Minimize2 aria-hidden="true" className="size-3.5" />
-						) : (
+					{!composerExpanded && (
+						<button
+							type="button"
+							aria-label="Expand editor to full screen"
+							title="Expand editor to full screen"
+							onClick={() => setComposerExpanded((v) => !v)}
+							className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+						>
 							<Maximize2 aria-hidden="true" className="size-3.5" />
-						)}
-					</button>
+						</button>
+					)}
 				</div>
 			</div>
 			{/* Hidden while the full-screen overlay is up — the editor's own
@@ -270,8 +268,9 @@ export function SignTab({
 					expanded={composerExpanded}
 				/>
 			</div>
-			{/* Char/word/size counter — parity with the Encrypt tab counter. */}
-			<InputSizeCounter text={plaintext} />
+			{/* Char/word/size counter — parity with the Encrypt tab counter.
+                            Hidden in the full-screen overlay (mockup: screen = editor). */}
+			{!composerExpanded && <InputSizeCounter text={plaintext} />}
 		</>
 	);
 
@@ -303,9 +302,9 @@ export function SignTab({
                                     Encrypt tab: portal dialog, dialog-safe Escape/chord guards and
                                     the enter/exit transitions live in ComposerOverlay. Full-bleed
                                     layout: the "Text to sign" bar on top, editor fills the rest,
-                                    status bar pinned last. The passphrase prompt opened by
-                                    requestDecryptedKey portals OUTSIDE this overlay and keeps its
-                                    own Escape via the nested-dialog guard. */}
+                                    collapse toggle in the top-right corner. The passphrase prompt
+                                    opened by requestDecryptedKey portals OUTSIDE this overlay and
+                                    keeps its own Escape via the nested-dialog guard. */}
 			<ComposerOverlay
 				owner="sign"
 				open={composerExpanded}
@@ -313,33 +312,19 @@ export function SignTab({
 				onPrimaryAction={() => {
 					if (!busy) void handleSign();
 				}}
+				topRight={
+					<button
+						type="button"
+						aria-label="Collapse editor"
+						title="Collapse editor (Esc)"
+						onClick={() => setComposerExpanded(false)}
+						className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+					>
+						<Minimize2 aria-hidden="true" className="size-3.5" />
+					</button>
+				}
 			>
 				{composerBody}
-				<div className="mt-auto flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
-					<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-						<span className="rounded-full bg-muted/60 px-2 py-0.5">
-							{detached ? "Detached signature" : "Cleartext signed"}
-						</span>
-						{privateKey ? (
-							<span className="rounded-full bg-muted/60 px-2 py-0.5">Key: {privateKey.label}</span>
-						) : (
-							<span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-								No key selected
-							</span>
-						)}
-					</div>
-					<div className="hidden shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
-						<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
-							Ctrl+↵
-						</kbd>
-						<span>Sign</span>
-						<span aria-hidden="true" className="text-border">
-							·
-						</span>
-						<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">Esc</kbd>
-						<span>Collapse</span>
-					</div>
-				</div>
 			</ComposerOverlay>
 
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">

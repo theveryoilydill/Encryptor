@@ -27,7 +27,7 @@ import { EditorSelection } from "@codemirror/state";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
 import { tags } from "@lezer/highlight";
-import { PanelRightClose, PanelRightOpen, X, FileCode2 } from "lucide-react";
+import { PanelRightOpen, X, FileCode2 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { DEFAULT_INLINE_IMAGE_SCALE, buildInlineImageMarker } from "@/lib/pgp/inline-image";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
@@ -267,9 +267,10 @@ export default function VSCodeEditor({
 		<div className="min-h-0 min-w-0 flex-1 animate-in fade-in-0 slide-in-from-right-2 overflow-y-auto p-4 duration-200">
 			{previewText.trim() ? (
 				<DecryptedMessageView text={previewText} files={files} />
-			) : (
-				<p className="text-xs text-muted-foreground">{placeholder ?? "Nothing to preview yet."}</p>
-			)}
+			) : /* Empty preview renders nothing — the editor's "Type the
+                                    message…" placeholder must not leak into the preview
+                                    side (feedback annotation: it read like a second editor). */
+			null}
 		</div>
 	);
 
@@ -281,8 +282,10 @@ export default function VSCodeEditor({
 				(expanded ? "h-full min-h-0" : "h-[480px]")
 			}
 		>
-			{/* Tab strip — chrome bar with the source tab, the preview tab (when
-                            open) and the preview toggle, VS Code title-bar style. */}
+			{/* Tab strip — chrome bar with the source tab and the preview tab,
+                            VS Code title-bar style. Clicking the preview tab opens the
+                            panel; its close box hides it (the standalone panel toggle was
+                            cut in the annotation round — the tab IS the toggle). */}
 			<div className="flex h-9 shrink-0 items-stretch border-b border-border bg-muted/50 dark:bg-[#252526]">
 				<div
 					aria-current="true"
@@ -291,36 +294,44 @@ export default function VSCodeEditor({
 					<FileCode2 aria-hidden="true" className="size-3.5 text-[#0055dc] dark:text-[#5e94ff]" />
 					Message.md
 				</div>
-				{previewOpen && (
-					<div className="hidden items-center gap-1.5 border-r border-border px-3 text-xs text-muted-foreground sm:flex">
-						<PanelRightOpen aria-hidden="true" className="size-3.5" />
-						Preview
-						<button
-							type="button"
+				<button
+					type="button"
+					aria-pressed={previewOpen}
+					aria-label={previewOpen ? "Preview (open — click does nothing)" : "Show preview panel"}
+					title={previewOpen ? "Preview" : "Show preview panel"}
+					onClick={() => setPreviewOpen(true)}
+					tabIndex={previewOpen ? -1 : 0}
+					className={
+						"flex items-center gap-1.5 border-r border-border px-3 text-xs sm:flex " +
+						(previewOpen
+							? "bg-background font-medium text-foreground dark:bg-[#1e1e1e]"
+							: "text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10")
+					}
+				>
+					<PanelRightOpen aria-hidden="true" className="size-3.5" />
+					Preview
+					{previewOpen && (
+						<span
+							role="button"
+							tabIndex={0}
 							aria-label="Close preview panel"
-							onClick={() => setPreviewOpen(false)}
+							onClick={(e) => {
+								e.stopPropagation();
+								setPreviewOpen(false);
+							}}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									e.stopPropagation();
+									setPreviewOpen(false);
+								}
+							}}
 							className="ml-0.5 rounded p-0.5 transition-colors hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
 						>
 							<X aria-hidden="true" className="size-3" />
-						</button>
-					</div>
-				)}
-				<div className="ml-auto flex items-center gap-1 px-2">
-					<button
-						type="button"
-						aria-label={previewOpen ? "Hide preview panel" : "Show preview panel"}
-						aria-pressed={previewOpen}
-						title="Toggle preview panel"
-						onClick={() => setPreviewOpen((v) => !v)}
-						className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-					>
-						{previewOpen ? (
-							<PanelRightClose aria-hidden="true" className="size-4" />
-						) : (
-							<PanelRightOpen aria-hidden="true" className="size-4" />
-						)}
-					</button>
-				</div>
+						</span>
+					)}
+				</button>
 			</div>
 
 			{/* Split panes. */}

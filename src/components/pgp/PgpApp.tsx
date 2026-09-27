@@ -696,7 +696,7 @@ export default function PgpApp() {
 		const prewarm = () => {
 			void import("@/lib/pgp/keybase-auth").catch(() => {});
 			void import("@/components/pgp/BlockNoteEditor").catch(() => {});
-			void import("@uiw/react-md-editor").catch(() => {});
+			void import("@/components/pgp/VSCodeEditor").catch(() => {});
 			void import("@/lib/pgp/pq").catch(() => {});
 		};
 		const ric =

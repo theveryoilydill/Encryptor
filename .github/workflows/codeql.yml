@@ -12,10 +12,11 @@
 name: "CodeQL Advanced"
 
 on:
+  # Analyze every branch: push scans feature work as it lands, pull_request
+  # covers PRs against any base. The weekly cron keeps scanning the default
+  # branch.
   push:
-    branches: ["main", "develop"]
   pull_request:
-    branches: ["main", "develop"]
   schedule:
     - cron: "26 4 * * 1"
 

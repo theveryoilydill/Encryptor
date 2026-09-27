@@ -1,10 +1,10 @@
 name: CI
 
+# Run on every branch: push builds on feature branches, pull_request
+# checks PRs against any base — not just main/master/develop.
 on:
   push:
-    branches: [main, master, develop]
   pull_request:
-    branches: [main, master, develop]
 
 # Cancel superseded runs on the same PR/branch to save CI minutes.
 concurrency:

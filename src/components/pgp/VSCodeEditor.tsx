@@ -218,6 +218,15 @@ export default function VSCodeEditor({
 		[onNewImageDataUrl],
 	);
 
+	// ONE stable extension array: CodeMirror reconfigures itself whenever
+	// the array identity changes, and a fresh array every render fed a
+	// reconfigure storm into the controlled-value loop (React logged
+	// "Maximum update depth exceeded" on every keystroke).
+	const allExtensions = useMemo(
+		() => [markdown(), vscodeExtensions(dark), pasteExtensions],
+		[dark, pasteExtensions],
+	);
+
 	// Focus the source when the overlay opens (keyboard users must land in
 	// the editor, not behind the aria-modal surface).
 	useEffect(() => {
@@ -315,14 +324,14 @@ export default function VSCodeEditor({
 			<div className="flex min-h-0 flex-1 flex-col lg:flex-row">
 				<div
 					className="min-h-0 min-w-0 overflow-hidden border-b border-border lg:border-b-0"
-					style={{ flexBasis: `${split}%`, flexGrow: 0, flexShrink: 0 }}
+					style={{ flexBasis: previewOpen ? `${split}%` : "100%", flexGrow: 0, flexShrink: 0 }}
 				>
 					<CodeMirror
 						ref={cmRef}
 						value={value}
 						onChange={onChange}
 						height={expanded ? "100%" : `${INLINE_HEIGHT - 36}px`}
-						extensions={[markdown(), vscodeExtensions(dark), pasteExtensions]}
+						extensions={allExtensions}
 						basicSetup={{
 							lineNumbers: true,
 							highlightActiveLine: true,

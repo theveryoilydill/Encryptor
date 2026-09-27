@@ -6,14 +6,53 @@ on:
   push:
   pull_request:
 
-# Cancel superseded runs on the same PR/branch to save CI minutes.
+# One run per branch per event type at a time. The group is keyed by
+# branch name (head_ref on pull_request events, ref_name on push events)
+# plus the event name, so rapid pushes or PR updates supersede stale
+# runs without a push run ever cancelling a PR run that is in flight.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
+  # Dedupe guard: when an open PR already has this branch as its head,
+  # the pull_request run is the check — a push run for the same commit
+  # would just duplicate it, so skip. Branches without an open PR (e.g.
+  # the default branch) keep their push runs.
+  guard:
+    name: dedupe (skip push runs covered by a PR)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "Event is $EVENT_NAME — always run."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          open_prs=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq length)
+          if [ "$open_prs" -gt 0 ]; then
+            echo "Open PR covers '$BRANCH' — skipping push run (the PR run is the check)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No open PR for '$BRANCH' — running."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   quality:
     name: typecheck and lint
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

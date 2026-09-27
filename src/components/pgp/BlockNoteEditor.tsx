@@ -30,9 +30,9 @@
  *   - The formatting toolbar drops the color picker: colors never survive
  *     the markdown bridge, so the button advertised something the
  *     recipient would never see.
- *   - A callout block (amber card) exports as `> 💡 …`, so it degrades to
- *     an honest quoted line for recipients and the sanitize schema stays
- *     untouched.
+ *   - A callout block (neutral Notion-gray card with a searchable emoji
+ *     picker chip) exports as `> 💡 …`, so it degrades to an honest quoted
+ *     line for recipients and the sanitize schema stays untouched.
  */
 import {
 	BlockNoteSchema,
@@ -136,17 +136,80 @@ const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlo
 	);
 };
 
-/** Callout block: an amber "note" card with a Notion-style icon chip.
+/** Callout block: a Notion-style "note" card with an emoji picker chip.
  *  Exports as `> <emoji> …` — a GFM quote every recipient renders — and
  *  parses back from ANY emoji-prefixed quote so editor round-trips keep
  *  the chosen icon. Zero sanitizer changes by design.
  *
  *  # Mr. AI Acting on s183173's Behalf */
 
-/** Notion-style icon palette — clicking the chip on a callout card cycles
- *  through it. The emoji rides the wire inside the quote text, so the
- *  recipient's plain-markdown renderer shows exactly this character. */
-const CALLOUT_ICONS = ["💡", "ℹ️", "⚠️", "✅", "🔥", "❌", "📌", "🎯"];
+/** The callout's default icon (Notion's 💡). The chip on the card opens a
+ *  searchable picker with ANY emoji — the old fixed cycle palette is gone. */
+const CALLOUT_DEFAULT_EMOJI = "💡";
+
+/** Searchable picker palette: [emoji, names…]. Names are lowercase match
+ *  targets — the query filters with a plain substring test. Groups exist
+ *  only for curation; the grid renders one flat, deduplicated list. */
+const CALLOUT_EMOJI_CHOICES: Array<[string, string]> = [
+	["💡", "lightbulb idea note"],
+	["ℹ️", "info information"],
+	["⚠️", "warning caution alert"],
+	["✅", "check done yes ok complete"],
+	["❌", "x cross no wrong cancel"],
+	["🔥", "fire hot flame"],
+	["📌", "pin important stick"],
+	["🎯", "target goal aim"],
+	["⭐", "star favorite important"],
+	["❗", "exclamation important urgent"],
+	["❓", "question help ask"],
+	["📝", "memo note write pencil"],
+	["📅", "calendar date schedule"],
+	["⏰", "clock time alarm deadline"],
+	["🔒", "lock secure private key"],
+	["🔑", "key password unlock"],
+	["✉️", "mail email letter message"],
+	["📦", "package box ship"],
+	["🚀", "rocket launch ship fast"],
+	["✨", "sparkles shiny new clean"],
+	["⚡", "zap lightning fast power"],
+	["🐛", "bug error fix insect"],
+	["🔧", "wrench fix tool repair"],
+	["🎉", "tada party celebrate confetti"],
+	["👍", "thumbsup yes like good approve"],
+	["👎", "thumbsdown no dislike bad"],
+	["👀", "eyes look watch read"],
+	["💬", "speech comment chat say"],
+	["🧠", "brain think idea smart"],
+	["📚", "books read study docs"],
+	["🔍", "magnify search find zoom"],
+	["📎", "paperclip attach attach"],
+	["🗂️", "files folder organize"],
+	["📊", "chart data stats graph"],
+	["💰", "money dollar cost budget"],
+	["🎁", "gift present reward"],
+	["🔔", "bell notify alert ring"],
+	["🏁", "finish flag done end"],
+	["🌊", "wave water ocean flow"],
+	["🌱", "seedling grow plant start"],
+	["🍅", "tomato pomodoro timer"],
+	["☕", "coffee break drink"],
+	["🍕", "pizza food lunch"],
+	["🐶", "dog pet"],
+	["🐱", "cat pet"],
+	["🌍", "earth world global web"],
+	["🌈", "rainbow pride color"],
+	["☀️", "sun sunny day bright"],
+	["🌙", "moon night dark"],
+];
+
+/** Filter the palette by query (matches the emoji itself or any name). */
+function filterCalloutEmojis(query: string): string[] {
+	const q = query.trim().toLowerCase();
+	if (!q) return CALLOUT_EMOJI_CHOICES.map(([emoji]) => emoji);
+	return CALLOUT_EMOJI_CHOICES.filter(
+		([emoji, names]) => emoji.includes(q) || names.includes(q),
+	).map(([emoji]) => emoji);
+}
 
 /** Leading-emoji matcher for parsing quotes back into callouts. Accepts a
  *  pictographic head (with optional FE0F/ZWJ sequences) followed by
@@ -171,42 +234,134 @@ function stripCalloutEmoji(element: Element, emoji: string): void {
 	}
 }
 
+/** Searchable emoji picker for the callout chip. Renders as a small
+ *  popover under the chip; closes on pick, outside press or Escape at the
+ *  panel (the editor keeps its own Escape handling otherwise). Lives INSIDE
+ *  the contenteditable, so ProseMirror must not see its events: the panel
+ *  stops mousedown propagation (keeps the search input focusable) and the
+ *  grid buttons preventDefault to preserve the text selection.
+ *
+ *  # Mr. AI Acting on s183173's Behalf */
+function CalloutEmojiPicker({
+	editor,
+	block,
+	onClose,
+}: {
+	editor: Editor;
+	block: { id: string; props: { emoji: string } };
+	onClose: () => void;
+}) {
+	const [query, setQuery] = useState("");
+	const panelRef = useRef<HTMLDivElement>(null);
+	const results = filterCalloutEmojis(query);
+
+	useEffect(() => {
+		const onDocMouseDown = (e: MouseEvent) => {
+			if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
+		};
+		document.addEventListener("mousedown", onDocMouseDown);
+		return () => document.removeEventListener("mousedown", onDocMouseDown);
+	}, [onClose]);
+
+	const pick = (emoji: string) => {
+		editor.updateBlock(block, { props: { emoji } });
+		onClose();
+	};
+
+	return (
+		<div
+			ref={panelRef}
+			role="dialog"
+			aria-label="Choose a callout emoji"
+			onMouseDown={(e) => e.stopPropagation()}
+			onKeyDown={(e) => {
+				if (e.key === "Escape") {
+					e.stopPropagation();
+					onClose();
+				}
+			}}
+			className="animate-in fade-in-0 zoom-in-95 absolute left-0 top-8 z-30 w-64 rounded-xl border border-border bg-popover p-2 shadow-lg duration-150"
+		>
+			<input
+				value={query}
+				onChange={(e) => setQuery(e.target.value)}
+				placeholder="Search emoji…"
+				aria-label="Search emoji"
+				autoFocus
+				className="mb-1.5 h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-[#0055dc]/30 dark:focus-visible:ring-[#5e94ff]/30"
+			/>
+			<div className="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto" role="listbox">
+				{results.map((emoji) => (
+					<button
+						key={emoji}
+						type="button"
+						role="option"
+						aria-selected={emoji === block.props.emoji}
+						contentEditable={false}
+						onMouseDown={(e) => e.preventDefault()}
+						onClick={() => pick(emoji)}
+						className={
+							"flex h-7 w-7 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 dark:hover:bg-white/10 " +
+							(emoji === block.props.emoji ? "bg-[#0055dc]/10 dark:bg-[#5e94ff]/15" : "")
+						}
+					>
+						{emoji}
+					</button>
+				))}
+				{results.length === 0 && (
+					<p className="col-span-8 py-3 text-center text-xs text-muted-foreground">
+						No emoji found
+					</p>
+				)}
+			</div>
+		</div>
+	);
+}
+
 const calloutBlockSpec = createReactBlockSpec(
 	{
 		type: "callout",
-		propSchema: { emoji: { default: "💡" } },
+		propSchema: { emoji: { default: CALLOUT_DEFAULT_EMOJI } },
 		content: "inline",
 	},
 	{
 		render: ({ block, editor, contentRef }) => {
-			const emoji = block.props.emoji || "💡";
+			const emoji = block.props.emoji || CALLOUT_DEFAULT_EMOJI;
+			// # Mr. AI Acting on s183173's Behalf
+			// The chip opens a searchable emoji picker (any emoji, not a
+			// fixed cycle); the card itself is neutral Notion-gray.
+			const [pickerOpen, setPickerOpen] = useState(false);
 			return (
-				<div
-					data-callout
-					className="my-1 flex gap-2.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/30"
-				>
-					<button
-						type="button"
-						contentEditable={false}
-						aria-label="Change callout icon"
-						title="Click to change the callout icon"
-						onMouseDown={(e) => e.preventDefault()}
-						onClick={() => {
-							const idx = CALLOUT_ICONS.indexOf(emoji);
-							const next = CALLOUT_ICONS[(idx + 1) % CALLOUT_ICONS.length] ?? CALLOUT_ICONS[0];
-							editor.updateBlock(block, { props: { emoji: next } });
-						}}
-						className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-					>
-						{emoji}
-					</button>
-					<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+				<div data-callout className="relative">
+					<div className="my-1 flex gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2 dark:bg-muted/20">
+						<button
+							type="button"
+							contentEditable={false}
+							aria-label="Change callout emoji"
+							aria-haspopup="dialog"
+							aria-expanded={pickerOpen}
+							title="Change the callout emoji"
+							onMouseDown={(e) => e.preventDefault()}
+							onClick={() => setPickerOpen((v) => !v)}
+							className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+						>
+							{emoji}
+						</button>
+						<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+					</div>
+					{pickerOpen && (
+						<CalloutEmojiPicker
+							editor={editor as unknown as Editor}
+							block={block}
+							onClose={() => setPickerOpen(false)}
+						/>
+					)}
 				</div>
 			);
 		},
 		toExternalHTML: ({ block, contentRef }) => (
 			<blockquote>
-				{block.props.emoji || "💡"}&nbsp;
+				{block.props.emoji || CALLOUT_DEFAULT_EMOJI}&nbsp;
 				<div ref={contentRef} />
 			</blockquote>
 		),
@@ -274,8 +429,8 @@ const insertImageSlashItem = (pickImage: () => void): DefaultReactSuggestionItem
 	onItemClick: pickImage,
 });
 
-/** Callout slash item — turns the current block into the amber note card.
- *  The icon chip on the card cycles the emoji (Notion's change-icon
+/** Callout slash item — turns the current block into the note card.
+ *  The icon chip on the card opens the emoji picker (Notion's change-icon
  *  affordance), so a single menu item covers all callout flavors. */
 const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
 	title: "Callout",

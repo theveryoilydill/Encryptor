@@ -154,8 +154,11 @@ export default function VSCodeEditor({
 	const [previewOpen, setPreviewOpen] = useState(true);
 	const [split, setSplit] = useState(SPLIT_DEFAULT);
 	const wrapRef = useRef<HTMLDivElement>(null);
-	const dragging = useRef(false);
 	const cmRef = useRef<ReactCodeMirrorRef>(null);
+	// Drag state doubles as the transition switch: panes glide when the
+	// preview toggles or the split resets, but track the pointer 1:1 while
+	// the divider is being dragged (a 200ms ease would feel rubber-banded).
+	const [dragging, setDragging] = useState(false);
 
 	// The SOURCE shows the wire text (envelope:// markers — short lines);
 	// the PREVIEW resolves markers to data URLs. The old engine piped
@@ -246,22 +249,22 @@ export default function VSCodeEditor({
 
 	const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
 		e.preventDefault();
-		dragging.current = true;
+		setDragging(true);
 		e.currentTarget.setPointerCapture(e.pointerId);
 	};
 
 	const onDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-		if (!dragging.current) return;
+		if (!dragging) return;
 		applySplit(e.clientX);
 	};
 
 	const stopDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-		dragging.current = false;
+		setDragging(false);
 		e.currentTarget.releasePointerCapture(e.pointerId);
 	};
 
 	const preview = (
-		<div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
+		<div className="min-h-0 min-w-0 flex-1 animate-in fade-in-0 slide-in-from-right-2 overflow-y-auto p-4 duration-200">
 			{previewText.trim() ? (
 				<DecryptedMessageView text={previewText} files={files} />
 			) : (
@@ -274,7 +277,7 @@ export default function VSCodeEditor({
 		<div
 			ref={wrapRef}
 			className={
-				"flex select-none flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20 " +
+				"flex animate-in fade-in duration-300 select-none flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20 " +
 				(expanded ? "h-full min-h-0" : "h-[480px]")
 			}
 		>
@@ -323,7 +326,10 @@ export default function VSCodeEditor({
 			{/* Split panes. */}
 			<div className="flex min-h-0 flex-1 flex-col lg:flex-row">
 				<div
-					className="min-h-0 min-w-0 overflow-hidden border-b border-border lg:border-b-0"
+					className={
+						"min-h-0 min-w-0 overflow-hidden border-b border-border lg:border-b-0 " +
+						(dragging ? "" : "transition-[flex-basis] duration-200 ease-out")
+					}
 					style={{ flexBasis: previewOpen ? `${split}%` : "100%", flexGrow: 0, flexShrink: 0 }}
 				>
 					<CodeMirror

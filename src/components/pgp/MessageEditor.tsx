@@ -33,12 +33,16 @@ export type OnNewImageDataUrl = (dataUrl: string, suggestedName?: string) => Env
 
 const BlockNoteEditor = dynamic(() => import("./BlockNoteEditor"), {
 	ssr: false,
-	loading: () => <div className="min-h-32 animate-pulse rounded-md bg-muted/40" />,
+	loading: () => (
+		<div className="min-h-32 animate-in fade-in rounded-md bg-muted/40 duration-200" />
+	),
 });
 
 const VSCodeEditor = dynamic(() => import("./VSCodeEditor"), {
 	ssr: false,
-	loading: () => <div className="min-h-32 animate-pulse rounded-md bg-muted/40" />,
+	loading: () => (
+		<div className="min-h-32 animate-in fade-in rounded-md bg-muted/40 duration-200" />
+	),
 });
 
 /** Replace every `envelope://filename` image URL in the markdown with the

@@ -991,3 +991,168 @@
 	.bn-mt-suggestion-menu-item-title {
 	color: inherit;
 }
+
+/* ---- Equations: Notion's sigma blocks + inline chips ---- */
+
+/* Block equation: the rendered formula sits centered on a hover-highlighted
+   row (Notion grays it on hover the same way it does text); clicking opens
+   the source editor below. KaTeX's own display margin is killed so the
+   editor controls spacing. */
+.bn-editor [data-content-type="blockEquation"] {
+	padding: 4px 0;
+}
+.bn-editor .equation-display {
+	display: flex;
+	justify-content: center;
+	padding: 8px 12px;
+	border-radius: 4px;
+	overflow-x: auto;
+	cursor: pointer;
+	transition: background 20ms ease-in;
+}
+.bn-editor .equation-display:hover {
+	background-color: rgba(55, 53, 47, 0.06);
+}
+.bn-editor .equation-display .katex-display {
+	margin: 0;
+}
+.bn-editor .equation-display:focus-visible {
+	outline: 2px solid rgba(0, 85, 220, 0.4);
+	outline-offset: 2px;
+}
+
+/* Source editor: gray card, mono input, white live-preview card and a quiet
+   footer row with the Done button — Notion's formula-editor layout. */
+.bn-editor .equation-source {
+	margin: 4px 0;
+	padding: 8px;
+	border: 1px solid rgba(55, 53, 47, 0.16);
+	border-radius: 6px;
+	background: #f7f7f5;
+	box-shadow: rgba(15, 15, 15, 0.05) 0px 2px 4px;
+}
+.bn-editor .equation-source textarea {
+	display: block;
+	width: 100%;
+	min-height: 56px;
+	resize: vertical;
+	border: none;
+	background: transparent;
+	padding: 2px 4px;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 13px;
+	line-height: 1.5;
+	color: rgb(55, 53, 47);
+	outline: none;
+}
+.bn-editor .equation-source textarea::placeholder,
+.bn-editor .inline-equation-input::placeholder {
+	color: rgba(55, 53, 47, 0.3);
+}
+.bn-editor .equation-source-preview {
+	margin-top: 6px;
+	padding: 8px 12px;
+	border: 1px solid rgba(55, 53, 47, 0.09);
+	border-radius: 4px;
+	background: #ffffff;
+	overflow-x: auto;
+	text-align: center;
+}
+.bn-editor .equation-source-preview .katex-display {
+	margin: 0;
+}
+.bn-editor .equation-source-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-top: 6px;
+	font-size: 11px;
+	color: rgba(55, 53, 47, 0.4);
+}
+.bn-editor .equation-source-footer button {
+	border: none;
+	border-radius: 4px;
+	background: rgb(35, 131, 226);
+	color: #ffffff;
+	font-size: 12px;
+	font-weight: 500;
+	padding: 3px 10px;
+	cursor: pointer;
+	transition: filter 20ms ease-in;
+}
+.bn-editor .equation-source-footer button:hover {
+	filter: brightness(1.08);
+}
+
+/* Inline equation: an atom chip in the text flow; the live render sits next
+   to its own source input while editing. */
+.bn-editor .inline-equation {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	vertical-align: baseline;
+}
+.bn-editor .inline-equation-render {
+	padding: 1px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 20ms ease-in;
+}
+.bn-editor .inline-equation-render:hover {
+	background-color: rgba(55, 53, 47, 0.08);
+}
+.bn-editor .inline-equation-render:focus-visible {
+	outline: 2px solid rgba(0, 85, 220, 0.4);
+	outline-offset: 1px;
+}
+.bn-editor .inline-equation-input {
+	width: 140px;
+	border: 1px solid rgba(55, 53, 47, 0.2);
+	border-radius: 4px;
+	background: #ffffff;
+	padding: 1px 6px;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 13px;
+	color: rgb(55, 53, 47);
+	outline: none;
+}
+.bn-editor .equation-ghost {
+	color: rgba(55, 53, 47, 0.3);
+}
+
+/* Dark mode: Notion's dark sheet colors (#252525 surfaces, white-alpha text
+   ramp), matching the slash menu twins above. */
+.dark .bn-editor .equation-display:hover {
+	background-color: rgba(255, 255, 255, 0.055);
+}
+.dark .bn-editor .equation-source {
+	border-color: rgba(255, 255, 255, 0.14);
+	background: #2f2f2f;
+	box-shadow: rgba(15, 15, 15, 0.2) 0px 2px 4px;
+}
+.dark .bn-editor .equation-source textarea {
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark .bn-editor .equation-source textarea::placeholder,
+.dark .bn-editor .inline-equation-input::placeholder {
+	color: rgba(255, 255, 255, 0.26);
+}
+.dark .bn-editor .equation-source-preview {
+	border-color: rgba(255, 255, 255, 0.09);
+	background: #252525;
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark .bn-editor .equation-source-footer {
+	color: rgba(255, 255, 255, 0.34);
+}
+.dark .bn-editor .inline-equation-render:hover {
+	background-color: rgba(255, 255, 255, 0.075);
+}
+.dark .bn-editor .inline-equation-input {
+	border-color: rgba(255, 255, 255, 0.2);
+	background: #252525;
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark .bn-editor .equation-ghost {
+	color: rgba(255, 255, 255, 0.26);
+}

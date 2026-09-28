@@ -437,6 +437,8 @@ export function SettingsDialog({
 	privateKey,
 	onEnableQuantumSeal,
 	onReplayTour,
+	includeSelf,
+	onIncludeSelfChange,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -449,6 +451,11 @@ export function SettingsDialog({
 	onEnableQuantumSeal?: () => Promise<boolean>;
 	/** Opens the guided tour over the app (closes this dialog first). */
 	onReplayTour?: () => void;
+	/** "Include me as a recipient" (moved here from the recipients bar in the
+	 *  annotation round). Only shown when a private key is configured — same
+	 *  condition the old checkbox in RecipientPicker used. */
+	includeSelf: boolean;
+	onIncludeSelfChange: (v: boolean) => void;
 }) {
 	const [query, setQuery] = useState("");
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -568,6 +575,18 @@ export function SettingsDialog({
 									aria-label="Auto sign messages"
 								/>
 							</SettingRow>
+							{privateKey && (
+								<SettingRow
+									title="Include me as a recipient"
+									description="Encrypts a copy to yourself — stays on for next time."
+								>
+									<Switch
+										checked={includeSelf}
+										onCheckedChange={(v) => onIncludeSelfChange(v === true)}
+										aria-label="Include me as a recipient"
+									/>
+								</SettingRow>
+							)}
 						</section>
 					)}
 

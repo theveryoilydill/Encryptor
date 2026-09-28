@@ -30,9 +30,9 @@
  *   - The formatting toolbar drops the color picker: colors never survive
  *     the markdown bridge, so the button advertised something the
  *     recipient would never see.
- *   - A callout block (amber card) exports as `> 💡 …`, so it degrades to
- *     an honest quoted line for recipients and the sanitize schema stays
- *     untouched.
+ *   - A callout block (neutral Notion-gray card with a searchable emoji
+ *     picker chip) exports as `> 💡 …`, so it degrades to an honest quoted
+ *     line for recipients and the sanitize schema stays untouched.
  */
 import {
 	BlockNoteSchema,
@@ -71,6 +71,10 @@ import {
 } from "react";
 import { useTheme } from "next-themes";
 import { Check, Copy, ImagePlus, Lightbulb } from "lucide-react";
+
+/** Full picker palette: every fully-qualified emoji at base skin tone with
+ *  an English search name (generated — see lib/pgp/emoji-list.ts). */
+import { FULL_EMOJI_LIST } from "@/lib/pgp/emoji-list";
 import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
@@ -136,17 +140,31 @@ const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlo
 	);
 };
 
-/** Callout block: an amber "note" card with a Notion-style icon chip.
+/** Callout block: a Notion-style "note" card with an emoji picker chip.
  *  Exports as `> <emoji> …` — a GFM quote every recipient renders — and
  *  parses back from ANY emoji-prefixed quote so editor round-trips keep
  *  the chosen icon. Zero sanitizer changes by design.
  *
  *  # Mr. AI Acting on s183173's Behalf */
 
-/** Notion-style icon palette — clicking the chip on a callout card cycles
- *  through it. The emoji rides the wire inside the quote text, so the
- *  recipient's plain-markdown renderer shows exactly this character. */
-const CALLOUT_ICONS = ["💡", "ℹ️", "⚠️", "✅", "🔥", "❌", "📌", "🎯"];
+/** The callout's default icon (Notion's 💡). The chip on the card opens a
+ *  searchable picker over the FULL Unicode emoji set — owner feedback said
+ *  the old 50-emoji palette was too limited ("Limited emojis. Add all."). */
+const CALLOUT_DEFAULT_EMOJI = "💡";
+
+/** How many grid buttons to render at once. The full set is ~1.9k emojis;
+ *  without a cap an empty query would mount the whole grid (and its hover
+ *  handlers) in one paint. Search narrows below the cap naturally. */
+const EMOJI_RENDER_CAP = 200;
+
+/** Filter the full palette by query (matches the emoji itself or its name). */
+function filterCalloutEmojis(query: string): string[] {
+	const q = query.trim().toLowerCase();
+	if (!q) return FULL_EMOJI_LIST.map(([emoji]) => emoji);
+	return FULL_EMOJI_LIST.filter(([emoji, name]) => emoji.includes(q) || name.includes(q)).map(
+		([emoji]) => emoji,
+	);
+}
 
 /** Leading-emoji matcher for parsing quotes back into callouts. Accepts a
  *  pictographic head (with optional FE0F/ZWJ sequences) followed by
@@ -171,42 +189,139 @@ function stripCalloutEmoji(element: Element, emoji: string): void {
 	}
 }
 
+/** Searchable emoji picker for the callout chip. Renders as a small
+ *  popover under the chip; closes on pick, outside press or Escape at the
+ *  panel (the editor keeps its own Escape handling otherwise). Lives INSIDE
+ *  the contenteditable, so ProseMirror must not see its events: the panel
+ *  stops mousedown propagation (keeps the search input focusable) and the
+ *  grid buttons preventDefault to preserve the text selection.
+ *
+ *  # Mr. AI Acting on s183173's Behalf */
+function CalloutEmojiPicker({
+	editor,
+	block,
+	onClose,
+}: {
+	editor: Editor;
+	block: { id: string; props: { emoji: string } };
+	onClose: () => void;
+}) {
+	const [query, setQuery] = useState("");
+	const panelRef = useRef<HTMLDivElement>(null);
+	const results = filterCalloutEmojis(query);
+
+	useEffect(() => {
+		const onDocMouseDown = (e: MouseEvent) => {
+			if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
+		};
+		document.addEventListener("mousedown", onDocMouseDown);
+		return () => document.removeEventListener("mousedown", onDocMouseDown);
+	}, [onClose]);
+
+	const pick = (emoji: string) => {
+		editor.updateBlock(block, { props: { emoji } });
+		onClose();
+	};
+
+	return (
+		<div
+			ref={panelRef}
+			role="dialog"
+			aria-label="Choose a callout emoji"
+			onMouseDown={(e) => e.stopPropagation()}
+			onKeyDown={(e) => {
+				if (e.key === "Escape") {
+					e.stopPropagation();
+					onClose();
+				}
+			}}
+			className="animate-in fade-in-0 zoom-in-95 absolute left-0 top-8 z-30 w-64 rounded-xl border border-border bg-popover p-2 shadow-lg duration-150"
+		>
+			<input
+				value={query}
+				onChange={(e) => setQuery(e.target.value)}
+				placeholder="Search emoji…"
+				aria-label="Search emoji"
+				autoFocus
+				className="mb-1.5 h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-[#0055dc]/30 dark:focus-visible:ring-[#5e94ff]/30"
+			/>
+			<div className="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto" role="listbox">
+				{results.slice(0, EMOJI_RENDER_CAP).map((emoji) => (
+					<button
+						key={emoji}
+						type="button"
+						role="option"
+						aria-selected={emoji === block.props.emoji}
+						contentEditable={false}
+						onMouseDown={(e) => e.preventDefault()}
+						onClick={() => pick(emoji)}
+						className={
+							"flex h-7 w-7 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 dark:hover:bg-white/10 " +
+							(emoji === block.props.emoji ? "bg-[#0055dc]/10 dark:bg-[#5e94ff]/15" : "")
+						}
+					>
+						{emoji}
+					</button>
+				))}
+				{results.length > EMOJI_RENDER_CAP && (
+					<p className="col-span-8 py-1.5 text-center text-[10px] text-muted-foreground">
+						{results.length.toLocaleString()} matches — keep typing to narrow
+					</p>
+				)}
+				{results.length === 0 && (
+					<p className="col-span-8 py-3 text-center text-xs text-muted-foreground">
+						No emoji found
+					</p>
+				)}
+			</div>
+		</div>
+	);
+}
+
 const calloutBlockSpec = createReactBlockSpec(
 	{
 		type: "callout",
-		propSchema: { emoji: { default: "💡" } },
+		propSchema: { emoji: { default: CALLOUT_DEFAULT_EMOJI } },
 		content: "inline",
 	},
 	{
 		render: ({ block, editor, contentRef }) => {
-			const emoji = block.props.emoji || "💡";
+			const emoji = block.props.emoji || CALLOUT_DEFAULT_EMOJI;
+			// # Mr. AI Acting on s183173's Behalf
+			// The chip opens a searchable emoji picker (any emoji, not a
+			// fixed cycle); the card itself is neutral Notion-gray.
+			const [pickerOpen, setPickerOpen] = useState(false);
 			return (
-				<div
-					data-callout
-					className="my-1 flex gap-2.5 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 dark:border-amber-500/30 dark:bg-amber-950/30"
-				>
-					<button
-						type="button"
-						contentEditable={false}
-						aria-label="Change callout icon"
-						title="Click to change the callout icon"
-						onMouseDown={(e) => e.preventDefault()}
-						onClick={() => {
-							const idx = CALLOUT_ICONS.indexOf(emoji);
-							const next = CALLOUT_ICONS[(idx + 1) % CALLOUT_ICONS.length] ?? CALLOUT_ICONS[0];
-							editor.updateBlock(block, { props: { emoji: next } });
-						}}
-						className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-					>
-						{emoji}
-					</button>
-					<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+				<div data-callout className="relative">
+					<div className="my-1 flex gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2 dark:bg-muted/20">
+						<button
+							type="button"
+							contentEditable={false}
+							aria-label="Change callout emoji"
+							aria-haspopup="dialog"
+							aria-expanded={pickerOpen}
+							title="Change the callout emoji"
+							onMouseDown={(e) => e.preventDefault()}
+							onClick={() => setPickerOpen((v) => !v)}
+							className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+						>
+							{emoji}
+						</button>
+						<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+					</div>
+					{pickerOpen && (
+						<CalloutEmojiPicker
+							editor={editor as unknown as Editor}
+							block={block}
+							onClose={() => setPickerOpen(false)}
+						/>
+					)}
 				</div>
 			);
 		},
 		toExternalHTML: ({ block, contentRef }) => (
 			<blockquote>
-				{block.props.emoji || "💡"}&nbsp;
+				{block.props.emoji || CALLOUT_DEFAULT_EMOJI}&nbsp;
 				<div ref={contentRef} />
 			</blockquote>
 		),
@@ -274,8 +389,8 @@ const insertImageSlashItem = (pickImage: () => void): DefaultReactSuggestionItem
 	onItemClick: pickImage,
 });
 
-/** Callout slash item — turns the current block into the amber note card.
- *  The icon chip on the card cycles the emoji (Notion's change-icon
+/** Callout slash item — turns the current block into the note card.
+ *  The icon chip on the card opens the emoji picker (Notion's change-icon
  *  affordance), so a single menu item covers all callout flavors. */
 const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
 	title: "Callout",
@@ -290,8 +405,22 @@ const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
  *  callout. The title check matches the shipped English dictionary. Items
  *  are stable-sorted by group so each group renders exactly one header
  *  (custom items appended blindly produce duplicate "Basic blocks"/
- *  "Advanced" sections — and React duplicate-key errors). */
-const GROUP_ORDER = ["Headings", "Subheadings", "Basic blocks", "Advanced", "Media", "Others"];
+ *  "Advanced" sections — and React duplicate-key errors).
+ *
+ *  Owner-specified order (annotation round): bullet points, numbers, todo,
+ *  toggle, then all the other basic stuff, with quotes LAST. Two mechanisms
+ *  deliver that: "Basic blocks" ranks before the heading groups, and within
+ *  it the four list items get explicit priority; Quote moves to its own
+ *  "Quotes" group ranked dead last. */
+const GROUP_ORDER = [
+	"Basic blocks",
+	"Headings",
+	"Subheadings",
+	"Advanced",
+	"Media",
+	"Others",
+	"Quotes",
+];
 
 /** Group rank for the stable sort; unknown groups sort last (before only
  *  undefined ones). */
@@ -300,11 +429,27 @@ const rank = (group: string | undefined): number => {
 	return idx === -1 ? GROUP_ORDER.length : idx;
 };
 
+/** Within-"Basic blocks" priority: the four list flavors lead, then the
+ *  rest of the basic blocks. Titles match the shipped English dictionary. */
+const BASIC_BLOCKS_PRIORITY = ["Bullet List", "Numbered List", "Check List", "Toggle List"];
+const basicRank = (title: string): number => {
+	const idx = BASIC_BLOCKS_PRIORITY.indexOf(title);
+	return idx === -1 ? BASIC_BLOCKS_PRIORITY.length : idx;
+};
+
 function getSlashMenuItems(editor: Editor, query: string, pickImage: () => void) {
 	const defaults = getDefaultReactSlashMenuItems(editor).filter((item) => item.title !== "Image");
-	const items = [...defaults, insertImageSlashItem(pickImage), calloutSlashItem(editor)].sort(
-		(a, b) => rank(a.group) - rank(b.group),
-	);
+	const items = [...defaults, insertImageSlashItem(pickImage), calloutSlashItem(editor)]
+		.map((item) =>
+			// Quote rides last, in its own group (owner order).
+			item.title === "Quote" ? { ...item, group: "Quotes" } : item,
+		)
+		.sort((a, b) => {
+			const byGroup = rank(a.group) - rank(b.group);
+			if (byGroup !== 0) return byGroup;
+			if (a.group === "Basic blocks") return basicRank(a.title) - basicRank(b.title);
+			return 0;
+		});
 	return filterSuggestionItems(items, query);
 }
 
@@ -768,7 +913,7 @@ export default function BlockNoteEditor({
 	// virtual keyboard itself (VirtualKeyboard API + visualViewport
 	// fallback → --bn-mobile-keyboard-offset) — no custom listener needed.
 	const editorShell =
-		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
+		"animate-in fade-in duration-300 overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
 		<div
 			ref={viewRef}

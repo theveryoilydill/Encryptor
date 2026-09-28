@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 
 import { FileSignature, FileUp, Maximize2, Minimize2, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { CopyButton, ErrorBanner, InputSizeCounter, OutputBlock } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
+import { ComposerOverlay } from "@/components/pgp/ComposerOverlay";
 import { formatFileSize } from "@/lib/pgp/envelope";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import type { MarkdownEditorKind } from "@/lib/pgp/settings";
@@ -224,19 +224,17 @@ export function SignTab({
 					</Label>
 				</div>
 				<div className="flex items-center gap-2">
-					<button
-						type="button"
-						aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
-						title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
-						onClick={() => setComposerExpanded((v) => !v)}
-						className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-					>
-						{composerExpanded ? (
-							<Minimize2 aria-hidden="true" className="size-3.5" />
-						) : (
+					{!composerExpanded && (
+						<button
+							type="button"
+							aria-label="Expand editor to full screen"
+							title="Expand editor to full screen"
+							onClick={() => setComposerExpanded((v) => !v)}
+							className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+						>
 							<Maximize2 aria-hidden="true" className="size-3.5" />
-						)}
-					</button>
+						</button>
+					)}
 				</div>
 			</div>
 			{/* Hidden while the full-screen overlay is up — the editor's own
@@ -270,8 +268,9 @@ export function SignTab({
 					expanded={composerExpanded}
 				/>
 			</div>
-			{/* Char/word/size counter — parity with the Encrypt tab counter. */}
-			<InputSizeCounter text={plaintext} />
+			{/* Char/word/size counter — parity with the Encrypt tab counter.
+                            Hidden in the full-screen overlay (mockup: screen = editor). */}
+			{!composerExpanded && <InputSizeCounter text={plaintext} />}
 		</>
 	);
 
@@ -299,91 +298,34 @@ export function SignTab({
 					{composerBody}
 				</div>
 			)}
-			{/* Full-screen composer overlay — same pattern as the Encrypt tab:
-                                    a portal dialog filling the viewport. Click-off + Escape collapse
-                                    (both dialog-safe), Ctrl/Cmd+Enter signs from inside, Ctrl/Cmd+Shift+E
-                                    collapses. The passphrase prompt opened by requestDecryptedKey
-                                    portals OUTSIDE this overlay and keeps its own Escape via the
-                                    nested-dialog guard. */}
-			{composerExpanded &&
-				createPortal(
-					<div
-						data-composer-overlay="sign"
-						role="dialog"
-						aria-modal="true"
-						aria-label="Composer, full screen"
-						onPointerDown={(e) => {
-							// Click-off close: a press on the overlay itself (the backdrop
-							// around the composer) collapses — presses inside the composer
-							// content target deeper nodes and are ignored.
-							if (e.target === e.currentTarget) {
-								e.preventDefault();
-								setComposerExpanded(false);
-							}
-						}}
-						onKeyDownCapture={(e) => {
-							if (e.key !== "Escape" || e.defaultPrevented) return;
-							if (isNestedDialogTarget(e.target)) return;
-							e.preventDefault();
-							setComposerExpanded(false);
-						}}
-						onKeyDown={(e) => {
-							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
-							// portal sits outside the <section> keydown handler.
-							if (isPrimaryActionChord(e)) {
-								e.preventDefault();
-								if (!busy) void handleSign();
-							}
-							// Ctrl/Cmd+Shift+E collapses the overlay — same dialog-safe
-							// guard as the section handler.
-							if (
-								isComposerToggleChord(e) &&
-								!e.defaultPrevented &&
-								!isNestedDialogTarget(e.target)
-							) {
-								e.preventDefault();
-								setComposerExpanded(false);
-							}
-						}}
-						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
+			{/* Full-screen composer overlay — same shared component as the
+                                    Encrypt tab: portal dialog, dialog-safe Escape/chord guards and
+                                    the enter/exit transitions live in ComposerOverlay. Full-bleed
+                                    layout: the "Text to sign" bar on top, editor fills the rest,
+                                    collapse toggle in the top-right corner. The passphrase prompt
+                                    opened by requestDecryptedKey portals OUTSIDE this overlay and
+                                    keeps its own Escape via the nested-dialog guard. */}
+			<ComposerOverlay
+				owner="sign"
+				open={composerExpanded}
+				onClose={() => setComposerExpanded(false)}
+				onPrimaryAction={() => {
+					if (!busy) void handleSign();
+				}}
+				topRight={
+					<button
+						type="button"
+						aria-label="Collapse editor"
+						title="Collapse editor (Esc)"
+						onClick={() => setComposerExpanded(false)}
+						className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
 					>
-						{/* max-w-4xl + status bar — same pattern as the Encrypt overlay
-                            (Notion-style reading column; mt-auto pins the bar). */}
-						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
-							{composerBody}
-							<div className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3">
-								<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-									<span className="rounded-full bg-muted/60 px-2 py-0.5">
-										{detached ? "Detached signature" : "Cleartext signed"}
-									</span>
-									{privateKey ? (
-										<span className="rounded-full bg-muted/60 px-2 py-0.5">
-											Key: {privateKey.label}
-										</span>
-									) : (
-										<span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-											No key selected
-										</span>
-									)}
-								</div>
-								<div className="hidden shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
-									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
-										Ctrl+↵
-									</kbd>
-									<span>Sign</span>
-									<span aria-hidden="true" className="text-border">
-										·
-									</span>
-									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
-										Esc
-									</kbd>
-									<span>Collapse</span>
-								</div>
-							</div>
-						</div>
-					</div>,
-					document.body,
-				)}
+						<Minimize2 aria-hidden="true" className="size-3.5" />
+					</button>
+				}
+			>
+				{composerBody}
+			</ComposerOverlay>
 
 			<div className="rounded-xl border border-border bg-card p-4 shadow-sm sm:p-6">
 				<RadioGroup

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
 	ArrowRight,
 	BookmarkPlus,
@@ -43,6 +42,7 @@ import {
 	OutputBlock,
 } from "@/components/pgp/shared";
 import { MessageEditor } from "@/components/pgp/MessageEditor";
+import { ComposerOverlay } from "@/components/pgp/ComposerOverlay";
 import { VaultImportDialog } from "@/components/pgp/VaultImportDialog";
 import type { PrivateKeyConfig, Recipient } from "@/components/pgp/contracts";
 import { PROXIES } from "@/components/pgp/contracts";
@@ -551,7 +551,6 @@ export function EncryptTab({
 	recipients,
 	setRecipients,
 	includeSelf,
-	onIncludeSelfChange,
 	requestDecryptedKey,
 	onOpenInDecrypt,
 	settings,
@@ -561,7 +560,6 @@ export function EncryptTab({
 	recipients: Recipient[];
 	setRecipients: (updater: (prev: Recipient[]) => Recipient[]) => void;
 	includeSelf: boolean;
-	onIncludeSelfChange: (v: boolean) => void;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
 	/** Vault "Open in Decrypt" deep-link (round 14): the row hands over the
 	 *  entry's armor (sealed copy preferred) plus a Date.now() seq; PgpApp
@@ -1459,21 +1457,22 @@ export function EncryptTab({
 	const composerBody = (
 		<>
 			{/* Composer utility row: full-screen toggle and the template
-                            menu, right-aligned. */}
+                            menu, right-aligned. In the full-screen overlay the collapse
+                            toggle moves to the overlay's top-right corner (feedback
+                            mockup: the screen is recipients + editor, nothing else),
+                            so only the template menu stays on this row. */}
 			<div className="mb-1.5 flex items-center justify-end gap-2">
-				<button
-					type="button"
-					aria-label={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
-					title={composerExpanded ? "Collapse editor" : "Expand editor to full screen"}
-					onClick={() => setComposerExpanded((v) => !v)}
-					className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
-				>
-					{composerExpanded ? (
-						<Minimize2 aria-hidden="true" className="size-3.5" />
-					) : (
+				{!composerExpanded && (
+					<button
+						type="button"
+						aria-label="Expand editor to full screen"
+						title="Expand editor to full screen"
+						onClick={() => setComposerExpanded((v) => !v)}
+						className="flex size-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+					>
 						<Maximize2 aria-hidden="true" className="size-3.5" />
-					)}
-				</button>
+					</button>
+				)}
 				<TemplateMenu onApply={applyTemplate} currentMessage={plaintext} />
 			</div>
 			{/* flex-1 min-h-0 in the overlay lets the active editor engine fill
@@ -1490,8 +1489,10 @@ export function EncryptTab({
 					expanded={composerExpanded}
 				/>
 			</div>
-			{/* Char/word/size counter (visual feedback only). */}
-			<InputSizeCounter text={plaintext} />
+			{/* Char/word/size counter (visual feedback only). Hidden in the
+                            full-screen overlay — the mockup keeps the whole screen to the
+                            recipients bar and the editor. */}
+			{!composerExpanded && <InputSizeCounter text={plaintext} />}
 			{showEncryptHint && detectedBlock && (
 				<InputHint
 					tone={detectedBlock === "encrypted" ? "amber" : "info"}
@@ -1504,6 +1505,28 @@ export function EncryptTab({
 			)}
 		</>
 	);
+	// The recipients bar — inline below the tab header when the composer is
+	// collapsed, at the TOP of the full-screen overlay when expanded (the
+	// feedback mockup: "Recipients" bar across the top, editor beneath).
+	// One instance at a time: overlay and inline never render together, so
+	// the picker's search state simply follows the composer around.
+	// # Mr. AI Acting on s183173's Behalf
+	const recipientsField = (
+		<div
+			data-tour="recipients"
+			className={
+				composerExpanded ? "min-h-0 max-h-[38vh] shrink-0 overflow-y-auto pr-1" : undefined
+			}
+		>
+			<RecipientPicker
+				recipients={recipients}
+				setRecipients={setRecipients}
+				selfRecipient={selfRecipient}
+				includeSelf={includeSelf}
+			/>
+		</div>
+	);
+
 	return (
 		<section
 			className="relative space-y-6"
@@ -1559,16 +1582,7 @@ export function EncryptTab({
 					</span>
 				</div>
 			)}
-			{/* Guided-tour anchor: the recipient search lives here. */}
-			<div data-tour="recipients">
-				<RecipientPicker
-					recipients={recipients}
-					setRecipients={setRecipients}
-					selfRecipient={selfRecipient}
-					includeSelf={includeSelf}
-					onIncludeSelfChange={onIncludeSelfChange}
-				/>
-			</div>
+			{!composerExpanded && recipientsField}
 
 			{!composerExpanded && (
 				<div className="rounded-xl" data-tour="composer">
@@ -1576,116 +1590,33 @@ export function EncryptTab({
 				</div>
 			)}
 			{/* Full-screen composer overlay ("blow up the editor"): a portal
-                            dialog filling the viewport. Escape collapses it — EXCEPT when a
-                            Radix surface opened FROM the composer is on stage (template
-                            dropdown, save-template dialog, …): those consume Escape
-                            themselves and must never come back to a collapsed composer.
-                            Most Radix layers portal OUTSIDE this overlay, so their Escapes
-                            never even bubble through it; the target checks + the
-                            defaultPrevented guard cover the paths that still do. */}
-			{composerExpanded &&
-				createPortal(
-					<div
-						data-composer-overlay="encrypt"
-						role="dialog"
-						aria-modal="true"
-						aria-label="Composer, full screen"
-						onPointerDown={(e) => {
-							// Click-off close: a press on the overlay itself (the backdrop
-							// around the editor card) collapses — presses inside the
-							// composer content target deeper nodes and are ignored.
-							if (e.target === e.currentTarget) {
-								e.preventDefault();
-								setComposerExpanded(false);
-							}
-						}}
-						onKeyDownCapture={(e) => {
-							if (e.key !== "Escape" || e.defaultPrevented) return;
-							if (isNestedDialogTarget(e.target)) return;
-							e.preventDefault();
-							setComposerExpanded(false);
-						}}
-						onKeyDown={(e) => {
-							// Mirror the tab's Ctrl/Cmd+Enter primary action — the
-							// portal sits outside the <section> keydown handler.
-							if (isPrimaryActionChord(e)) {
-								e.preventDefault();
-								if (!busy) void handleEncrypt();
-							}
-							// Ctrl/Cmd+Shift+E collapses the overlay — mirrored here for
-							// the same reason as Ctrl/Cmd+Enter (the portal never bubbles
-							// through the section handler). Same dialog-safe guard as the
-							// section: nested dialogs/popovers opened FROM the composer
-							// keep the keys for themselves.
-							if (
-								isComposerToggleChord(e) &&
-								!e.defaultPrevented &&
-								!isNestedDialogTarget(e.target)
-							) {
-								e.preventDefault();
-								setComposerExpanded(false);
-							}
-						}}
-						className="fixed inset-0 z-50 overflow-y-auto bg-background p-4 sm:p-6"
+                            dialog filling the viewport, shared with the Sign tab
+                            (ComposerOverlay owns the dialog semantics, the dialog-safe
+                            Escape/chord guards and the enter/exit transitions). Full-bleed
+                            feedback layout: recipients bar on top, editor fills the rest,
+                            collapse toggle in the top-right corner — nothing else. */}
+			<ComposerOverlay
+				owner="encrypt"
+				open={composerExpanded}
+				onClose={() => setComposerExpanded(false)}
+				onPrimaryAction={() => {
+					if (!busy) void handleEncrypt();
+				}}
+				topRight={
+					<button
+						type="button"
+						aria-label="Collapse editor"
+						title="Collapse editor (Esc)"
+						onClick={() => setComposerExpanded(false)}
+						className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
 					>
-						{/* max-w-4xl: Notion-style reading column — the composer stays
-                            scannable on wide screens instead of stretching edge to
-                            edge. mt-auto pins the status bar to the bottom. */}
-						<div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col">
-							{composerBody}
-							{/* Overlay status bar (round 9): the configuration the action
-                                will run with (recipients / attachments / signing) plus the
-                                chords that work in here — so zen mode never blacks out
-                                context. Chips mirror the inline layout's live state. */}
-							<div className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3">
-								<div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-									{recipients.length === 0 ? (
-										includeSelf ? (
-											<span className="rounded-full bg-muted/60 px-2 py-0.5">
-												encrypting to yourself
-											</span>
-										) : (
-											<span className="rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
-												No recipients yet
-											</span>
-										)
-									) : (
-										<span className="rounded-full bg-muted/60 px-2 py-0.5">
-											{recipients.length === 1 ? "1 recipient" : `${recipients.length} recipients`}
-										</span>
-									)}
-									{includeSelf && (
-										<span className="rounded-full bg-muted/60 px-2 py-0.5">includes you</span>
-									)}
-									{attachments.length > 0 && (
-										<span className="rounded-full bg-muted/60 px-2 py-0.5">
-											{attachments.length === 1
-												? "1 attachment"
-												: `${attachments.length} attachments`}
-										</span>
-									)}
-									{settings.autoSign && (
-										<span className="rounded-full bg-muted/60 px-2 py-0.5">+ sign</span>
-									)}
-								</div>
-								<div className="hidden shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground sm:flex">
-									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
-										Ctrl+↵
-									</kbd>
-									<span>Encrypt</span>
-									<span aria-hidden="true" className="text-border">
-										·
-									</span>
-									<kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono">
-										Esc
-									</kbd>
-									<span>Collapse</span>
-								</div>
-							</div>
-						</div>
-					</div>,
-					document.body,
-				)}
+						<Minimize2 aria-hidden="true" className="size-3.5" />
+					</button>
+				}
+			>
+				{recipientsField}
+				{composerBody}
+			</ComposerOverlay>
 
 			<AttachmentList
 				attachments={attachments}

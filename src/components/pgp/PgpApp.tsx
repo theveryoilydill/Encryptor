@@ -696,7 +696,7 @@ export default function PgpApp() {
 		const prewarm = () => {
 			void import("@/lib/pgp/keybase-auth").catch(() => {});
 			void import("@/components/pgp/BlockNoteEditor").catch(() => {});
-			void import("@uiw/react-md-editor").catch(() => {});
+			void import("@/components/pgp/VSCodeEditor").catch(() => {});
 			void import("@/lib/pgp/pq").catch(() => {});
 		};
 		const ric =
@@ -879,7 +879,6 @@ export default function PgpApp() {
 										recipients={recipients}
 										setRecipients={setRecipients}
 										includeSelf={includeSelf}
-										onIncludeSelfChange={handleSetIncludeSelf}
 										requestDecryptedKey={requestDecryptedKey}
 										onOpenInDecrypt={handleOpenInDecrypt}
 										settings={settings}
@@ -946,6 +945,8 @@ export default function PgpApp() {
 					setSettingsOpen(false);
 					setTourOpen(true);
 				}}
+				includeSelf={includeSelf}
+				onIncludeSelfChange={handleSetIncludeSelf}
 			/>
 
 			{keyRequest && privateKey && (

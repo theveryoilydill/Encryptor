@@ -18,6 +18,8 @@
  * data:image URL.
  */
 import type { Pluggable } from "unified";
+import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 
@@ -57,7 +59,19 @@ export const messageSanitizeSchema = {
 	strip: ["script", "style", "iframe", "object", "embed", "form", "link", "meta"],
 };
 
-/** rehype plugin pair ready to spread into react-markdown's rehypePlugins:
- *  rehype-raw parses the raw HTML the sender wrote, then rehype-sanitize
- *  strips everything the schema does not explicitly allow. */
-export const rehypeSecureHtml: Pluggable[] = [rehypeRaw, [rehypeSanitize, messageSanitizeSchema]];
+/** rehype plugin chain ready to spread into react-markdown's rehypePlugins:
+ *  rehype-raw parses the HTML the sender wrote, then rehype-sanitize
+ *  strips everything the schema does not explicitly allow. rehype-katex and
+ *  rehype-highlight both run AFTER sanitization — their generated markup
+ *  (KaTeX spans/MathML, hljs token spans) is built from already-sanitized
+ *  text, so nothing sender-controlled can slip past the schema: math rides
+ *  in as `code.language-math` (remark-math's encoding, kept by the schema's
+ *  language-* class rule) and is swapped for KaTeX output here.
+ *  throwOnError: false renders parse errors as red source instead of
+ *  throwing; trust stays off, so \href/\htmlData etc. are dead on arrival. */
+export const rehypeSecureHtml: Pluggable[] = [
+	rehypeRaw,
+	[rehypeSanitize, messageSanitizeSchema],
+	[rehypeKatex, { throwOnError: false, trust: false, strict: false }],
+	[rehypeHighlight, { detect: false }],
+];

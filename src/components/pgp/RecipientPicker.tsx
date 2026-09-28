@@ -10,7 +10,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Volume2, WandSparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -153,13 +152,11 @@ export function RecipientPicker({
 	setRecipients,
 	selfRecipient,
 	includeSelf,
-	onIncludeSelfChange,
 }: {
 	recipients: Recipient[];
 	setRecipients: (updater: (prev: Recipient[]) => Recipient[]) => void;
 	selfRecipient: Recipient | null;
 	includeSelf: boolean;
-	onIncludeSelfChange: (v: boolean) => void;
 }) {
 	const [input, setInput] = useState("");
 	const [suggestions, setSuggestions] = useState<KeySearchResult[]>([]);
@@ -534,27 +531,9 @@ export function RecipientPicker({
 				<Label htmlFor="recipient-search">Recipients</Label>
 			</div>
 
-			{/* Include-me checkbox (only shown when a private key is configured) */}
-			{selfRecipient && (
-				<div className="-my-1 mb-2 flex min-h-11 items-start gap-2 py-1.5 text-xs text-foreground sm:min-h-0">
-					<Checkbox
-						id="include-self-recipient"
-						checked={includeSelf}
-						onCheckedChange={(v) => onIncludeSelfChange(v === true)}
-						className="mt-0.5 size-3.5"
-						aria-label="Include me as a recipient"
-					/>
-					<label
-						htmlFor="include-self-recipient"
-						className="cursor-pointer select-none leading-snug"
-					>
-						Include me as a recipient{" "}
-						<span className="text-muted-foreground">
-							(encrypts a copy to myself — stays {includeSelf ? "on" : "off"} for next time)
-						</span>
-					</label>
-				</div>
-			)}
+			{/* Include-me moved to the Settings dialog (annotation round): the
+                            recipients bar stays a pure picker. The self chip below still
+                            reflects the includeSelf state passed from PgpApp. */}
 
 			{/* Recipients list — show self chip first when included */}
 			{(recipients.length > 0 || (includeSelf && selfRecipient)) && (
@@ -679,8 +658,8 @@ export function RecipientPicker({
 										}`}
 									>
 										{/* No avatar here — person photos/initials in the key
-			picker were noise (and a privacy leak of profile
-			pictures); results are identified by their labels. */}
+                        picker were noise (and a privacy leak of profile
+                        pictures); results are identified by their labels. */}
 										<div className="min-w-0 flex-1">
 											<div className="truncate font-medium">{s.label}</div>
 											{s.fullName && s.username && (

@@ -24,9 +24,12 @@
  *     `th` and survive the markdown bridge.
  *   - Code blocks carry a language <select> (exports as the fence info
  *     string) and a hover "Copy" chip.
- *   - The slash menu's image entry is device-upload only: the URL-embed
- *     panel let remote https images into the wire, which every recipient
- *     silently blocks (tracking-pixel posture) — a dead end for the sender.
+ *   - The slash menu is skinned to Notion's real popup (330px sheet, gray
+ *     icon tiles, Notion's triple-layer shadow — see globals.css) with
+ *     Notion's own item copy, and its image entry is device-upload only:
+ *     the URL-embed panel let remote https images into the wire, which
+ *     every recipient silently blocks (tracking-pixel posture) — a dead
+ *     end for the sender.
  *   - The formatting toolbar drops the color picker: colors never survive
  *     the markdown bridge, so the button advertised something the
  *     recipient would never see.
@@ -68,9 +71,31 @@ import {
 	useRef,
 	useState,
 	type PointerEvent as ReactPointerEvent,
+	type ReactElement,
 } from "react";
 import { useTheme } from "next-themes";
-import { Check, Copy, ImagePlus, Lightbulb } from "lucide-react";
+import {
+	AlignLeft,
+	Check,
+	Code,
+	Copy,
+	Heading1,
+	Heading2,
+	Heading3,
+	Heading4,
+	Heading5,
+	Heading6,
+	ImagePlus,
+	Lightbulb,
+	List,
+	ListCollapse,
+	ListOrdered,
+	ListTodo,
+	Minus,
+	Smile,
+	Table,
+	TextQuote,
+} from "lucide-react";
 
 /** Full picker palette: every fully-qualified emoji at base skin tone with
  *  an English search name (generated — see lib/pgp/emoji-list.ts). */
@@ -394,12 +419,40 @@ const insertImageSlashItem = (pickImage: () => void): DefaultReactSuggestionItem
  *  affordance), so a single menu item covers all callout flavors. */
 const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
 	title: "Callout",
-	subtext: "Highlighted note — click the icon on the card to change it",
+	subtext: "Make writing stand out.",
 	aliases: ["callout", "note", "highlight", "info", "warning"],
 	group: "Basic blocks",
 	icon: <Lightbulb size={18} />,
 	onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: "callout" }),
 });
+
+/** Notion's icon set for the dictionary-renamed defaults (the two custom
+ *  items carry their own lucide icons). Keys are the titles after the
+ *  Notion copy pass in the editor dictionary. */
+const DEFAULT_ITEM_ICONS: Record<string, ReactElement> = {
+	Text: <AlignLeft size={20} />,
+	"Bulleted list": <List size={20} />,
+	"Numbered list": <ListOrdered size={20} />,
+	"To-do list": <ListTodo size={20} />,
+	"Toggle list": <ListCollapse size={20} />,
+	"Heading 1": <Heading1 size={20} />,
+	"Heading 2": <Heading2 size={20} />,
+	"Heading 3": <Heading3 size={20} />,
+	"Heading 4": <Heading4 size={20} />,
+	"Heading 5": <Heading5 size={20} />,
+	"Heading 6": <Heading6 size={20} />,
+	"Toggle Heading 1": <Heading1 size={20} />,
+	"Toggle Heading 2": <Heading2 size={20} />,
+	"Toggle Heading 3": <Heading3 size={20} />,
+	"Toggle Heading 4": <Heading4 size={20} />,
+	"Toggle Heading 5": <Heading5 size={20} />,
+	"Toggle Heading 6": <Heading6 size={20} />,
+	Quote: <TextQuote size={20} />,
+	Divider: <Minus size={20} />,
+	Code: <Code size={20} />,
+	Table: <Table size={20} />,
+	Emoji: <Smile size={20} />,
+};
 
 /** Slash menu = defaults (minus the URL-embed image trap) + insert-image +
  *  callout. The title check matches the shipped English dictionary. Items
@@ -408,19 +461,10 @@ const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
  *  "Advanced" sections — and React duplicate-key errors).
  *
  *  Owner-specified order (annotation round): bullet points, numbers, todo,
- *  toggle, then all the other basic stuff, with quotes LAST. Two mechanisms
- *  deliver that: "Basic blocks" ranks before the heading groups, and within
- *  it the four list items get explicit priority; Quote moves to its own
- *  "Quotes" group ranked dead last. */
-const GROUP_ORDER = [
-	"Basic blocks",
-	"Headings",
-	"Subheadings",
-	"Advanced",
-	"Media",
-	"Others",
-	"Quotes",
-];
+ *  toggle, then all the other basic stuff, with quotes LAST — delivered by
+ *  BASIC_BLOCKS_PRIORITY inside "Basic blocks" and Quote's own "Quotes"
+ *  group ranked dead last (set in the dictionary). */
+const GROUP_ORDER = ["Basic blocks", "Media", "Advanced", "Others", "Quotes"];
 
 /** Group rank for the stable sort; unknown groups sort last (before only
  *  undefined ones). */
@@ -430,8 +474,22 @@ const rank = (group: string | undefined): number => {
 };
 
 /** Within-"Basic blocks" priority: the four list flavors lead, then the
- *  rest of the basic blocks. Titles match the shipped English dictionary. */
-const BASIC_BLOCKS_PRIORITY = ["Bullet List", "Numbered List", "Check List", "Toggle List"];
+ *  rest in Notion's walking order. Titles match the Notion copy pass in
+ *  the editor dictionary. */
+const BASIC_BLOCKS_PRIORITY = [
+	"Bulleted list",
+	"Numbered list",
+	"To-do list",
+	"Toggle list",
+	"Text",
+	"Heading 1",
+	"Heading 2",
+	"Heading 3",
+	"Callout",
+	"Code",
+	"Table",
+	"Divider",
+];
 const basicRank = (title: string): number => {
 	const idx = BASIC_BLOCKS_PRIORITY.indexOf(title);
 	return idx === -1 ? BASIC_BLOCKS_PRIORITY.length : idx;
@@ -439,10 +497,19 @@ const basicRank = (title: string): number => {
 
 function getSlashMenuItems(editor: Editor, query: string, pickImage: () => void) {
 	const defaults = getDefaultReactSlashMenuItems(editor).filter((item) => item.title !== "Image");
-	const items = [...defaults, insertImageSlashItem(pickImage), calloutSlashItem(editor)]
-		.map((item) =>
-			// Quote rides last, in its own group (owner order).
-			item.title === "Quote" ? { ...item, group: "Quotes" } : item,
+	const items: DefaultReactSuggestionItem[] = [
+		...defaults,
+		insertImageSlashItem(pickImage),
+		calloutSlashItem(editor),
+	]
+		.map((item): DefaultReactSuggestionItem =>
+			// Notion's icon set + "+"-joined shortcut hints on the
+			// renamed defaults.
+			({
+				...item,
+				...(DEFAULT_ITEM_ICONS[item.title] ? { icon: DEFAULT_ITEM_ICONS[item.title] } : {}),
+				...(item.badge ? { badge: item.badge.replace(/-/g, "+") } : {}),
+			}),
 		)
 		.sort((a, b) => {
 			const byGroup = rank(a.group) - rank(b.group);
@@ -686,6 +753,101 @@ export default function BlockNoteEditor({
 				...en.placeholders,
 				// Empty + unfocused composer hint (the per-tab copy).
 				emptyDocument: placeholder ?? en.placeholders.default,
+			},
+			// Notion's slash-menu copy: the titles, one-liners and grouping
+			// users know from Notion's editor (headings and tables fold into
+			// "Basic blocks", toggle headings into "Advanced"). The default
+			// items are built from this dictionary, so the rename flows into
+			// the menu, the filter and the alias matching in one place. Quote
+			// keeps its own "Quotes" group ranked last (owner order).
+			slash_menu: {
+				...en.slash_menu,
+				paragraph: {
+					...en.slash_menu.paragraph,
+					title: "Text",
+					subtext: "Add a simple text block.",
+					aliases: [...en.slash_menu.paragraph.aliases, "text", "plain"],
+				},
+				bullet_list: {
+					...en.slash_menu.bullet_list,
+					title: "Bulleted list",
+					subtext: "Create a simple bulleted list.",
+				},
+				numbered_list: {
+					...en.slash_menu.numbered_list,
+					title: "Numbered list",
+					subtext: "Create a list with numbering.",
+				},
+				check_list: {
+					...en.slash_menu.check_list,
+					title: "To-do list",
+					subtext: "Track tasks with a checkbox.",
+				},
+				toggle_list: {
+					...en.slash_menu.toggle_list,
+					title: "Toggle list",
+					subtext: "Hide details inside.",
+				},
+				heading: {
+					...en.slash_menu.heading,
+					subtext: "Add a big section heading.",
+					group: "Basic blocks",
+				},
+				heading_2: {
+					...en.slash_menu.heading_2,
+					subtext: "Add a medium section heading.",
+					group: "Basic blocks",
+				},
+				heading_3: {
+					...en.slash_menu.heading_3,
+					subtext: "Add a small section heading.",
+					group: "Basic blocks",
+				},
+				heading_4: {
+					...en.slash_menu.heading_4,
+					subtext: "Add a minor subsection heading.",
+					group: "Advanced",
+				},
+				heading_5: {
+					...en.slash_menu.heading_5,
+					subtext: "Add a small subsection heading.",
+					group: "Advanced",
+				},
+				heading_6: {
+					...en.slash_menu.heading_6,
+					subtext: "Add the lowest-level heading.",
+					group: "Advanced",
+				},
+				toggle_heading: {
+					...en.slash_menu.toggle_heading,
+					subtext: "Add a collapsible section heading.",
+					group: "Advanced",
+				},
+				toggle_heading_2: {
+					...en.slash_menu.toggle_heading_2,
+					subtext: "Add a collapsible key section heading.",
+					group: "Advanced",
+				},
+				toggle_heading_3: {
+					...en.slash_menu.toggle_heading_3,
+					subtext: "Add a collapsible subsection heading.",
+					group: "Advanced",
+				},
+				quote: {
+					...en.slash_menu.quote,
+					subtext: "Capture a quote.",
+					group: "Quotes",
+				},
+				code_block: {
+					...en.slash_menu.code_block,
+					title: "Code",
+					subtext: "Capture a code snippet.",
+				},
+				table: {
+					...en.slash_menu.table,
+					subtext: "Add a simple table.",
+					group: "Basic blocks",
+				},
 			},
 		},
 		pasteHandler: ({ event, defaultPasteHandler }) => {

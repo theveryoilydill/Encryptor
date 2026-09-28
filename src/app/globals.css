@@ -805,3 +805,189 @@
 	> .bn-block-content[data-content-type="bulletListItem"]:before {
 	content: "\25aa\fe0e";
 }
+
+/* ---- Slash menu: Notion's real popup skin ---- */
+
+/* Notion's popover recipe, applied to BlockNote's #bn-suggestion-menu:
+   a 330px sheet with the exact triple-layer shadow Notion ships (1px ring
+   + two soft drops), 6px radius, and their font stack. The ID selector
+   out-specifies BlockNote's `.bn-mantine .bn-suggestion-menu` rules so the
+   default border/shadow/padding are fully replaced, not blended. */
+#bn-suggestion-menu {
+	width: 330px;
+	max-width: 330px;
+	padding: 8px;
+	border: none;
+	border-radius: 6px;
+	background: #ffffff;
+	box-shadow:
+		rgba(15, 15, 15, 0.05) 0px 0px 0px 1px,
+		rgba(15, 15, 15, 0.1) 0px 3px 6px,
+		rgba(15, 15, 15, 0.2) 0px 9px 24px;
+	color: rgb(55, 53, 47);
+	font-family:
+		ui-sans-serif,
+		-apple-system,
+		BlinkMacSystemFont,
+		"Segoe UI",
+		Helvetica,
+		"Apple Color Emoji",
+		Arial,
+		sans-serif,
+		"Segoe UI Emoji",
+		"Segoe UI Symbol";
+	scrollbar-width: thin;
+	scrollbar-color: rgba(55, 53, 47, 0.2) transparent;
+}
+#bn-suggestion-menu::-webkit-scrollbar {
+	width: 10px;
+}
+#bn-suggestion-menu::-webkit-scrollbar-thumb {
+	background: rgba(55, 53, 47, 0.2);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+	border-radius: 5px;
+}
+#bn-suggestion-menu::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+/* Section header: 12px dimmed gray, tight against its first row. */
+#bn-suggestion-menu .bn-suggestion-menu-label {
+	padding: 8px 8px 4px;
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1.3;
+	color: rgba(55, 53, 47, 0.5);
+}
+
+/* Rows: 40px icon tile + 14px title + 12px one-liner, Notion's hover gray
+   with their 20ms ease-in background snap. */
+#bn-suggestion-menu .bn-suggestion-menu-item {
+	min-height: 48px;
+	padding: 4px 8px;
+	border-radius: 6px;
+	transition: background 20ms ease-in;
+}
+#bn-suggestion-menu .bn-suggestion-menu-item[aria-selected="true"],
+#bn-suggestion-menu .bn-suggestion-menu-item:hover {
+	background-color: rgba(55, 53, 47, 0.08);
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="left"] {
+	flex: 0 0 40px;
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	margin-inline-end: 10px;
+	border-radius: 6px;
+	background-color: #f1f1ef;
+	color: rgb(55, 53, 47);
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-title {
+	font-size: 14px;
+	font-weight: 500;
+	line-height: 1.4;
+	color: rgb(55, 53, 47);
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-subtitle {
+	font-size: 12px;
+	line-height: 1.4;
+	color: rgba(55, 53, 47, 0.65);
+	/* Notion keeps descriptions to one ellipsized line. */
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Shortcut hints flatten into Notion's dimmed kbd column instead of the
+   Mantine badge pill BlockNote renders. */
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="right"] {
+	margin-inline-start: 12px;
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="right"] .mantine-Badge-root {
+	height: auto;
+	min-height: 0;
+	padding: 0;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	color: rgba(55, 53, 47, 0.4);
+	font-size: 12px;
+	font-weight: 400;
+	text-transform: none;
+}
+#bn-suggestion-menu
+	.bn-mt-suggestion-menu-item-section[data-position="right"]
+	.mantine-Badge-label {
+	color: inherit;
+	font-size: inherit;
+	font-weight: inherit;
+	text-transform: none;
+}
+
+/* No-results row: the empty item is the one without a body/icon — quiet
+   gray text like Notion's. */
+#bn-suggestion-menu .bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body)) {
+	min-height: 0;
+	padding: 12px 8px;
+	font-size: 13px;
+	font-weight: 400;
+	color: rgba(55, 53, 47, 0.4);
+}
+#bn-suggestion-menu
+	.bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body))
+	.bn-mt-suggestion-menu-item-title {
+	font-size: inherit;
+	font-weight: inherit;
+	color: inherit;
+}
+
+/* Dark mode: Notion's dark sheet (#252525), white-alpha text ramp and the
+   dark shadow triplet. */
+.dark #bn-suggestion-menu {
+	background: #252525;
+	color: rgba(255, 255, 255, 0.81);
+	box-shadow:
+		rgba(15, 15, 15, 0.2) 0px 0px 0px 1px,
+		rgba(15, 15, 15, 0.2) 0px 3px 6px,
+		rgba(15, 15, 15, 0.4) 0px 9px 24px;
+	scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.dark #bn-suggestion-menu::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.2);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+	border-radius: 5px;
+}
+.dark #bn-suggestion-menu .bn-suggestion-menu-label {
+	color: rgba(255, 255, 255, 0.28);
+}
+.dark #bn-suggestion-menu .bn-suggestion-menu-item[aria-selected="true"],
+.dark #bn-suggestion-menu .bn-suggestion-menu-item:hover {
+	background-color: rgba(255, 255, 255, 0.055);
+}
+.dark #bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="left"] {
+	background-color: #2f2f2f;
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark #bn-suggestion-menu .bn-mt-suggestion-menu-item-title {
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark #bn-suggestion-menu .bn-mt-suggestion-menu-item-subtitle {
+	color: rgba(255, 255, 255, 0.46);
+}
+.dark
+	#bn-suggestion-menu
+	.bn-mt-suggestion-menu-item-section[data-position="right"]
+	.mantine-Badge-root {
+	color: rgba(255, 255, 255, 0.28);
+}
+.dark #bn-suggestion-menu .bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body)) {
+	color: rgba(255, 255, 255, 0.3);
+}
+.dark
+	#bn-suggestion-menu
+	.bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body))
+	.bn-mt-suggestion-menu-item-title {
+	color: inherit;
+}

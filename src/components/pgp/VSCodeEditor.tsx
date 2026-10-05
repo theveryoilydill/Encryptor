@@ -3,7 +3,7 @@
 /**
  * VS Code-style markdown composer (source + live preview).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * Rebuilt from the feedback round's screenshot: a real editor tab strip
  * ("Message.md" + "Preview Message.md" with a close box), a panel toggle

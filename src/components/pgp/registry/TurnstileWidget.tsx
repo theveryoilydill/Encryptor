@@ -34,7 +34,7 @@
  * actually mounted. Tokens are single-use: after a failed publish the
  * parent remounts the widget via a changing `key` prop to mint a new one.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { useEffect, useRef, useState } from "react";
 import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";

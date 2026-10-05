@@ -12,7 +12,7 @@
  * Admin revocation remains a BACKEND-ONLY path (ADMIN_REVOKE_TOKEN via
  * curl/wrangler) per the owner's request to keep it out of the public UI.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { signMessage } from "@/lib/pgp/pgp";
 

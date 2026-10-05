@@ -1,5 +1,5 @@
 # CodeQL configuration for the Encryptor repo.
-# # Mr. AI Acting on s183173's Behalf
+# # Mr. AI Acting on the Owner's Behalf
 #
 # NO query exclusions are active. The previously-excluded js/xss-through-dom
 # finding was FIXED at the sink instead: every user-derived URL that reaches

@@ -4,7 +4,7 @@
  * this is every fully-qualified emoji at base skin tone, each with an English
  * name for the picker's search. Regenerate with scripts/gen_emoji.py.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 
 export const FULL_EMOJI_LIST: ReadonlyArray<readonly [string, string]> = [

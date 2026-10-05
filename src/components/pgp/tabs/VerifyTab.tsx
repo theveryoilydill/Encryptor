@@ -13,7 +13,6 @@ import {
 	KeySourcePill,
 	SignerHashLegend,
 	DecryptedMessageView,
-	FingerprintWords,
 	PasteFromClipboardButton,
 } from "@/components/pgp/shared";
 import type {
@@ -117,7 +116,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 
 	// Detected format is derived state, recomputed from the armor on every
 	// change — nothing to reset when the input is cleared.
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const detected = useMemo<ArmoredFormat | null>(() => {
 		if (!armored.trim()) {
 			return null;
@@ -678,11 +677,6 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 													</span>
 													{s.fingerprint}
 												</div>
-											)}
-											{/* Verify by voice: biometric words for this signer
-												— compare aloud before trusting the channel. */}
-											{s.fingerprint && (
-												<FingerprintWords fingerprint={s.fingerprint} className="mt-1" />
 											)}
 										</li>
 									);

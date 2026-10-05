@@ -4,7 +4,7 @@
  * error mapping. Security-relevant checks live here so no route can
  * forget them.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { NextRequest, NextResponse } from "next/server";
 

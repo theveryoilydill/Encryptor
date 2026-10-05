@@ -3,7 +3,7 @@
 /**
  * Dedicated settings dialog — deliberately SEPARATE from key setup.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * The key/auth dialog (ConfigureModal) owns everything about the KEY:
  * Keybase login, manual paste, generation, details, share, download/clear.

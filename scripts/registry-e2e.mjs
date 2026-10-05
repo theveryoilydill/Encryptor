@@ -3,14 +3,14 @@
  * deployment. Exercises publish/lookup/challenge/revoke including
  * negative security cases (SQLi probes, replay, forged signer,
  * cross-fingerprint nonce, rate limiting, payload guards).
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import * as openpgp from "openpgp";
 
 // Usage: start the dev server (bun run dev) with local D1 migrated, then:
 //   node scripts/registry-e2e.mjs        (or: bun run test:registry)
 // Override the target with REGISTRY_TEST_BASE for preview deployments.
-// # Mr. AI Acting on s183173's Behalf
+// # Mr. AI Acting on the Owner's Behalf
 const BASE = process.env.REGISTRY_TEST_BASE ?? "http://localhost:3000";
 // Remote targets (*.workers.dev etc.): the Cloudflare edge REJECTS requests
 // carrying client-supplied cf-* reserved headers (403 before the worker runs),
@@ -86,7 +86,7 @@ async function signChallengeEncrypted(privateKey, passphrase, fingerprint, nonce
 
 // Per-run unique IP buckets: the second octet rotates with wall-clock
 // seconds so repeated runs never inherit a spent rate-limit window from a
-// persistent local D1. # Mr. AI Acting on s183173's Behalf
+// persistent local D1. # Mr. AI Acting on the Owner's Behalf
 const RUN_OCTET = (Math.floor(Date.now() / 1000) % 250) + 1;
 const IP = (n) => (IS_REMOTE ? {} : { "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
 
@@ -260,24 +260,6 @@ console.log("== lookup paths (alice) ==");
 	check("lookup by email", byEmail.body?.keys?.length === 1);
 	const caseFold = await api(`/api/registry/lookup?email=ALICE.${RUN}@EXAMPLE.COM`);
 	check("email lookup case-insensitive", caseFold.body?.keys?.length === 1);
-
-	// ?words=1 — PGP word-list (biometric) fingerprints, opt-in per call.
-	const withWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}&words=1`);
-	const words = withWords.body?.keys?.[0]?.words;
-	check(
-		"lookup ?words=1 returns 20 PGP words",
-		Array.isArray(words) && words.length === 20,
-		JSON.stringify(words?.length),
-	);
-	check(
-		"PGP words are space-free single tokens",
-		Array.isArray(words) && words.every((w) => typeof w === "string" && /^[A-Za-z]+$/.test(w)),
-	);
-	const noWords = await api(`/api/registry/lookup?fingerprint=${aliceFpr}`);
-	check(
-		"lookup without ?words omits words field",
-		noWords.body?.keys?.[0] && !("words" in noWords.body.keys[0]),
-	);
 }
 
 console.log("== authorized replacement (alice) ==");

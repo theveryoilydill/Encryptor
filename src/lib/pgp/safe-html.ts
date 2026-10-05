@@ -1,7 +1,7 @@
 /**
  * Secure HTML rendering for message views.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * The composer is a markdown editor, but senders can embed raw HTML
  * (VS Code mode). react-markdown escapes raw HTML by default; to actually

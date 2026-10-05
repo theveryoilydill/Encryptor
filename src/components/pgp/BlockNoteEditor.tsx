@@ -3,7 +3,7 @@
 /**
  * Notion/Affine-style block editor for the message composer (BlockNote).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * Loaded dynamically (client-only) from MessageEditor. Sync with the
  * parent's plaintext runs through a lossy-markdown bridge:
@@ -58,7 +58,7 @@ import {
 	BlockTypeSelect,
 	CreateLinkButton,
 	createReactInlineContentSpec,
-	ExperimentalMobileFormattingToolbarController,
+	MobileFormattingToolbarController,
 	FormattingToolbar,
 	FormattingToolbarController,
 	NestBlockButton,
@@ -180,7 +180,7 @@ const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlo
  *  parses back from ANY emoji-prefixed quote so editor round-trips keep
  *  the chosen icon. Zero sanitizer changes by design.
  *
- *  # Mr. AI Acting on s183173's Behalf */
+ *  # Mr. AI Acting on the Owner's Behalf */
 
 /** The callout's default icon (Notion's 💡). The chip on the card opens a
  *  searchable picker over the FULL Unicode emoji set — owner feedback said
@@ -231,7 +231,7 @@ function stripCalloutEmoji(element: Element, emoji: string): void {
  *  stops mousedown propagation (keeps the search input focusable) and the
  *  grid buttons preventDefault to preserve the text selection.
  *
- *  # Mr. AI Acting on s183173's Behalf */
+ *  # Mr. AI Acting on the Owner's Behalf */
 function CalloutEmojiPicker({
 	editor,
 	block,
@@ -322,7 +322,7 @@ const calloutBlockSpec = createReactBlockSpec(
 	{
 		render: ({ block, editor, contentRef }) => {
 			const emoji = block.props.emoji || CALLOUT_DEFAULT_EMOJI;
-			// # Mr. AI Acting on s183173's Behalf
+			// # Mr. AI Acting on the Owner's Behalf
 			// The chip opens a searchable emoji picker (any emoji, not a
 			// fixed cycle); the card itself is neutral Notion-gray.
 			const [pickerOpen, setPickerOpen] = useState(false);
@@ -1154,7 +1154,7 @@ export default function BlockNoteEditor({
 	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
-	 *  # Mr. AI Acting on s183173's Behalf
+	 *  # Mr. AI Acting on the Owner's Behalf
 	 *  the wrapper fills the overlay through an h-full + flex chain and
 	 *  the fixed composer min-heights are dropped so BlockNote grows with
 	 *  the viewport (.bn-container owns the scrolling). */
@@ -1470,7 +1470,7 @@ export default function BlockNoteEditor({
 	// is selected by extending the browser's native selection from the
 	// first to the last intersecting block — copy/delete keep working.
 	//
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const [dragBox, setDragBox] = useState<{ x: number; y: number; w: number; h: number } | null>(
 		null,
 	);
@@ -1595,9 +1595,7 @@ export default function BlockNoteEditor({
 					getItems={async (query) => getSlashMenuItems(editor, query, pickImage)}
 				/>
 				{mobileToolbar ? (
-					<ExperimentalMobileFormattingToolbarController
-						formattingToolbar={ComposerMobileFormattingToolbar}
-					/>
+					<MobileFormattingToolbarController formattingToolbar={ComposerMobileFormattingToolbar} />
 				) : (
 					<FormattingToolbarController formattingToolbar={ComposerFormattingToolbar} />
 				)}

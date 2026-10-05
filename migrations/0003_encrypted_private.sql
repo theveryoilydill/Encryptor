@@ -1,5 +1,5 @@
 -- Encryptor key registry — encrypted private key escrow (0003)
--- # Mr. AI Acting on s183173's Behalf
+-- # Mr. AI Acting on the Owner's Behalf
 --
 -- Adds OPTIONAL encrypted private key escrow to the registry. The
 -- encrypted_private column stores an ASCII-armored private key whose

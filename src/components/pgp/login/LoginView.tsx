@@ -14,7 +14,7 @@
  * old Configure dialog, per the review round: "Keep this minimal. Also
  * don't put the admin thing publicly."
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {

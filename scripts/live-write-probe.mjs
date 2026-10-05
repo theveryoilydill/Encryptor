@@ -3,7 +3,7 @@
  * Proves the owner's "no writes to my database" complaint is fixed:
  *   publish (201) -> lookup (persisted) -> revoke (clean end state).
  * Leaves at most a single revoked probe record, disclosed in the PR comment.
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import * as openpgp from "openpgp";
 

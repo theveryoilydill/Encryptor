@@ -1,6 +1,6 @@
 /**
  * Lightweight, dependency-free passphrase strength estimation (zxcvbn-style
- * heuristics, deliberately conservative). # Mr. AI Acting on s183173's Behalf
+ * heuristics, deliberately conservative). # Mr. AI Acting on the Owner's Behalf
  *
  * This is NOT a cryptographically rigorous entropy measure — it is a UI guide
  * that catches the failure modes that matter in practice: short passphrases,

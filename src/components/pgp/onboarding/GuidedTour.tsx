@@ -277,8 +277,11 @@ export function GuidedTour({
 
 	return createPortal(
 		<>
-			{/* Click blocker: the tour is driven by its buttons, not the page. */}
-			<div aria-hidden="true" className="fixed inset-0 z-[60]" />
+			{/* Click blocker: the tour is driven by its buttons, not the page.
+                            Only rendered WITH the callout — if the anchor probe hasn't
+                            resolved yet, an invisible full-screen blocker with no visible
+                            tour would dead-lock every click in the app. */}
+			{spot && calloutStyle && <div aria-hidden="true" className="fixed inset-0 z-[60]" />}
 
 			{/* Spotlight hole — the giant box-shadow dims everything else. */}
 			{spot && (

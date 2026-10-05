@@ -21,6 +21,8 @@ A PR is not done because it compiles. All of these must be green before "ready f
 
 Do not put random files in the repo. Not allowed: agent worklogs/notes, scratch dirs, zip/patch dumps, editor leftovers, lockfiles from a different package manager (this repo uses **bun.lock** only), generated artifacts. If a file is not part of the product or required config, keep it out of the commit. Upload deliverables outside the repo (see "Uploading the finished product").
 
+**Never install `z-ai-web-dev-sdk`** (or any Z.ai sandbox SDK) in this repo — not as a dependency, not as a devDependency, not ad hoc. This is a zero-telemetry product; the app ships no AI/agent plumbing and none belongs here.
+
 ## If you need something, ping — don't guess
 
 Missing credentials, unclear requirements, a decision you are not sure about? Stop and ask in the PR (comment and tag the owner) instead of inventing values, endpoints or scope. Never hardcode secrets or fake data to make something "work".
@@ -33,7 +35,7 @@ Missing credentials, unclear requirements, a decision you are not sure about? St
 
 ## Report comment at the end
 
-When you finish work on a PR, leave ONE final comment on it: clean, concise, and structured — what changed, how it was verified (checks + browser flows), and any known limitations or follow-ups. The AI disclosure tag goes first (see attribution above).
+When you finish work on a PR, leave ONE final comment on it: clean, concise, and structured — what changed, how it was verified (checks + browser flows), and any known limitations or follow-ups. The AI disclosure tag goes first: `# Mr. AI Acting on the Owner's Behalf` (adapt the `#` to the language's comment syntax). Keep the tag generic — it describes the tool, never a specific person.
 
 ## Theme
 

@@ -3,7 +3,7 @@
 /**
  * PassphraseStrengthMeter — animated 4-segment strength gauge for the
  * key-pair generation and local-import passphrase fields.
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * Design brief: #0055dc accent family is reserved for actions; strength
  * uses a semantic red→orange→amber→emerald ramp. Transitions stay in the

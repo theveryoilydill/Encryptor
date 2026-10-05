@@ -1,7 +1,7 @@
 /**
  * Previously-configured-keys ring — the "switch back" feature.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * WHY
  *   Users bounce between identities: a locally generated key for personal

@@ -1,5 +1,5 @@
 -- Encryptor key registry — D1 schema (0001)
--- # Mr. AI Acting on s183173's Behalf
+-- # Mr. AI Acting on the Owner's Behalf
 --
 -- Public-key registry only: this schema MUST never hold private key
 -- material. The armored column stores the ASCII-armored PUBLIC key that

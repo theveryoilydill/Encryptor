@@ -4,7 +4,7 @@
  * statements with bound parameters; string interpolation into SQL is
  * forbidden by design.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { getCloudflareContext } from "@opennextjs/cloudflare/cloudflare-context";
 
@@ -83,7 +83,7 @@ export interface RateLimitOutcome {
  *  - "env": the RE_SALT worker secret, adopted on first boot and persisted;
  *  - "generated": a random CSPRNG salt provisioned on first boot (the
  *    default for previews and fresh recreations — no secrets needed).
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 export type SaltSource = "env" | "generated";
 

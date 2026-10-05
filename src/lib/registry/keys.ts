@@ -3,7 +3,7 @@
  * client metadata: it re-parses the armored key, rejects private material,
  * and derives fingerprint / key IDs / emails from the parsed packets.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import * as openpgp from "openpgp";
 

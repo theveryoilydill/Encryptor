@@ -3,7 +3,7 @@
 /**
  * Notion/Affine-style block editor for the message composer (BlockNote).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * Loaded dynamically (client-only) from MessageEditor. Sync with the
  * parent's plaintext runs through a lossy-markdown bridge:
@@ -16,16 +16,56 @@
  * envelope marker, so the encrypted wire format carries attachments exactly
  * as before. Scale metadata travels in the marker's alt text (the image's
  * caption in the editor).
+ *
+ * Notion-grade touches (this pass):
+ *   - The custom `placeholder` prop reaches the editor via the dictionary
+ *     (the per-tab copy shows on the empty, unfocused composer).
+ *   - Table header rows are enabled (`tables.headers`) — they export as GFM
+ *     `th` and survive the markdown bridge.
+ *   - Code blocks carry a language <select> (exports as the fence info
+ *     string) and a hover "Copy" chip.
+ *   - The slash menu is skinned to Notion's real popup (330px sheet, gray
+ *     icon tiles, Notion's triple-layer shadow — see globals.css) with
+ *     Notion's own item copy, and its image entry is device-upload only:
+ *     the URL-embed panel let remote https images into the wire, which
+ *     every recipient silently blocks (tracking-pixel posture) — a dead
+ *     end for the sender.
+ *   - The formatting toolbar drops the color picker: colors never survive
+ *     the markdown bridge, so the button advertised something the
+ *     recipient would never see.
+ *   - A callout block (neutral Notion-gray card with a searchable emoji
+ *     picker chip) exports as `> 💡 …`, so it degrades to an honest quoted
+ *     line for recipients and the sanitize schema stays untouched.
+ *   - Block + inline equations (Notion's sigma entries): KaTeX-rendered in
+ *     the editor, exported as `$$ … $$` / `$ … $` — the read side's
+ *     remark-math + KaTeX already renders those, and inbound `$$` blocks
+ *     (from VS Code mode or pasted markdown) promote into rendered equation
+ *     blocks on load. No sanitizer changes: math travels as plain text.
  */
 import {
 	BlockNoteSchema,
+	createCodeBlockSpec,
 	defaultBlockSpecs,
+	defaultInlineContentSpecs,
 	filterSuggestionItems,
+	insertOrUpdateBlockForSlashMenu,
 	type BlockNoteEditor as BlockNoteEditorType,
 } from "@blocknote/core";
+import { en } from "@blocknote/core/locales";
 import { BlockNoteView } from "@blocknote/mantine";
 import {
+	BasicTextStyleButton,
+	BlockTypeSelect,
+	CreateLinkButton,
+	createReactInlineContentSpec,
+	MobileFormattingToolbarController,
+	FormattingToolbar,
+	FormattingToolbarController,
+	NestBlockButton,
 	SuggestionMenuController,
+	TextAlignButton,
+	UnnestBlockButton,
+	createReactBlockSpec,
 	getDefaultReactSlashMenuItems,
 	useCreateBlockNote,
 	type DefaultReactSuggestionItem,
@@ -38,9 +78,38 @@ import {
 	useRef,
 	useState,
 	type PointerEvent as ReactPointerEvent,
+	type ReactElement,
 } from "react";
 import { useTheme } from "next-themes";
-import { ListTree } from "lucide-react";
+import {
+	AlignLeft,
+	Check,
+	Code,
+	Copy,
+	Heading1,
+	Heading2,
+	Heading3,
+	Heading4,
+	Heading5,
+	Heading6,
+	ImagePlus,
+	Lightbulb,
+	List,
+	ListCollapse,
+	ListOrdered,
+	ListTodo,
+	Minus,
+	Sigma,
+	Smile,
+	Table,
+	TextQuote,
+} from "lucide-react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
+
+/** Full picker palette: every fully-qualified emoji at base skin tone with
+ *  an English search name (generated — see lib/pgp/emoji-list.ts). */
+import { FULL_EMOJI_LIST } from "@/lib/pgp/emoji-list";
 import { useToast } from "@/hooks/use-toast";
 import type { EnvelopeFile } from "@/lib/pgp/envelope";
 import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./MessageEditor";
@@ -48,58 +117,545 @@ import { dataUrlsToMarkers, markersToDataUrls, type OnNewImageDataUrl } from "./
 // Drop the media blocks the composer never needs — the envelope wire format
 // carries text + IMAGE attachments only. (audio/video/file blocks would
 // inline payloads as non-image data URLs that the reconcile step can't
-// carry into the envelope.)
-const { audio, video, file, ...keptBlockSpecs } = defaultBlockSpecs;
+// carry into the envelope.) The default codeBlock is replaced further down
+// with a language-aware spec.
+const { audio, video, file, codeBlock: _defaultCodeBlock, ...keptBlockSpecs } = defaultBlockSpecs;
 
 void audio;
 void video;
 void file;
+void _defaultCodeBlock;
 
-const schema = BlockNoteSchema.create({
-	blockSpecs: keptBlockSpecs,
+/** Languages offered by the code block's language select. The key is the
+ *  fence info string on the wire (```python …), the name is the <option>
+ *  label. Text first = the default. Aliases cover the common short forms
+ *  people type after three backticks (```py …). */
+const CODE_LANGUAGES = {
+	text: { name: "Text", aliases: ["plain", "txt"] },
+	javascript: { name: "JavaScript", aliases: ["js", "jsx", "node"] },
+	typescript: { name: "TypeScript", aliases: ["ts", "tsx"] },
+	python: { name: "Python", aliases: ["py"] },
+	bash: { name: "Bash", aliases: ["sh", "shell", "zsh"] },
+	json: { name: "JSON" },
+	html: { name: "HTML" },
+	css: { name: "CSS" },
+	markdown: { name: "Markdown", aliases: ["md"] },
+};
+
+/** Language-aware code block. BlockNote's built-in spec THROWS when a block
+ *  carries a language outside supportedLanguages — and the fence input rule
+ *  happily sets any language the user typed (```ruby). The render override
+ *  downgrades unknown languages to the plain text look instead of crashing
+ *  the editor; the markdown keeps the original fence untouched. */
+const codeBlockSpec = createCodeBlockSpec({
+	defaultLanguage: "text",
+	supportedLanguages: CODE_LANGUAGES,
 });
 
-/** "Insert table of contents" as a / command — TOC insertion lives in the
- *  slash menu, not only in the composer utility row. Builds a GitHub-style
- *  TOC from the document's headings and prepends it.
+// (cast) The render is a method that reads `this`-provided context, so the
+// wrapper must forward it — extracting it as a free function crashes.
+type CodeBlockRenderFn = (
+	this: unknown,
+	block: { id: string; props: { language: string } },
+	controller: unknown,
+) => unknown;
+const originalRender = codeBlockSpec.implementation.render as unknown as CodeBlockRenderFn;
+(codeBlockSpec.implementation as unknown as { render: CodeBlockRenderFn }).render = function (
+	this: unknown,
+	block,
+	controller,
+) {
+	if (block.props.language in CODE_LANGUAGES) {
+		return originalRender.call(this, block, controller);
+	}
+	return originalRender.call(
+		this,
+		{ ...block, props: { ...block.props, language: "text" } },
+		controller,
+	);
+};
+
+/** Callout block: a Notion-style "note" card with an emoji picker chip.
+ *  Exports as `> <emoji> …` — a GFM quote every recipient renders — and
+ *  parses back from ANY emoji-prefixed quote so editor round-trips keep
+ *  the chosen icon. Zero sanitizer changes by design.
  *
- *  # Mr. AI Acting on s183173's Behalf */
-const insertTableOfContentsSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
-	title: "Table of contents",
-	subtext: "Insert a TOC from the document headings",
-	onItemClick: () => {
-		void (async () => {
-			const md = await editor.blocksToMarkdownLossy();
-			const rows: string[] = [];
-			for (const line of md.split("\n")) {
-				const match = /^(#{1,6})\s+(.*)$/.exec(line);
-				if (!match) continue;
-				const title = match[2].trim().replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
-				const slug = title
-					.toLowerCase()
-					.replace(/[^\p{L}\p{N}\s-]/gu, "")
-					.replace(/\s+/g, "-");
-				rows.push(`${"  ".repeat(match[1].length - 1)}- [${title}](#${slug})`);
-			}
-			if (rows.length === 0) return;
-			const tocBlocks = await editor.tryParseMarkdownToBlocks(`${rows.join("\n")}\n`);
-			if (tocBlocks && tocBlocks.length > 0) {
-				editor.insertBlocks(tocBlocks, editor.document[0], "before");
-			}
-		})();
-	},
-	aliases: ["toc", "table of contents", "outline"],
-	group: "Advanced",
-	icon: <ListTree size={18} />,
-});
+ *  # Mr. AI Acting on the Owner's Behalf */
 
-/** Slash menu = the defaults + the TOC item. */
-function getSlashMenuItems(editor: Editor, query: string) {
-	return filterSuggestionItems(
-		[...getDefaultReactSlashMenuItems(editor), insertTableOfContentsSlashItem(editor)],
-		query,
+/** The callout's default icon (Notion's 💡). The chip on the card opens a
+ *  searchable picker over the FULL Unicode emoji set — owner feedback said
+ *  the old 50-emoji palette was too limited ("Limited emojis. Add all."). */
+const CALLOUT_DEFAULT_EMOJI = "💡";
+
+/** How many grid buttons to render at once. The full set is ~1.9k emojis;
+ *  without a cap an empty query would mount the whole grid (and its hover
+ *  handlers) in one paint. Search narrows below the cap naturally. */
+const EMOJI_RENDER_CAP = 200;
+
+/** Filter the full palette by query (matches the emoji itself or its name). */
+function filterCalloutEmojis(query: string): string[] {
+	const q = query.trim().toLowerCase();
+	if (!q) return FULL_EMOJI_LIST.map(([emoji]) => emoji);
+	return FULL_EMOJI_LIST.filter(([emoji, name]) => emoji.includes(q) || name.includes(q)).map(
+		([emoji]) => emoji,
 	);
 }
+
+/** Leading-emoji matcher for parsing quotes back into callouts. Accepts a
+ *  pictographic head (with optional FE0F/ZWJ sequences) followed by
+ *  whitespace — plain quotes never become callouts. */
+const CALLOUT_EMOJI_PREFIX_RE =
+	/^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic})*)[\s\u00A0]+/u;
+
+/** Strip a leading emoji (plus trailing whitespace) out of the parsed
+ *  blockquote's DOM so the icon becomes the block's `emoji` PROP instead of
+ *  literal inline content — otherwise the card would render the icon twice
+ *  after every markdown round-trip. */
+function stripCalloutEmoji(element: Element, emoji: string): void {
+	for (const node of Array.from(element.childNodes)) {
+		if (node.nodeType !== Node.TEXT_NODE) continue;
+		const text = node.textContent ?? "";
+		const idx = text.indexOf(emoji);
+		if (idx === -1) continue;
+		const rest = text.slice(idx + emoji.length).replace(/^[\s\u00A0]+/, "");
+		if (rest) node.textContent = rest;
+		else element.removeChild(node);
+		return;
+	}
+}
+
+/** Searchable emoji picker for the callout chip. Renders as a small
+ *  popover under the chip; closes on pick, outside press or Escape at the
+ *  panel (the editor keeps its own Escape handling otherwise). Lives INSIDE
+ *  the contenteditable, so ProseMirror must not see its events: the panel
+ *  stops mousedown propagation (keeps the search input focusable) and the
+ *  grid buttons preventDefault to preserve the text selection.
+ *
+ *  # Mr. AI Acting on the Owner's Behalf */
+function CalloutEmojiPicker({
+	editor,
+	block,
+	onClose,
+}: {
+	editor: Editor;
+	block: { id: string; props: { emoji: string } };
+	onClose: () => void;
+}) {
+	const [query, setQuery] = useState("");
+	const panelRef = useRef<HTMLDivElement>(null);
+	const results = filterCalloutEmojis(query);
+
+	useEffect(() => {
+		const onDocMouseDown = (e: MouseEvent) => {
+			if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
+		};
+		document.addEventListener("mousedown", onDocMouseDown);
+		return () => document.removeEventListener("mousedown", onDocMouseDown);
+	}, [onClose]);
+
+	const pick = (emoji: string) => {
+		editor.updateBlock(block, { props: { emoji } });
+		onClose();
+	};
+
+	return (
+		<div
+			ref={panelRef}
+			role="dialog"
+			aria-label="Choose a callout emoji"
+			onMouseDown={(e) => e.stopPropagation()}
+			onKeyDown={(e) => {
+				if (e.key === "Escape") {
+					e.stopPropagation();
+					onClose();
+				}
+			}}
+			className="animate-in fade-in-0 zoom-in-95 absolute left-0 top-8 z-30 w-64 rounded-xl border border-border bg-popover p-2 shadow-lg duration-150"
+		>
+			<input
+				value={query}
+				onChange={(e) => setQuery(e.target.value)}
+				placeholder="Search emoji…"
+				aria-label="Search emoji"
+				autoFocus
+				className="mb-1.5 h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-[#0055dc]/30 dark:focus-visible:ring-[#5e94ff]/30"
+			/>
+			<div className="grid max-h-48 grid-cols-8 gap-0.5 overflow-y-auto" role="listbox">
+				{results.slice(0, EMOJI_RENDER_CAP).map((emoji) => (
+					<button
+						key={emoji}
+						type="button"
+						role="option"
+						aria-selected={emoji === block.props.emoji}
+						contentEditable={false}
+						onMouseDown={(e) => e.preventDefault()}
+						onClick={() => pick(emoji)}
+						className={
+							"flex h-7 w-7 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 dark:hover:bg-white/10 " +
+							(emoji === block.props.emoji ? "bg-[#0055dc]/10 dark:bg-[#5e94ff]/15" : "")
+						}
+					>
+						{emoji}
+					</button>
+				))}
+				{results.length > EMOJI_RENDER_CAP && (
+					<p className="col-span-8 py-1.5 text-center text-[10px] text-muted-foreground">
+						{results.length.toLocaleString()} matches — keep typing to narrow
+					</p>
+				)}
+				{results.length === 0 && (
+					<p className="col-span-8 py-3 text-center text-xs text-muted-foreground">
+						No emoji found
+					</p>
+				)}
+			</div>
+		</div>
+	);
+}
+
+const calloutBlockSpec = createReactBlockSpec(
+	{
+		type: "callout",
+		propSchema: { emoji: { default: CALLOUT_DEFAULT_EMOJI } },
+		content: "inline",
+	},
+	{
+		render: ({ block, editor, contentRef }) => {
+			const emoji = block.props.emoji || CALLOUT_DEFAULT_EMOJI;
+			// # Mr. AI Acting on the Owner's Behalf
+			// The chip opens a searchable emoji picker (any emoji, not a
+			// fixed cycle); the card itself is neutral Notion-gray.
+			const [pickerOpen, setPickerOpen] = useState(false);
+			return (
+				<div data-callout className="relative">
+					<div className="my-1 flex gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2 dark:bg-muted/20">
+						<button
+							type="button"
+							contentEditable={false}
+							aria-label="Change callout emoji"
+							aria-haspopup="dialog"
+							aria-expanded={pickerOpen}
+							title="Change the callout emoji"
+							onMouseDown={(e) => e.preventDefault()}
+							onClick={() => setPickerOpen((v) => !v)}
+							className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:hover:bg-white/10 dark:focus-visible:ring-[#5e94ff]/40"
+						>
+							{emoji}
+						</button>
+						<div ref={contentRef} className="flex-1 text-sm leading-relaxed" />
+					</div>
+					{pickerOpen && (
+						<CalloutEmojiPicker
+							editor={editor as unknown as Editor}
+							block={block}
+							onClose={() => setPickerOpen(false)}
+						/>
+					)}
+				</div>
+			);
+		},
+		toExternalHTML: ({ block, contentRef }) => (
+			<blockquote>
+				{block.props.emoji || CALLOUT_DEFAULT_EMOJI}&nbsp;
+				<div ref={contentRef} />
+			</blockquote>
+		),
+		parse: (element) => {
+			if (element.tagName !== "BLOCKQUOTE") return undefined;
+			const match = CALLOUT_EMOJI_PREFIX_RE.exec(element.textContent?.trimStart() ?? "");
+			if (!match) return undefined;
+			stripCalloutEmoji(element, match[1]);
+			return { emoji: match[1] };
+		},
+	},
+)();
+
+/** Render TeX to KaTeX HTML for editor previews. Same posture as the read
+ *  side's rehype-katex: trust off (no \href/\htmlData), errors render as red
+ *  source instead of throwing. Empty source → null so callers show their own
+ *  ghost state. */
+function katexPreviewHtml(tex: string, displayMode: boolean): string | null {
+	const source = tex.trim();
+	if (!source) return null;
+	try {
+		return katex.renderToString(source, {
+			displayMode,
+			throwOnError: false,
+			trust: false,
+			strict: false,
+		});
+	} catch {
+		return null;
+	}
+}
+
+/** Shared source editor for both equation flavors: mono textarea + live
+ *  KaTeX preview beneath, Notion's "formula editor" layout. Commits on every
+ *  keystroke so the markdown bridge (and the wire) stay current; the local
+ *  draft keeps the caret stable while block props re-render. */
+function EquationSourceEditor({
+	value,
+	onChange,
+	onDone,
+	displayMode,
+	autoFocus,
+	ariaLabel,
+}: {
+	value: string;
+	onChange: (tex: string) => void;
+	onDone: () => void;
+	displayMode: boolean;
+	autoFocus?: boolean;
+	ariaLabel: string;
+}) {
+	const preview = katexPreviewHtml(value, displayMode);
+	return (
+		// PM must not see events aimed at the source editor (the emoji
+		// picker and code-block <select> use the same isolation).
+		<div
+			contentEditable={false}
+			className="equation-source"
+			onMouseDown={(e) => e.stopPropagation()}
+			onClick={(e) => e.stopPropagation()}
+			onKeyDown={(e) => {
+				e.stopPropagation();
+				if (e.key === "Escape") onDone();
+			}}
+		>
+			<textarea
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				onKeyDown={(e) => {
+					e.stopPropagation();
+					if (e.key === "Escape") onDone();
+				}}
+				aria-label={ariaLabel}
+				autoFocus={autoFocus}
+				spellCheck={false}
+				rows={displayMode ? 3 : 1}
+				placeholder="e = mc^2"
+			/>
+			<div className="equation-source-preview" data-empty={!preview}>
+				{preview ? (
+					<span dangerouslySetInnerHTML={{ __html: preview }} />
+				) : (
+					<span className="equation-ghost">Type TeX above — the preview renders here</span>
+				)}
+			</div>
+			<div className="equation-source-footer">
+				<span>TeX · KaTeX</span>
+				<button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onDone}>
+					Done
+				</button>
+			</div>
+		</div>
+	);
+}
+
+/** Block equation (Notion's "Block equation"): a standalone rendered formula.
+ *  Exports as `$$ … $$` — the read side's remark-math + KaTeX pipeline already
+ *  renders that, and BlockNote's markdown converter maps the emitted <math>
+ *  annotation markup straight back to $$ dollars. */
+const blockEquationSpec = createReactBlockSpec(
+	{
+		type: "blockEquation",
+		propSchema: { tex: { default: "" } },
+		content: "none",
+	},
+	{
+		render: ({ block, editor }) => {
+			return (
+				<BlockEquationView
+					block={block as { id: string; props: { tex: string } }}
+					editor={editor as unknown as Editor}
+				/>
+			);
+		},
+		toExternalHTML: ({ block }) => (
+			<math>
+				<annotation encoding="application/x-tex">{block.props.tex ?? ""}</annotation>
+			</math>
+		),
+		parse: (element) => {
+			if (element.tagName !== "MATH") return undefined;
+			const tex = (
+				element.querySelector('annotation[encoding="application/x-tex"]')?.textContent ??
+				element.textContent ??
+				""
+			).trim();
+			return { tex };
+		},
+	},
+)();
+
+function BlockEquationView({
+	block,
+	editor,
+}: {
+	block: { id: string; props: { tex: string } };
+	editor: Editor;
+}) {
+	const tex = block.props.tex ?? "";
+	const [editing, setEditing] = useState(false);
+	// Stays true from the first keystroke until Done — otherwise the
+	// empty-tex rule would close the panel mid-typing (every commit
+	// makes tex non-empty).
+	const [sessionOpen, setSessionOpen] = useState(false);
+	const [draft, setDraft] = useState(tex);
+	// Notion inserts an empty equation with its editor open — an empty
+	// tex prop renders the source editor, no per-block state plumbing.
+	const open = editing || sessionOpen || tex.trim() === "";
+	const commit = (next: string) => {
+		setSessionOpen(true);
+		setDraft(next);
+		editor.updateBlock(block, { props: { tex: next } });
+	};
+	const done = () => {
+		setEditing(false);
+		setSessionOpen(false);
+	};
+	if (open) {
+		return (
+			<EquationSourceEditor
+				value={draft}
+				onChange={commit}
+				onDone={done}
+				displayMode
+				autoFocus={editing}
+				ariaLabel="Equation TeX source"
+			/>
+		);
+	}
+	const html = katexPreviewHtml(tex, true);
+	return (
+		// Click anywhere on the rendered formula to edit its source.
+		<div
+			contentEditable={false}
+			className="equation-display"
+			role="button"
+			tabIndex={0}
+			aria-label="Edit equation"
+			onClick={() => {
+				setDraft(tex);
+				setEditing(true);
+			}}
+			onKeyDown={(e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					setDraft(tex);
+					setEditing(true);
+				}
+			}}
+			dangerouslySetInnerHTML={html ? { __html: html } : undefined}
+		/>
+	);
+}
+
+/** Inline equation (Notion's "Inline equation"): an atom chip inside the text
+ *  flow. Renders live next to its own source input while editing; exports as
+ *  `$ … $`, which recipients' remark-math pipeline renders. Manually typed
+ *  `$x^2$` text is left alone — it still renders on the read side. */
+const inlineEquationSpec = createReactInlineContentSpec(
+	{
+		type: "inlineEquation",
+		propSchema: { tex: { default: "" } },
+		content: "none",
+	},
+	{
+		render: ({ inlineContent, updateInlineContent }) => (
+			<InlineEquationView
+				tex={(inlineContent.props as { tex: string }).tex ?? ""}
+				update={(next) => updateInlineContent({ type: "inlineEquation", props: { tex: next } })}
+			/>
+		),
+		toExternalHTML: ({ inlineContent }) => (
+			<math>
+				<annotation encoding="application/x-tex">
+					{(inlineContent.props as { tex: string }).tex ?? ""}
+				</annotation>
+			</math>
+		),
+	},
+);
+
+function InlineEquationView({ tex, update }: { tex: string; update: (tex: string) => void }) {
+	const [editing, setEditing] = useState(false);
+	// Keeps the input open from the first keystroke until Enter/Escape or
+	// blur — the empty-tex rule alone would close it on every commit.
+	const [sessionOpen, setSessionOpen] = useState(false);
+	const [draft, setDraft] = useState(tex);
+	const open = editing || sessionOpen || tex.trim() === "";
+	const done = () => {
+		setEditing(false);
+		setSessionOpen(false);
+	};
+	const html = katexPreviewHtml(tex, false);
+	return (
+		<span className="inline-equation" data-inline-equation contentEditable={false}>
+			{html ? (
+				<span
+					className="inline-equation-render"
+					role="button"
+					tabIndex={0}
+					aria-label="Edit inline equation"
+					onClick={() => {
+						setDraft(tex);
+						setEditing(true);
+					}}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" || e.key === " ") {
+							e.preventDefault();
+							setDraft(tex);
+							setEditing(true);
+						}
+					}}
+					dangerouslySetInnerHTML={{ __html: html }}
+				/>
+			) : (
+				!open && <span className="equation-ghost">New equation</span>
+			)}
+			{open && (
+				<input
+					type="text"
+					value={draft}
+					onChange={(e) => {
+						setSessionOpen(true);
+						setDraft(e.target.value);
+						update(e.target.value);
+					}}
+					onKeyDown={(e) => {
+						e.stopPropagation();
+						if (e.key === "Enter" || e.key === "Escape") {
+							e.preventDefault();
+							done();
+						}
+					}}
+					onBlur={done}
+					onMouseDown={(e) => e.stopPropagation()}
+					onClick={(e) => e.stopPropagation()}
+					aria-label="Inline equation TeX source"
+					autoFocus={editing}
+					spellCheck={false}
+					placeholder="e = mc^2"
+					className="inline-equation-input"
+				/>
+			)}
+		</span>
+	);
+}
+
+const schema = BlockNoteSchema.create({
+	blockSpecs: {
+		...keptBlockSpecs,
+		codeBlock: codeBlockSpec,
+		callout: calloutBlockSpec,
+		blockEquation: blockEquationSpec,
+	},
+	inlineContentSpecs: {
+		...defaultInlineContentSpecs,
+		inlineEquation: inlineEquationSpec,
+	},
+});
 
 type Editor = BlockNoteEditorType<
 	typeof schema.blockSchema,
@@ -107,12 +663,485 @@ type Editor = BlockNoteEditorType<
 	typeof schema.styleSchema
 >;
 
+/** FileReader as a promise — shared by the paste, drop and slash-insert
+ *  image paths (DRY). */
+function fileToDataUrl(file: File): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+		reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
+		reader.readAsDataURL(file);
+	});
+}
+
+/** Register a local image as an attachment and insert it at the cursor.
+ *  One code path for paste, drop and the slash-menu insert. */
+async function insertLocalImage(
+	editor: Editor,
+	file: File,
+	register: OnNewImageDataUrl,
+): Promise<void> {
+	const dataUrl = await fileToDataUrl(file);
+	const stored = register(dataUrl, file.name);
+	const cursor = editor.getTextCursorPosition().block;
+	editor.insertBlocks(
+		[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
+		cursor,
+		"after",
+	);
+}
+
+/** Device-upload "Insert image" — replaces the default Image item whose
+ *  URL-embed panel could put remote https images on the wire that
+ *  recipients then refuse to render. */
+const insertImageSlashItem = (pickImage: () => void): DefaultReactSuggestionItem => ({
+	title: "Insert image",
+	subtext: "Upload an image from this device",
+	aliases: ["image", "picture", "photo", "upload"],
+	group: "Media",
+	icon: <ImagePlus size={18} />,
+	onItemClick: pickImage,
+});
+
+/** Callout slash item — turns the current block into the note card.
+ *  The icon chip on the card opens the emoji picker (Notion's change-icon
+ *  affordance), so a single menu item covers all callout flavors. */
+const calloutSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
+	title: "Callout",
+	subtext: "Make writing stand out.",
+	aliases: ["callout", "note", "highlight", "info", "warning"],
+	group: "Basic blocks",
+	icon: <Lightbulb size={18} />,
+	onItemClick: () => insertOrUpdateBlockForSlashMenu(editor, { type: "callout" }),
+});
+
+/** Inline equation slash item — drops an atom chip at the cursor; the chip
+ *  renders live from its own source input. Sigma is Notion's icon for both
+ *  equation entries. */
+const inlineEquationSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
+	title: "Inline equation",
+	subtext: "Add a TeX or KaTeX expression.",
+	aliases: [
+		"inline equation",
+		"inline math",
+		"math",
+		"equation",
+		"latex",
+		"tex",
+		"formula",
+		"katex",
+	],
+	group: "Advanced",
+	icon: <Sigma size={18} />,
+	onItemClick: () =>
+		editor.insertInlineContent([{ type: "inlineEquation", props: { tex: "" } }, " "]),
+});
+
+/** Block equation slash item — Notion inserts an empty equation with its
+ *  source editor open; an empty tex prop renders exactly that. */
+const blockEquationSlashItem = (editor: Editor): DefaultReactSuggestionItem => ({
+	title: "Block equation",
+	subtext: "Display a standalone TeX or KaTeX expression.",
+	aliases: ["block equation", "math", "equation", "latex", "tex", "formula", "katex"],
+	group: "Advanced",
+	icon: <Sigma size={18} />,
+	onItemClick: () =>
+		insertOrUpdateBlockForSlashMenu(editor, { type: "blockEquation", props: { tex: "" } }),
+});
+
+/** Notion's icon set for the dictionary-renamed defaults (the two custom
+ *  items carry their own lucide icons). Keys are the titles after the
+ *  Notion copy pass in the editor dictionary. */
+const DEFAULT_ITEM_ICONS: Record<string, ReactElement> = {
+	Text: <AlignLeft size={20} />,
+	"Bulleted list": <List size={20} />,
+	"Numbered list": <ListOrdered size={20} />,
+	"To-do list": <ListTodo size={20} />,
+	"Toggle list": <ListCollapse size={20} />,
+	"Heading 1": <Heading1 size={20} />,
+	"Heading 2": <Heading2 size={20} />,
+	"Heading 3": <Heading3 size={20} />,
+	"Heading 4": <Heading4 size={20} />,
+	"Heading 5": <Heading5 size={20} />,
+	"Heading 6": <Heading6 size={20} />,
+	"Toggle Heading 1": <Heading1 size={20} />,
+	"Toggle Heading 2": <Heading2 size={20} />,
+	"Toggle Heading 3": <Heading3 size={20} />,
+	"Toggle Heading 4": <Heading4 size={20} />,
+	"Toggle Heading 5": <Heading5 size={20} />,
+	"Toggle Heading 6": <Heading6 size={20} />,
+	Quote: <TextQuote size={20} />,
+	Divider: <Minus size={20} />,
+	Code: <Code size={20} />,
+	Table: <Table size={20} />,
+	Emoji: <Smile size={20} />,
+};
+
+/** Slash menu = defaults (minus the URL-embed image trap) + insert-image +
+ *  callout + the two equation entries. The title check matches the shipped
+ *  English dictionary. Items are stable-sorted by group so each group renders
+ *  exactly one header (custom items appended blindly produce duplicate
+ *  "Basic blocks"/"Advanced" sections — and React duplicate-key errors).
+ *
+ *  Groups follow Notion's real slash menu: Basic blocks, Media (Code and
+ *  Emoji live there in Notion, not in Basic blocks/Others), Advanced and the
+ *  owner's own "Quotes" group ranked dead last.
+ *
+ *  Owner-specified order (annotation round): bullet points, numbers, todo,
+ *  toggle, then all the other basic stuff — kept via GROUP_ITEM_ORDER, which
+ *  also carries each group's Notion walking order for the new entries. */
+const GROUP_ORDER = ["Basic blocks", "Media", "Advanced", "Quotes"];
+
+/** Group rank for the stable sort; unknown groups sort last (before only
+ *  undefined ones). */
+const rank = (group: string | undefined): number => {
+	const idx = group ? GROUP_ORDER.indexOf(group) : -1;
+	return idx === -1 ? GROUP_ORDER.length : idx;
+};
+
+/** Walking order inside each group: the owner's list-first rule for Basic
+ *  blocks, then Notion's order for the rest (unknown items keep their
+ *  dictionary order after the known ones). */
+const GROUP_ITEM_ORDER: Record<string, string[]> = {
+	"Basic blocks": [
+		"Bulleted list",
+		"Numbered list",
+		"To-do list",
+		"Toggle list",
+		"Text",
+		"Heading 1",
+		"Heading 2",
+		"Heading 3",
+		"Callout",
+		"Table",
+		"Divider",
+	],
+	Media: ["Insert image", "Code", "Emoji"],
+	Advanced: [
+		"Block equation",
+		"Inline equation",
+		"Toggle Heading 1",
+		"Toggle Heading 2",
+		"Toggle Heading 3",
+		"Heading 4",
+		"Heading 5",
+		"Heading 6",
+	],
+	Quotes: ["Quote"],
+};
+const itemRank = (group: string | undefined, title: string): number => {
+	const list = group ? GROUP_ITEM_ORDER[group] : undefined;
+	const idx = list ? list.indexOf(title) : -1;
+	return idx === -1 ? (list?.length ?? 0) : idx;
+};
+
+function getSlashMenuItems(editor: Editor, query: string, pickImage: () => void) {
+	const defaults = getDefaultReactSlashMenuItems(editor).filter((item) => item.title !== "Image");
+	const items: DefaultReactSuggestionItem[] = [
+		...defaults,
+		insertImageSlashItem(pickImage),
+		calloutSlashItem(editor),
+		inlineEquationSlashItem(editor),
+		blockEquationSlashItem(editor),
+	]
+		.map((item): DefaultReactSuggestionItem =>
+			// Notion's icon set + "+"-joined shortcut hints on the
+			// renamed defaults.
+			({
+				...item,
+				...(DEFAULT_ITEM_ICONS[item.title] ? { icon: DEFAULT_ITEM_ICONS[item.title] } : {}),
+				...(item.badge ? { badge: item.badge.replace(/-/g, "+") } : {}),
+			}),
+		)
+		.sort((a, b) => {
+			const byGroup = rank(a.group) - rank(b.group);
+			if (byGroup !== 0) return byGroup;
+			return itemRank(a.group, a.title) - itemRank(b.group, b.title);
+		});
+	return filterSuggestionItems(items, query);
+}
+
+/** Formatting toolbar minus ColorStyleButton: text/background colors die in
+ *  the markdown bridge, so the picker advertised styling recipients would
+ *  never see. Inline code style is kept — it round-trips as backticks. */
+function ComposerFormattingToolbar() {
+	return (
+		<FormattingToolbar>
+			<BlockTypeSelect key={"blockTypeSelect"} />
+			<BasicTextStyleButton basicTextStyle="bold" key="boldStyleButton" />
+			<BasicTextStyleButton basicTextStyle="italic" key="italicStyleButton" />
+			<BasicTextStyleButton basicTextStyle="underline" key="underlineStyleButton" />
+			<BasicTextStyleButton basicTextStyle="strike" key="strikeStyleButton" />
+			<BasicTextStyleButton basicTextStyle="code" key="codeStyleButton" />
+			<TextAlignButton textAlignment="left" key="textAlignLeftButton" />
+			<TextAlignButton textAlignment="center" key="textAlignCenterButton" />
+			<NestBlockButton key="nestBlockButton" />
+			<UnnestBlockButton key="unnestBlockButton" />
+			<CreateLinkButton key="createLinkButton" />
+		</FormattingToolbar>
+	);
+}
+
+/** Compact toolbar for the mobile bottom bar. The desktop floating toolbar
+ *  clips off-viewport at phone widths (the link button falls off at 390px),
+ *  so below the sm breakpoint we dock the same actions to the bottom of the
+ *  screen instead — horizontally scrollable, above the virtual keyboard.
+ *  Alignment buttons are the cut: they need a visual anchor mobile users
+ *  don't have mid-typing, and the slash menu covers the rest. */
+function ComposerMobileFormattingToolbar() {
+	return (
+		<FormattingToolbar>
+			<BlockTypeSelect key={"blockTypeSelect"} />
+			<BasicTextStyleButton basicTextStyle="bold" key="boldStyleButton" />
+			<BasicTextStyleButton basicTextStyle="italic" key="italicStyleButton" />
+			<BasicTextStyleButton basicTextStyle="underline" key="underlineStyleButton" />
+			<BasicTextStyleButton basicTextStyle="code" key="codeStyleButton" />
+			<NestBlockButton key="nestBlockButton" />
+			<UnnestBlockButton key="unnestBlockButton" />
+			<CreateLinkButton key="createLinkButton" />
+		</FormattingToolbar>
+	);
+}
+
+/** Match the Tailwind sm breakpoint — the point where the floating toolbar's
+ *  widest row stops fitting the viewport. Listens live, so a window drag
+ *  across the threshold swaps the controllers without a reload. */
+function usePrefersMobileToolbar(): boolean {
+	const [mobile, setMobile] = useState(
+		() => typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches,
+	);
+	useEffect(() => {
+		const mq = window.matchMedia("(max-width: 640px)");
+		const onChange = (e: MediaQueryListEvent) => setMobile(e.matches);
+		mq.addEventListener("change", onChange);
+		return () => mq.removeEventListener("change", onChange);
+	}, []);
+	return mobile;
+}
+
+/** Hover "Copy" chip for code blocks. Fixed-positioned from the block's
+ *  bounding rect; hidden on scroll (cheap, always correct). */
+function useCodeCopyChip(viewRef: React.RefObject<HTMLDivElement | null>) {
+	const [chip, setChip] = useState<{ top: number; left: number; text: string } | null>(null);
+	const [copied, setCopied] = useState(false);
+
+	useEffect(() => {
+		const root = viewRef.current;
+		if (!root) return;
+		const findBlock = (target: EventTarget | null) =>
+			target instanceof HTMLElement
+				? target.closest<HTMLElement>('[data-content-type="codeBlock"]')
+				: null;
+		const onOver = (e: MouseEvent) => {
+			const block = findBlock(e.target);
+			if (!block) {
+				setChip(null);
+				return;
+			}
+			const rect = block.getBoundingClientRect();
+			setChip({ top: rect.top + 6, left: rect.right - 34, text: block.textContent ?? "" });
+		};
+		const hide = () => setChip(null);
+		root.addEventListener("mouseover", onOver);
+		window.addEventListener("scroll", hide, true);
+		return () => {
+			root.removeEventListener("mouseover", onOver);
+			window.removeEventListener("scroll", hide, true);
+		};
+	}, [viewRef]);
+
+	const copy = useCallback(() => {
+		if (!chip) return;
+		void navigator.clipboard.writeText(chip.text).then(() => {
+			setCopied(true);
+			setTimeout(() => setCopied(false), 1200);
+		});
+	}, [chip]);
+
+	const chipElement = chip ? (
+		<button
+			type="button"
+			onClick={copy}
+			aria-label="Copy code"
+			title="Copy code"
+			className="fixed z-30 flex size-7 items-center justify-center rounded-md border border-border bg-background/95 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+			style={{ top: chip.top, left: chip.left }}
+		>
+			{copied ? (
+				<Check aria-hidden className="size-3.5 text-emerald-600" />
+			) : (
+				<Copy aria-hidden className="size-3.5" />
+			)}
+		</button>
+	) : null;
+
+	return chipElement;
+}
+
+/** Flatten parsed block content to plain text (code blocks carry styled
+ *  text segments; links flatten to their label). */
+function blockContentToText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			if (typeof part === "string") return part;
+			if (part.type === "text") return part.text ?? "";
+			if (part.type === "link") return blockContentToText(part.content);
+			return "";
+		})
+		.join("");
+}
+
+/** Convert Notion-style block math ($$ … $$ fences) into ```math code fences
+ *  before handing markdown to BlockNote's parser, which has no remark-math:
+ *  fences land as codeBlock(language=math) and promoteBridgeBlocks turns them
+ *  into rendered block equations. Fenced code blocks are skipped so a $$ line
+ *  inside a code sample never becomes math; a $$ without its closing partner
+ *  still closes the generated fence so the parser can't run away. Inline
+ *  $…$ text is left untouched — the read side renders it as-is, and editing
+ *  shows the honest source. */
+function rewriteBlockMathToFences(markdown: string): string {
+	const out: string[] = [];
+	let inFence = false;
+	let fenceMarker = "";
+	let mathOpen = false;
+	for (const line of markdown.split("\n")) {
+		const trimmed = line.trim();
+		const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
+		if (!mathOpen && fenceMatch) {
+			if (!inFence) {
+				inFence = true;
+				fenceMarker = fenceMatch[1];
+			} else if (trimmed.startsWith(fenceMarker)) {
+				inFence = false;
+				fenceMarker = "";
+			}
+			out.push(line);
+			continue;
+		}
+		if (inFence) {
+			out.push(line);
+			continue;
+		}
+		const singleLine = /^\$\$(.+?)\$\$$/.exec(trimmed);
+		if (singleLine) {
+			out.push("```math", singleLine[1].trim(), "```");
+			continue;
+		}
+		if (trimmed === "$$") {
+			mathOpen = !mathOpen;
+			out.push(mathOpen ? "```math" : "```");
+			continue;
+		}
+		out.push(line);
+	}
+	if (mathOpen) out.push("```");
+	return out.join("\n");
+}
+
+/** Inline math matcher for the parse path — mirrors remark-math's own
+ *  inline rules: content neither starts nor ends with whitespace, no $ or
+ *  newline inside, the closing $ is not followed by a digit (the currency
+ *  heuristic: "$5 and $10" stays money, not math), and the opening $ is not
+ *  escaped (\$). Matching remark's rules keeps the editor and the read side
+ *  in lockstep: what promotes here is exactly what recipients render. */
+const INLINE_MATH_RE = /(?<!\\)\$([^$\s](?:[^$]*[^\s$])?)\$(?!\d)/g;
+/** Stateless twin for .test() — a /g regex's lastIndex would leak between
+ *  calls and silently skip matches. */
+const INLINE_MATH_TEST_RE = new RegExp(INLINE_MATH_RE.source);
+
+/** Quote blocks that carry an emoji prefix must become callout blocks, and
+ *  ```math code fences must become block equations.
+ *
+ *  WHY: ProseMirror tries parse rules in schema order, and the built-in
+ *  `quote` block (registered before our custom `callout`) claims every
+ *  <blockquote> first — the callout's own `parse` never runs on the
+ *  markdown→blocks path. Code fences always parse as codeBlock, so a ```math
+ *  fence (the pre-parse shape of `$$ … $$`, see rewriteBlockMathToFences)
+ *  needs the same post-parse promotion into the custom block. Without this
+ *  pass, every remount of the editor (expand/collapse the composer, switch
+ *  engines, template apply) silently degraded callouts to plain quotes — the
+ *  "callouts look different big mode vs small mode" report: the block
+ *  literally changed TYPE.
+ *
+ *  The pass walks the parsed tree (recursing into children) and rewrites
+ *  emoji-prefixed quotes into callouts, moving the emoji into the `emoji`
+ *  prop so the card doesn't render the icon twice, and math-fence code
+ *  blocks into blockEquations, moving the fence body into the `tex` prop.
+ *  Plain quotes and ordinary code pass through untouched. */
+function promoteBridgeBlocks(blocks: Editor["document"]): Editor["document"] {
+	return blocks.map((block) => {
+		const withChildren =
+			"children" in block && Array.isArray(block.children)
+				? { ...block, children: promoteBridgeBlocks(block.children as Editor["document"]) }
+				: block;
+		let current = withChildren;
+
+		if (current.type === "codeBlock" && current.props.language === "math") {
+			return {
+				id: current.id,
+				type: "blockEquation" as const,
+				props: { tex: blockContentToText(current.content).trim() },
+			} as Editor["document"][number];
+		}
+
+		// Inline $…$ in rich-text content (paragraphs, lists, quotes,
+		// callouts) promotes back into inline-equation atoms. Code-styled
+		// text stays literal — backtick content is source, not math.
+		if (Array.isArray(current.content) && current.content.length > 0) {
+			const content = current.content;
+			// (cast) The content union makes TS narrowing fight the
+			// custom inline node; the shape checks below are exact.
+			const isMathText = (seg: unknown): seg is { text: string } =>
+				(seg as { type?: string }).type === "text" &&
+				!(seg as { styles?: { code?: boolean } }).styles?.code &&
+				INLINE_MATH_TEST_RE.test((seg as { text?: string }).text ?? "");
+			if (content.some(isMathText)) {
+				const next: unknown[] = [];
+				for (const seg of content) {
+					if (!isMathText(seg)) {
+						next.push(seg);
+						continue;
+					}
+					let last = 0;
+					for (const m of seg.text.matchAll(INLINE_MATH_RE)) {
+						const start = m.index ?? 0;
+						if (start > last) next.push({ ...(seg as object), text: seg.text.slice(last, start) });
+						next.push({ type: "inlineEquation", props: { tex: m[1] } });
+						last = start + m[0].length;
+					}
+					if (last < seg.text.length) next.push({ ...(seg as object), text: seg.text.slice(last) });
+				}
+				current = { ...current, content: next } as typeof current;
+			}
+		}
+
+		if (current.type !== "quote") return current;
+		const content = current.content;
+		if (!Array.isArray(content) || content.length === 0) return current;
+		const first = content[0];
+		if (first.type !== "text") return current;
+		const match = CALLOUT_EMOJI_PREFIX_RE.exec(first.text);
+		if (!match) return current;
+		const restText = first.text.slice(match[0].length);
+		const restContent = [...(restText ? [{ ...first, text: restText }] : []), ...content.slice(1)];
+		return {
+			id: current.id,
+			type: "callout" as const,
+			props: { emoji: match[1] },
+			content: restContent,
+		} as Editor["document"][number];
+	});
+}
+
 export default function BlockNoteEditor({
 	value,
 	onChange,
 	files,
 	onNewImageDataUrl,
 	onFilesDropped,
+	placeholder,
 	expanded = false,
 }: {
 	value: string;
@@ -125,7 +1154,7 @@ export default function BlockNoteEditor({
 	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
-	 *  # Mr. AI Acting on s183173's Behalf
+	 *  # Mr. AI Acting on the Owner's Behalf
 	 *  the wrapper fills the overlay through an h-full + flex chain and
 	 *  the fixed composer min-heights are dropped so BlockNote grows with
 	 *  the viewport (.bn-container owns the scrolling). */
@@ -149,6 +1178,18 @@ export default function BlockNoteEditor({
 	// name (aria-input-field-name) and a label on a role-prohibited element
 	// (aria-prohibited-attr). Mount-only — the element is created once.
 	const viewRef = useRef<HTMLDivElement>(null);
+	// Full-screen overlay just opened: move focus into the editor so
+	// keyboard users are not left behind the aria-modal surface (the
+	// portal renders outside the tab panel, so focus must be explicit).
+	// Re-runs on every expand; a collapse keeps focus where the user
+	// clicked (the overlay unmounts entirely).
+	useEffect(() => {
+		if (!expanded) return;
+		const id = requestAnimationFrame(() => {
+			viewRef.current?.querySelector<HTMLElement>(".bn-editor")?.focus();
+		});
+		return () => cancelAnimationFrame(id);
+	}, [expanded]);
 	useEffect(() => {
 		const el = viewRef.current?.querySelector<HTMLElement>(".tiptap");
 		if (el) {
@@ -158,8 +1199,122 @@ export default function BlockNoteEditor({
 		}
 	}, []);
 
+	// Hidden image picker for the slash-menu "Insert image" item. The
+	// change handler lives below the editor creation (it needs the editor).
+	const imageInputRef = useRef<HTMLInputElement>(null);
+	const pickImage = useCallback(() => imageInputRef.current?.click(), []);
+
 	const editor: Editor = useCreateBlockNote({
 		schema,
+		tables: { headers: true },
+		dictionary: {
+			...en,
+			placeholders: {
+				...en.placeholders,
+				// Empty + unfocused composer hint (the per-tab copy).
+				emptyDocument: placeholder ?? en.placeholders.default,
+			},
+			// Notion's slash-menu copy: the titles, one-liners and grouping
+			// users know from Notion's editor (headings and tables fold into
+			// "Basic blocks", toggle headings into "Advanced"). The default
+			// items are built from this dictionary, so the rename flows into
+			// the menu, the filter and the alias matching in one place. Quote
+			// keeps its own "Quotes" group ranked last (owner order).
+			slash_menu: {
+				...en.slash_menu,
+				paragraph: {
+					...en.slash_menu.paragraph,
+					title: "Text",
+					subtext: "Add a simple text block.",
+					aliases: [...en.slash_menu.paragraph.aliases, "text", "plain"],
+				},
+				bullet_list: {
+					...en.slash_menu.bullet_list,
+					title: "Bulleted list",
+					subtext: "Create a simple bulleted list.",
+				},
+				numbered_list: {
+					...en.slash_menu.numbered_list,
+					title: "Numbered list",
+					subtext: "Create a list with numbering.",
+				},
+				check_list: {
+					...en.slash_menu.check_list,
+					title: "To-do list",
+					subtext: "Track tasks with a checkbox.",
+				},
+				toggle_list: {
+					...en.slash_menu.toggle_list,
+					title: "Toggle list",
+					subtext: "Hide details inside.",
+				},
+				heading: {
+					...en.slash_menu.heading,
+					subtext: "Add a big section heading.",
+					group: "Basic blocks",
+				},
+				heading_2: {
+					...en.slash_menu.heading_2,
+					subtext: "Add a medium section heading.",
+					group: "Basic blocks",
+				},
+				heading_3: {
+					...en.slash_menu.heading_3,
+					subtext: "Add a small section heading.",
+					group: "Basic blocks",
+				},
+				heading_4: {
+					...en.slash_menu.heading_4,
+					subtext: "Add a minor subsection heading.",
+					group: "Advanced",
+				},
+				heading_5: {
+					...en.slash_menu.heading_5,
+					subtext: "Add a small subsection heading.",
+					group: "Advanced",
+				},
+				heading_6: {
+					...en.slash_menu.heading_6,
+					subtext: "Add the lowest-level heading.",
+					group: "Advanced",
+				},
+				toggle_heading: {
+					...en.slash_menu.toggle_heading,
+					subtext: "Add a collapsible section heading.",
+					group: "Advanced",
+				},
+				toggle_heading_2: {
+					...en.slash_menu.toggle_heading_2,
+					subtext: "Add a collapsible key section heading.",
+					group: "Advanced",
+				},
+				toggle_heading_3: {
+					...en.slash_menu.toggle_heading_3,
+					subtext: "Add a collapsible subsection heading.",
+					group: "Advanced",
+				},
+				quote: {
+					...en.slash_menu.quote,
+					subtext: "Capture a quote.",
+					group: "Quotes",
+				},
+				code_block: {
+					...en.slash_menu.code_block,
+					title: "Code",
+					subtext: "Capture a code snippet.",
+					group: "Media",
+				},
+				table: {
+					...en.slash_menu.table,
+					subtext: "Add a simple table.",
+					group: "Basic blocks",
+				},
+				emoji: {
+					...en.slash_menu.emoji,
+					group: "Media",
+				},
+			},
+		},
 		pasteHandler: ({ event, defaultPasteHandler }) => {
 			const items = event.clipboardData?.items;
 			if (!items) return defaultPasteHandler();
@@ -199,29 +1354,34 @@ export default function BlockNoteEditor({
 			// reconcile below rewrites the data URL to an envelope marker.
 			void (async () => {
 				for (const f of imageFiles) {
-					const dataUrl = await new Promise<string>((resolve, reject) => {
-						const reader = new FileReader();
-						reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-						reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
-						reader.readAsDataURL(f);
-					});
-					let stored: EnvelopeFile;
 					try {
-						stored = latest.current.onNewImageDataUrl(dataUrl);
+						await insertLocalImage(editor, f, (dataUrl, suggestedName) =>
+							latest.current.onNewImageDataUrl(dataUrl, suggestedName),
+						);
 					} catch {
 						continue;
 					}
-					const cursor = editor.getTextCursorPosition().block;
-					editor.insertBlocks(
-						[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
-						cursor,
-						"after",
-					);
 				}
 			})();
 			return true;
 		},
 	});
+
+	// Image picker change handler — after the editor exists.
+	const handleImagePick = useCallback(
+		(e: React.ChangeEvent<HTMLInputElement>) => {
+			const picked = Array.from(e.target.files ?? []).filter((f) => f.type.startsWith("image/"));
+			e.target.value = ""; // re-picking the same file must re-fire change
+			for (const f of picked) {
+				void insertLocalImage(editor, f, (dataUrl, suggestedName) =>
+					latest.current.onNewImageDataUrl(dataUrl, suggestedName),
+				).catch(() => {
+					// A skipped image is better than a broken composer.
+				});
+			}
+		},
+		[editor],
+	);
 
 	// Value the editor currently reflects — guards the sync effect against
 	// feedback loops with our own onChange output.
@@ -232,10 +1392,11 @@ export default function BlockNoteEditor({
 	useEffect(() => {
 		if (syncedValue.current === value) return;
 		syncedValue.current = value;
-		const md = markersToDataUrls(value, latest.current.files);
+		const md = rewriteBlockMathToFences(markersToDataUrls(value, latest.current.files));
 		let blocks: Editor["document"] | undefined;
 		try {
 			blocks = editor.tryParseMarkdownToBlocks(md);
+			if (blocks && blocks.length > 0) blocks = promoteBridgeBlocks(blocks);
 		} catch {
 			blocks = undefined;
 		}
@@ -266,7 +1427,7 @@ export default function BlockNoteEditor({
 			}
 		});
 		return unsub;
-	}, [editor]);
+	}, [editor, value]);
 
 	// Round 18: file drops are consumed BY THE EDITOR — images insert
 	// inline blocks (paste parity) keeping their REAL filename via
@@ -288,24 +1449,13 @@ export default function BlockNoteEditor({
 		e.stopPropagation();
 		void (async () => {
 			for (const f of images) {
-				const dataUrl = await new Promise<string>((resolve, reject) => {
-					const reader = new FileReader();
-					reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-					reader.onerror = () => reject(reader.error ?? new Error("FileReader error"));
-					reader.readAsDataURL(f);
-				});
-				let stored: EnvelopeFile;
 				try {
-					stored = latest.current.onNewImageDataUrl(dataUrl, f.name);
+					await insertLocalImage(editor, f, (dataUrl, suggestedName) =>
+						latest.current.onNewImageDataUrl(dataUrl, suggestedName),
+					);
 				} catch {
 					continue;
 				}
-				const cursor = editor.getTextCursorPosition().block;
-				editor.insertBlocks(
-					[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
-					cursor,
-					"after",
-				);
 			}
 			// ALWAYS notify when the bridge exists — even with an EMPTY list
 			// (image-only drop): the parent resets its drag overlay on the
@@ -320,7 +1470,7 @@ export default function BlockNoteEditor({
 	// is selected by extending the browser's native selection from the
 	// first to the last intersecting block — copy/delete keep working.
 	//
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const [dragBox, setDragBox] = useState<{ x: number; y: number; w: number; h: number } | null>(
 		null,
 	);
@@ -384,8 +1534,13 @@ export default function BlockNoteEditor({
 		},
 		[selectRange],
 	);
+	const codeCopyChip = useCodeCopyChip(viewRef);
+	const mobileToolbar = usePrefersMobileToolbar();
+	// Keyboard offset: BlockNote's experimental controller tracks the
+	// virtual keyboard itself (VirtualKeyboard API + visualViewport
+	// fallback → --bn-mobile-keyboard-offset) — no custom listener needed.
 	const editorShell =
-		"overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
+		"animate-in fade-in duration-300 overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-colors focus-within:border-[#0055dc]/50 focus-within:ring-2 focus-within:ring-[#0055dc]/20 dark:focus-within:border-[#5e94ff]/50 dark:focus-within:ring-[#5e94ff]/20";
 	return (
 		<div
 			ref={viewRef}
@@ -395,10 +1550,20 @@ export default function BlockNoteEditor({
 			// the scrolling); the inline composer keeps them.
 			className={
 				expanded
-					? `${editorShell} flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
+					? `${editorShell} flex h-full min-h-0 flex-col [&_.bn-container]:bg-transparent [&>.bn-container]:min-h-0 [&>.bn-container]:flex [&>.bn-container]:flex-1 [&>.bn-container]:flex-col [&>.bn-container]:overflow-y-auto [&_.bn-editor]:min-h-0 [&_.bn-editor]:flex-1 [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 					: `${editorShell} min-h-[320px] [&_.bn-container]:bg-transparent [&_.bn-editor]:min-h-[300px] [&_.bn-editor]:px-8 [&_.bn-editor]:py-4 [&_.bn-editor]:leading-relaxed`
 			}
 		>
+			<input
+				ref={imageInputRef}
+				type="file"
+				accept="image/*"
+				multiple
+				onChange={handleImagePick}
+				className="sr-only"
+				aria-hidden="true"
+				tabIndex={-1}
+			/>
 			{/* Left-margin drag-select surface: sits beside the blocks, never on
                             top of them (pointer-events only on the 24px strip). */}
 			<div
@@ -413,16 +1578,27 @@ export default function BlockNoteEditor({
 					style={{ left: dragBox.x, top: dragBox.y, width: dragBox.w, height: dragBox.h }}
 				/>
 			)}
+			{codeCopyChip}
 			<BlockNoteView
 				editor={editor}
 				theme={resolvedTheme === "dark" ? "dark" : "light"}
 				slashMenu={false}
+				// The child controllers own the toolbar; the built-in would
+				// otherwise ALSO render its default floating toolbar next to the
+				// experimental mobile controller (which doesn't register as an
+				// override and suppress it).
+				formattingToolbar={false}
 				aria-label="Message (markdown)"
 			>
 				<SuggestionMenuController
 					triggerCharacter="/"
-					getItems={async (query) => getSlashMenuItems(editor, query)}
+					getItems={async (query) => getSlashMenuItems(editor, query, pickImage)}
 				/>
+				{mobileToolbar ? (
+					<MobileFormattingToolbarController formattingToolbar={ComposerMobileFormattingToolbar} />
+				) : (
+					<FormattingToolbarController formattingToolbar={ComposerFormattingToolbar} />
+				)}
 			</BlockNoteView>
 		</div>
 	);

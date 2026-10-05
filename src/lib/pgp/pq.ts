@@ -2,7 +2,7 @@
  * Quantum-sealed copies — an ML-KEM-768 (FIPS 203) outer layer for the
  * sender's own archive copy.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * WHY
  *   OpenPGP public-key encryption rests on classical assumptions (X25519 /
@@ -157,7 +157,7 @@ export async function unwrapSealSecret(
 	return new Uint8Array(plain);
 }
 
-// # Mr. AI Acting on s183173's Behalf
+// # Mr. AI Acting on the Owner's Behalf
 /** Wrap (encrypt) the raw ML-KEM secret key, choosing the wrapping scheme
  *  from the passphrase:
  *   - non-empty passphrase → the classic PBKDF2 wrap (identical to
@@ -202,7 +202,7 @@ export async function wrapSealSecretAuto(
 	};
 }
 
-// # Mr. AI Acting on s183173's Behalf
+// # Mr. AI Acting on the Owner's Behalf
 /** Unwrap the ML-KEM secret key, opening whichever wrapping the config
  *  carries: the stored device key when present (passphrase-less keys — the
  *  passphrase is ignored entirely, so there is no "needs your passphrase"

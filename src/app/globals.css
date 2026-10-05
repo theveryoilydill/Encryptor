@@ -215,7 +215,12 @@
 }
 
 .animate-fade-up {
-	animation: fade-up 0.3s ease-out both;
+	/* `backwards`, not `both`: the end state IS the resting state, so
+           forwards-fill buys nothing — and a forwards-filled transform keeps the
+           element a containing block even at identity, which degrades every
+           position: fixed descendant (BlockNote's mobile formatting toolbar
+           docks by fixed positioning and ended up anchored to this div). */
+	animation: fade-up 0.3s ease-out backwards;
 }
 
 /* Reduced-motion contract (R11-b): the newer entrance utilities
@@ -325,7 +330,8 @@
 }
 
 .panel-enter {
-	animation: panel-enter 0.18s ease-out both;
+	/* Same fill-mode reasoning as .animate-fade-up above. */
+	animation: panel-enter 0.18s ease-out backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -382,57 +388,9 @@
 /* R11-b canary: reduced-motion guards for .animate-fade-up + .animate-scale-in. */
 
 /* ---------------------------------------------------------------------------
- * VS Code-style message editor (@uiw/react-md-editor) — align the editor
- * chrome with the app's language: Keybase-blue accents (#0055dc / dark
- * #5e94ff), same border tokens, same radii, muted title bar. Scoped under
- * .md-editor-wrap so the plain Textareas and BlockNote stay untouched.
- * # Mr. AI Acting on s183173's Behalf
- * ------------------------------------------------------------------------- */
-/* [R12] ONE chrome only: the .md-editor-wrap card owns the border; the
-   editor's own default outer ring (a box-shadow on .w-md-editor) is a
-   duplicate inside it — drop it. Keep the app-token color alignment for
-   the hairlines the library still draws (split-view divider etc.), and
-   the toolbar/content alignment below. */
-.md-editor-wrap .w-md-editor {
-	box-shadow: none;
-	--md-editor-box-shadow-color: var(--border);
-}
-/* Title/toolbar bar: quieter background, app-token border. */
-.md-editor-wrap .w-md-editor-toolbar {
-	background: var(--muted);
-	border-bottom: 1px solid var(--border);
-}
-/* Toolbar buttons: brand-blue hover/active states. */
-.md-editor-wrap .w-md-editor-toolbar li:hover > button,
-.md-editor-wrap .w-md-editor-toolbar li:active > button {
-	color: #0055dc;
-}
-[data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li:hover > button,
-[data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li:active > button {
-	color: #5e94ff;
-}
-/* Active toolbar group indicator matches the accent. */
-.md-editor-wrap .w-md-editor-toolbar li.active > button {
-	color: #0055dc;
-	border-bottom-color: #0055dc;
-}
-[data-color-mode="dark"] .md-editor-wrap .w-md-editor-toolbar li.active > button {
-	color: #5e94ff;
-	border-bottom-color: #5e94ff;
-}
-/* Editor surface follows the app background tokens (light + dark). */
-.md-editor-wrap .w-md-editor-content {
-	background: var(--background);
-}
-.md-editor-wrap .w-md-editor-text-pre > .w-md-editor-text-input {
-	font-size: 13px !important;
-	line-height: 1.7 !important;
-}
-
-/* ---------------------------------------------------------------------------
  * Markdown preview (.msg-md-view — DecryptedMessageView) + BlockNote editor:
  * GFM task-list checkboxes and nested-list indentation rails.
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  * ------------------------------------------------------------------------- */
 /* GFM task lists: the checkbox IS the bullet — drop the disc and align the
    box optically with the first text line. Brand-accented in both modes
@@ -468,4 +426,733 @@
 .bn-block-group .bn-block-group {
 	border-left: 2px solid var(--border);
 	padding-left: 0.25rem;
+}
+
+/* Syntax-highlight token colors for rendered code blocks (rehype-highlight,
+   which appends .hljs-* spans AFTER sanitization — see lib/pgp/safe-html.ts).
+   Muted GitHub-like palette; the dark variants ride the .dark theme class. */
+.msg-md-view .hljs-comment,
+.msg-md-view .hljs-quote {
+	color: #6a737d;
+	font-style: italic;
+}
+.msg-md-view .hljs-keyword,
+.msg-md-view .hljs-selector-tag,
+.msg-md-view .hljs-doctag,
+.msg-md-view .hljs-meta .hljs-keyword {
+	color: #b5397c;
+}
+.msg-md-view .hljs-string,
+.msg-md-view .hljs-regexp,
+.msg-md-view .hljs-addition {
+	color: #2e7d4f;
+}
+.msg-md-view .hljs-number,
+.msg-md-view .hljs-literal,
+.msg-md-view .hljs-variable,
+.msg-md-view .hljs-template-variable,
+.msg-md-view .hljs-attr {
+	color: #b35900;
+}
+.msg-md-view .hljs-title,
+.msg-md-view .hljs-section,
+.msg-md-view .hljs-name,
+.msg-md-view .hljs-selector-id,
+.msg-md-view .hljs-selector-class {
+	color: #6f42c1;
+}
+.msg-md-view .hljs-built_in,
+.msg-md-view .hljs-type,
+.msg-md-view .hljs-symbol,
+.msg-md-view .hljs-bullet,
+.msg-md-view .hljs-meta {
+	color: #00667d;
+}
+.msg-md-view .hljs-deletion {
+	color: #b02a37;
+}
+.dark .msg-md-view .hljs-comment,
+.dark .msg-md-view .hljs-quote {
+	color: #8b949e;
+}
+.dark .msg-md-view .hljs-keyword,
+.dark .msg-md-view .hljs-selector-tag,
+.dark .msg-md-view .hljs-doctag,
+.dark .msg-md-view .hljs-meta .hljs-keyword {
+	color: #f472a5;
+}
+.dark .msg-md-view .hljs-string,
+.dark .msg-md-view .hljs-regexp,
+.dark .msg-md-view .hljs-addition {
+	color: #7ee2a8;
+}
+.dark .msg-md-view .hljs-number,
+.dark .msg-md-view .hljs-literal,
+.dark .msg-md-view .hljs-variable,
+.dark .msg-md-view .hljs-template-variable,
+.dark .msg-md-view .hljs-attr {
+	color: #ffb26b;
+}
+.dark .msg-md-view .hljs-title,
+.dark .msg-md-view .hljs-section,
+.dark .msg-md-view .hljs-name,
+.dark .msg-md-view .hljs-selector-id,
+.dark .msg-md-view .hljs-selector-class {
+	color: #c9a5ff;
+}
+.dark .msg-md-view .hljs-built_in,
+.dark .msg-md-view .hljs-type,
+.dark .msg-md-view .hljs-symbol,
+.dark .msg-md-view .hljs-bullet,
+.dark .msg-md-view .hljs-meta {
+	color: #6fd6e8;
+}
+.dark .msg-md-view .hljs-deletion {
+	color: #ff8b7b;
+}
+
+/* Editor code blocks: BlockNote renders the language <select> in a flex
+   row beside the code and fades it in on hover, effectively invisible in
+   dark mode. Overlay it as a quiet pill pinned to the block's top-right
+   (Notion-style language label); the code area gets extra top padding so
+   the pill never covers the first line. .bn-editor prefix + explicit
+   width keep the rules above BlockNote's own specificity. */
+.bn-block-content[data-content-type="codeBlock"] {
+	position: relative;
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] > div:has(> select) {
+	position: absolute;
+	top: 0.35rem;
+	right: 0.5rem;
+	width: fit-content;
+	z-index: 5;
+	line-height: 1;
+}
+/* .bn-editor prefix raises specificity above BlockNote's own
+   `.bn-block-content[data-content-type="codeBlock"] > div > select` rule. */
+.bn-editor .bn-block-content[data-content-type="codeBlock"] select {
+	/* BlockNote's own CSS absolutely positions the select with fixed offsets;
+           static inside the wrapper lets the pill shrink-wrap it instead. */
+	position: static;
+	appearance: auto;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: color-mix(in srgb, var(--background) 85%, transparent);
+	color: var(--muted-foreground);
+	font-size: 11px;
+	line-height: 1.2;
+	padding: 2px 6px;
+	cursor: pointer;
+	backdrop-filter: blur(4px);
+	transition:
+		color 0.15s ease,
+		border-color 0.15s ease;
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] select:hover {
+	color: var(--foreground);
+	border-color: var(--muted-foreground);
+}
+.bn-editor .bn-block-content[data-content-type="codeBlock"] pre {
+	padding-top: 2.2rem;
+}
+
+/* Mobile formatting toolbar (BlockNote's experimental controller): the
+   controller already fixes it to the bottom of the viewport, but its bare
+   default read as a floating fragment. Sheet chrome instead — card
+   background, hairline top border, soft upward shadow — so it belongs to
+   the app. Buttons keep BlockNote's --bn theme, so dark mode follows the
+   editor automatically. */
+.bn-mobile-formatting-toolbar {
+	background: var(--card);
+	border-top: 1px solid var(--border);
+	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.08);
+	/* BlockNote centers the bar content for floating use; a docked sheet
+           scrolls from the left edge instead. */
+	justify-content: flex-start;
+	gap: 2px;
+	padding-inline: 6px;
+	/* Keyboard offset: BlockNote's experimental controller already tracks
+           the virtual keyboard (VirtualKeyboard API + visualViewport fallback)
+           and publishes --bn-mobile-keyboard-offset, which its own stylesheet
+           reads for `bottom`. Do NOT override top/bottom here — a custom
+           anchor would fight the native offset and break the rise animation. */
+}
+.dark .bn-mobile-formatting-toolbar {
+	box-shadow: 0 -8px 24px rgb(0 0 0 / 0.4);
+}
+
+/* Print (round 4): the Decrypt result's "Print" button clones the rendered
+   message into a body-level #print-mount and swaps html.printing on for the
+   duration. In print, ONLY the clone survives — the app chrome, buttons,
+   and armor textareas all drop out — and the clone prints as a clean,
+   paper-friendly document regardless of the active theme (the handler also
+   strips the dark class while printing, so tokens resolve light). */
+@media print {
+	html.printing body > *:not(#print-mount) {
+		display: none !important;
+	}
+	html.printing,
+	html.printing body {
+		background: #fff !important;
+	}
+	#print-mount {
+		display: block !important;
+		color: #111 !important;
+		font-size: 12px;
+		line-height: 1.55;
+	}
+	#print-mount .print-header {
+		margin-bottom: 10px;
+		padding-bottom: 6px;
+		border-bottom: 1px solid #ddd;
+		font-size: 10px;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #555;
+	}
+	#print-mount .bg-card {
+		background: #fff !important;
+	}
+	#print-mount [class*="border"] {
+		border-color: #ddd !important;
+	}
+	#print-mount code,
+	#print-mount pre {
+		background: #f5f5f5 !important;
+		color: #111 !important;
+	}
+	#print-mount img {
+		max-width: 100% !important;
+	}
+	/* The click-to-zoom wrapper must vanish for layout in print so images
+           flow exactly like plain inline images. */
+	#print-mount button {
+		display: contents;
+	}
+	/* Attachments appendix (round 5): a titled block of framed figures —
+           name + size caption under each image; non-images are caption-only
+           rows so the paper trail lists every file even when it can't render. */
+	#print-mount .print-attachments {
+		margin-top: 14px;
+		padding-top: 8px;
+		border-top: 1px solid #ddd;
+	}
+	#print-mount .print-attachments-title {
+		margin-bottom: 8px;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #555;
+	}
+	#print-mount .print-attachment {
+		margin: 0 0 10px;
+		page-break-inside: avoid;
+	}
+	#print-mount .print-attachment img {
+		display: block;
+		max-height: 3in;
+		width: auto;
+		max-width: 60%;
+		border: 1px solid #ddd;
+		border-radius: 4px;
+		padding: 4px;
+	}
+	#print-mount .print-attachment figcaption {
+		margin-top: 2px;
+		font-size: 10px;
+		color: #555;
+	}
+	/* Verification evidence footer: quiet closing line under the message —
+           who signed, which key, when it was checked. */
+	#print-mount .print-verification {
+		margin-top: 12px;
+		padding-top: 6px;
+		border-top: 1px solid #ddd;
+		font-size: 10px;
+		color: #0a7d33;
+	}
+}
+
+/* ---- Editor contrast + list-marker cycle (annotation round) ---- */
+
+/* "Dark mode vision = bad": BlockNote's own dark palette renders body text
+   at #cfcfcf and hardcodes quote text at #7d797a — both wash out on the
+   app's near-black card. Lift the editor text to a high-contrast near-white
+   and give quotes a readable gray. Light mode keeps BlockNote's defaults. */
+/* .dark prefix out-specifies BlockNote's own `.bn-root[data-color-scheme]`
+   rule (same specificity, later cascade would win for BlockNote). */
+.dark .bn-root[data-color-scheme="dark"],
+.bn-root.dark[data-color-scheme="dark"] {
+	--bn-colors-editor-text: #ededf2;
+	--bn-colors-side-menu: #8b8b96;
+}
+.dark .bn-root[data-color-scheme="dark"] [data-content-type="quote"] blockquote,
+.bn-root.dark[data-color-scheme="dark"] [data-content-type="quote"] blockquote {
+	color: #b9b9c4;
+	border-left-color: #6e6e7a;
+}
+.dark .bn-root[data-color-scheme="dark"] [data-content-type="divider"] hr,
+.bn-root.dark[data-color-scheme="dark"] [data-content-type="divider"] hr {
+	border-top-color: #6e6e7a;
+}
+
+/* "Make cycle": bullet markers cycle disc/circle/square per nesting depth
+   instead of sticking to square from depth 3 down. BlockNote hardcodes
+   depths 1-3; each rule below extends its shipped selector chain one more
+   `[data-content-type=bulletListItem]~.bn-block-group` per level, and the
+   longer chain out-specifies BlockNote's shallower rules. Depths beyond 9
+   stay square — deep enough for any sane message. */
+/* depth 4 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\2022";
+}
+/* depth 5 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25e6";
+}
+/* depth 6 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25aa\fe0e";
+}
+/* depth 7 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\2022";
+}
+/* depth 8 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25e6";
+}
+/* depth 9 */
+.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	.bn-block-content[data-content-type="bulletListItem"]
+	~ .bn-block-group
+	> .bn-block-outer:not([data-prev-type])
+	> .bn-block
+	> .bn-block-content[data-content-type="bulletListItem"]:before {
+	content: "\25aa\fe0e";
+}
+
+/* ---- Slash menu: Notion's real popup skin ---- */
+
+/* Notion's popover recipe, applied to BlockNote's #bn-suggestion-menu:
+   a 330px sheet with the exact triple-layer shadow Notion ships (1px ring
+   + two soft drops), 6px radius, and their font stack. The ID selector
+   out-specifies BlockNote's `.bn-mantine .bn-suggestion-menu` rules so the
+   default border/shadow/padding are fully replaced, not blended. */
+#bn-suggestion-menu {
+	width: 330px;
+	max-width: 330px;
+	padding: 8px;
+	border: none;
+	border-radius: 6px;
+	background: #ffffff;
+	box-shadow:
+		rgba(15, 15, 15, 0.05) 0px 0px 0px 1px,
+		rgba(15, 15, 15, 0.1) 0px 3px 6px,
+		rgba(15, 15, 15, 0.2) 0px 9px 24px;
+	color: rgb(55, 53, 47);
+	font-family:
+		ui-sans-serif,
+		-apple-system,
+		BlinkMacSystemFont,
+		"Segoe UI",
+		Helvetica,
+		"Apple Color Emoji",
+		Arial,
+		sans-serif,
+		"Segoe UI Emoji",
+		"Segoe UI Symbol";
+	scrollbar-width: thin;
+	scrollbar-color: rgba(55, 53, 47, 0.2) transparent;
+}
+#bn-suggestion-menu::-webkit-scrollbar {
+	width: 10px;
+}
+#bn-suggestion-menu::-webkit-scrollbar-thumb {
+	background: rgba(55, 53, 47, 0.2);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+	border-radius: 5px;
+}
+#bn-suggestion-menu::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+/* Section header: 12px dimmed gray, tight against its first row. */
+#bn-suggestion-menu .bn-suggestion-menu-label {
+	padding: 8px 8px 4px;
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1.3;
+	color: rgba(55, 53, 47, 0.5);
+}
+
+/* Rows: 40px icon tile + 14px title + 12px one-liner, Notion's hover gray
+   with their 20ms ease-in background snap. */
+#bn-suggestion-menu .bn-suggestion-menu-item {
+	min-height: 48px;
+	padding: 4px 8px;
+	border-radius: 6px;
+	transition: background 20ms ease-in;
+}
+#bn-suggestion-menu .bn-suggestion-menu-item[aria-selected="true"],
+#bn-suggestion-menu .bn-suggestion-menu-item:hover {
+	background-color: rgba(55, 53, 47, 0.08);
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="left"] {
+	flex: 0 0 40px;
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	margin-inline-end: 10px;
+	border-radius: 6px;
+	background-color: #f1f1ef;
+	color: rgb(55, 53, 47);
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-title {
+	font-size: 14px;
+	font-weight: 500;
+	line-height: 1.4;
+	color: rgb(55, 53, 47);
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-subtitle {
+	font-size: 12px;
+	line-height: 1.4;
+	color: rgba(55, 53, 47, 0.65);
+	/* Notion keeps descriptions to one ellipsized line. */
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Shortcut hints flatten into Notion's dimmed kbd column instead of the
+   Mantine badge pill BlockNote renders. */
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="right"] {
+	margin-inline-start: 12px;
+}
+#bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="right"] .mantine-Badge-root {
+	height: auto;
+	min-height: 0;
+	padding: 0;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	color: rgba(55, 53, 47, 0.4);
+	font-size: 12px;
+	font-weight: 400;
+	text-transform: none;
+}
+#bn-suggestion-menu
+	.bn-mt-suggestion-menu-item-section[data-position="right"]
+	.mantine-Badge-label {
+	color: inherit;
+	font-size: inherit;
+	font-weight: inherit;
+	text-transform: none;
+}
+
+/* No-results row: the empty item is the one without a body/icon — quiet
+   gray text like Notion's. */
+#bn-suggestion-menu .bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body)) {
+	min-height: 0;
+	padding: 12px 8px;
+	font-size: 13px;
+	font-weight: 400;
+	color: rgba(55, 53, 47, 0.4);
+}
+#bn-suggestion-menu
+	.bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body))
+	.bn-mt-suggestion-menu-item-title {
+	font-size: inherit;
+	font-weight: inherit;
+	color: inherit;
+}
+
+/* Dark mode: Notion's dark sheet (#252525), white-alpha text ramp and the
+   dark shadow triplet. */
+.dark #bn-suggestion-menu {
+	background: #252525;
+	color: rgba(255, 255, 255, 0.81);
+	box-shadow:
+		rgba(15, 15, 15, 0.2) 0px 0px 0px 1px,
+		rgba(15, 15, 15, 0.2) 0px 3px 6px,
+		rgba(15, 15, 15, 0.4) 0px 9px 24px;
+	scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.dark #bn-suggestion-menu::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.2);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+	border-radius: 5px;
+}
+.dark #bn-suggestion-menu .bn-suggestion-menu-label {
+	color: rgba(255, 255, 255, 0.28);
+}
+.dark #bn-suggestion-menu .bn-suggestion-menu-item[aria-selected="true"],
+.dark #bn-suggestion-menu .bn-suggestion-menu-item:hover {
+	background-color: rgba(255, 255, 255, 0.055);
+}
+.dark #bn-suggestion-menu .bn-mt-suggestion-menu-item-section[data-position="left"] {
+	background-color: #2f2f2f;
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark #bn-suggestion-menu .bn-mt-suggestion-menu-item-title {
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark #bn-suggestion-menu .bn-mt-suggestion-menu-item-subtitle {
+	color: rgba(255, 255, 255, 0.46);
+}
+.dark
+	#bn-suggestion-menu
+	.bn-mt-suggestion-menu-item-section[data-position="right"]
+	.mantine-Badge-root {
+	color: rgba(255, 255, 255, 0.28);
+}
+.dark #bn-suggestion-menu .bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body)) {
+	color: rgba(255, 255, 255, 0.3);
+}
+.dark
+	#bn-suggestion-menu
+	.bn-suggestion-menu-item:not(:has(.bn-mt-suggestion-menu-item-body))
+	.bn-mt-suggestion-menu-item-title {
+	color: inherit;
+}
+
+/* ---- Equations: Notion's sigma blocks + inline chips ---- */
+
+/* Block equation: the rendered formula sits centered on a hover-highlighted
+   row (Notion grays it on hover the same way it does text); clicking opens
+   the source editor below. KaTeX's own display margin is killed so the
+   editor controls spacing. */
+.bn-editor [data-content-type="blockEquation"] {
+	padding: 4px 0;
+}
+.bn-editor .equation-display {
+	display: flex;
+	justify-content: center;
+	padding: 8px 12px;
+	border-radius: 4px;
+	overflow-x: auto;
+	cursor: pointer;
+	transition: background 20ms ease-in;
+}
+.bn-editor .equation-display:hover {
+	background-color: rgba(55, 53, 47, 0.06);
+}
+.bn-editor .equation-display .katex-display {
+	margin: 0;
+}
+.bn-editor .equation-display:focus-visible {
+	outline: 2px solid rgba(0, 85, 220, 0.4);
+	outline-offset: 2px;
+}
+
+/* Source editor: gray card, mono input, white live-preview card and a quiet
+   footer row with the Done button — Notion's formula-editor layout. */
+.bn-editor .equation-source {
+	margin: 4px 0;
+	padding: 8px;
+	border: 1px solid rgba(55, 53, 47, 0.16);
+	border-radius: 6px;
+	background: #f7f7f5;
+	box-shadow: rgba(15, 15, 15, 0.05) 0px 2px 4px;
+}
+.bn-editor .equation-source textarea {
+	display: block;
+	width: 100%;
+	min-height: 56px;
+	resize: vertical;
+	border: none;
+	background: transparent;
+	padding: 2px 4px;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 13px;
+	line-height: 1.5;
+	color: rgb(55, 53, 47);
+	outline: none;
+}
+.bn-editor .equation-source textarea::placeholder,
+.bn-editor .inline-equation-input::placeholder {
+	color: rgba(55, 53, 47, 0.3);
+}
+.bn-editor .equation-source-preview {
+	margin-top: 6px;
+	padding: 8px 12px;
+	border: 1px solid rgba(55, 53, 47, 0.09);
+	border-radius: 4px;
+	background: #ffffff;
+	overflow-x: auto;
+	text-align: center;
+}
+.bn-editor .equation-source-preview .katex-display {
+	margin: 0;
+}
+.bn-editor .equation-source-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-top: 6px;
+	font-size: 11px;
+	color: rgba(55, 53, 47, 0.4);
+}
+.bn-editor .equation-source-footer button {
+	border: none;
+	border-radius: 4px;
+	background: rgb(35, 131, 226);
+	color: #ffffff;
+	font-size: 12px;
+	font-weight: 500;
+	padding: 3px 10px;
+	cursor: pointer;
+	transition: filter 20ms ease-in;
+}
+.bn-editor .equation-source-footer button:hover {
+	filter: brightness(1.08);
+}
+
+/* Inline equation: an atom chip in the text flow; the live render sits next
+   to its own source input while editing. */
+.bn-editor .inline-equation {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	vertical-align: baseline;
+}
+.bn-editor .inline-equation-render {
+	padding: 1px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 20ms ease-in;
+}
+.bn-editor .inline-equation-render:hover {
+	background-color: rgba(55, 53, 47, 0.08);
+}
+.bn-editor .inline-equation-render:focus-visible {
+	outline: 2px solid rgba(0, 85, 220, 0.4);
+	outline-offset: 1px;
+}
+.bn-editor .inline-equation-input {
+	width: 140px;
+	border: 1px solid rgba(55, 53, 47, 0.2);
+	border-radius: 4px;
+	background: #ffffff;
+	padding: 1px 6px;
+	font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 13px;
+	color: rgb(55, 53, 47);
+	outline: none;
+}
+.bn-editor .equation-ghost {
+	color: rgba(55, 53, 47, 0.3);
+}
+
+/* Dark mode: Notion's dark sheet colors (#252525 surfaces, white-alpha text
+   ramp), matching the slash menu twins above. */
+.dark .bn-editor .equation-display:hover {
+	background-color: rgba(255, 255, 255, 0.055);
+}
+.dark .bn-editor .equation-source {
+	border-color: rgba(255, 255, 255, 0.14);
+	background: #2f2f2f;
+	box-shadow: rgba(15, 15, 15, 0.2) 0px 2px 4px;
+}
+.dark .bn-editor .equation-source textarea {
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark .bn-editor .equation-source textarea::placeholder,
+.dark .bn-editor .inline-equation-input::placeholder {
+	color: rgba(255, 255, 255, 0.26);
+}
+.dark .bn-editor .equation-source-preview {
+	border-color: rgba(255, 255, 255, 0.09);
+	background: #252525;
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark .bn-editor .equation-source-footer {
+	color: rgba(255, 255, 255, 0.34);
+}
+.dark .bn-editor .inline-equation-render:hover {
+	background-color: rgba(255, 255, 255, 0.075);
+}
+.dark .bn-editor .inline-equation-input {
+	border-color: rgba(255, 255, 255, 0.2);
+	background: #252525;
+	color: rgba(255, 255, 255, 0.81);
+}
+.dark .bn-editor .equation-ghost {
+	color: rgba(255, 255, 255, 0.26);
 }

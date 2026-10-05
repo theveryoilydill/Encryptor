@@ -4,7 +4,7 @@
 > surface is the **login gate** ("Login/Get your keys") — the Keys tab was
 > removed in the PR #25 review round (see "UI surface" below).
 >
-> # Mr. AI Acting on s183173's Behalf
+> # Mr. AI Acting on the Owner's Behalf
 
 ## Goal
 

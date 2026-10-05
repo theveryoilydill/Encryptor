@@ -3,7 +3,7 @@
 /**
  * Message composer for the Encrypt/Sign tabs — a real markdown editor.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * Two styles, switched in settings (default: Notion-style):
  *   - "notion": BlockNote block editor (Notion/Affine-like). Inline images
@@ -112,7 +112,7 @@ export function MessageEditor({
 	onFilesDropped?: (files: File[]) => void;
 	placeholder?: string;
 	/** Full-screen composer overlay mode (round-12 editor pass):
-	 *  # Mr. AI Acting on s183173's Behalf
+	 *  # Mr. AI Acting on the Owner's Behalf
 	 *  drop the fixed composer heights so the active editor engine fills
 	 *  the overlay through 100%-height chains. */
 	expanded?: boolean;

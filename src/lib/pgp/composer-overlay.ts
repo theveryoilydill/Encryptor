@@ -8,7 +8,7 @@
  * their own keys; this predicate recognizes them (and the composer overlay
  * itself is excluded, since `data-composer-overlay` marks it as the owner).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 
 /** True when the event target lives inside a nested dialog / popover / menu
@@ -28,7 +28,7 @@ export function isNestedDialogTarget(target: EventTarget | null): boolean {
  *  on the topmost overlay that actually holds focus — never on a buried one
  *  the user cannot see.
  *
- *  # Mr. AI Acting on s183173's Behalf
+ *  # Mr. AI Acting on the Owner's Behalf
  */
 export function composerOverlayOwner(target: EventTarget | null): string | null {
 	const el = target as HTMLElement | null;

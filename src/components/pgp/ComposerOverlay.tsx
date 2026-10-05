@@ -4,7 +4,7 @@
  * Shared full-screen composer overlay ("blow up the editor") for the Encrypt
  * and Sign tabs.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * One component owns everything the two tab overlays used to duplicate:
  * the portal dialog, the click-off / Escape / chord wiring (dialog-safe, via
@@ -133,9 +133,11 @@ export function ComposerOverlay({
 		>
 			{/* Full-bleed screen container ("the whole screen"): a single rounded
                             card filling the viewport. Callers stack the recipients bar and
-                            the editor (flex-1) inside; no reading-column cap. */}
-			<div className="relative flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden rounded-2xl border border-border bg-card shadow-xl sm:gap-3">
-				{topRight && <div className="absolute right-3 top-2.5 z-10">{topRight}</div>}
+                            the editor (flex-1) inside; no reading-column cap. The padded
+                            content box keeps the editor's own bordered shell from sitting
+                            flush against the card edges. */}
+			<div className="relative flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden rounded-2xl border border-border bg-card p-2 shadow-xl sm:gap-3 sm:p-3">
+				{topRight && <div className="absolute right-3 top-3 z-10">{topRight}</div>}
 				{children}
 			</div>
 		</div>,

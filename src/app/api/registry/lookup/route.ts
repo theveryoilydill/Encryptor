@@ -8,7 +8,6 @@ import {
 	normalizeKeyID,
 	normalizeName,
 } from "@/lib/registry/keys";
-import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import { REGISTRY_CACHE_PUBLIC, clientIP, registryErrorResponse } from "@/lib/registry/routes";
 
 export const runtime = "nodejs";
@@ -27,11 +26,6 @@ export const dynamic = "force-dynamic";
  * Returns { keys: [...] } so callers can iterate uniformly. Revoked keys
  * are returned WITH their revocation status — hiding them would let an
  * attacker silently suppress revocations.
- *
- * Add ?words=1 to include a `words` array per key: the PGP word list
- * (biometric) rendering of the fingerprint, e.g. "topmost Istanbul Pluto
- * vagabond …". 20 words, canonical capitalization — read aloud over a
- * voice call to verify a fingerprint without trusting the channel.
  */
 
 interface RegistryRow {
@@ -61,12 +55,6 @@ function toPublic(row: RegistryRow) {
 	};
 }
 
-/** ?words=1 (or =true) opts into PGP word-list fingerprints per key. */
-function wantsWords(url: URL): boolean {
-	const v = url.searchParams.get("words");
-	return v === "1" || v === "true";
-}
-
 export async function GET(req: NextRequest) {
 	try {
 		const url = new URL(req.url);
@@ -74,7 +62,6 @@ export async function GET(req: NextRequest) {
 		const keyID = url.searchParams.get("key_id");
 		const email = url.searchParams.get("email");
 		const name = url.searchParams.get("name");
-		const includeWords = wantsWords(url);
 
 		const db = await getRegistryDBReady();
 		// Public read endpoint — still rate limited (read-first limiter:
@@ -157,7 +144,6 @@ export async function GET(req: NextRequest) {
 			{
 				keys: rows.map((row) => ({
 					...toPublic(row),
-					...(includeWords ? { words: fingerprintToPgpWords(row.fingerprint) } : {}),
 				})),
 			},
 			{

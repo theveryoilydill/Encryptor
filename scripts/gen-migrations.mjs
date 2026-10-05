@@ -14,7 +14,7 @@
  *   node scripts/gen-migrations.mjs
  * ...then commit the regenerated file together with the new .sql.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -51,7 +51,7 @@ const header = `/**
  * a ";" inside string literals or comments — every current migration is
  * pure DDL and satisfies this. The primary path uses D1's native exec().
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 `;
 

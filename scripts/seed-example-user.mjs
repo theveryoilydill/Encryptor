@@ -14,7 +14,7 @@
  * The passphrase is never echoed to the terminal, not even with
  * --show-secret: the flag prints a ready-made command that reveals it from
  * the JSON file, keeping secrets out of scrollback logs and CI output.
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";

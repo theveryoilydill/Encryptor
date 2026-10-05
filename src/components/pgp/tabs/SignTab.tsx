@@ -53,7 +53,7 @@ export function SignTab({
 	// lives HERE in the tab; the editor engine simply re-mounts with the
 	// same value props, so text survives expand AND collapse untouched.
 	//
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const [composerExpanded, setComposerExpanded] = useState(false);
 	// Body scroll lock while the overlay is up; the previous inline value is
 	// restored on cleanup (also fires if the tab unmounts mid-expanded).
@@ -210,7 +210,7 @@ export function SignTab({
 	// portal overlay below. Pure re-mount either way: no state lives in the
 	// subtree, so text survives expand AND collapse.
 	//
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const composerBody = (
 		<>
 			<div className="mb-1.5 flex items-center justify-between gap-2">

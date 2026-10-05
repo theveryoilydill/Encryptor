@@ -1,5 +1,5 @@
 -- Registry performance indexes (0002) — review follow-ups
--- # Mr. AI Acting on s183173's Behalf
+-- # Mr. AI Acting on the Owner's Behalf
 --
 -- The rate-limiter cleanup and challenge expiry purges previously forced
 -- full table scans (each scan counts against the D1 rows-read quota).

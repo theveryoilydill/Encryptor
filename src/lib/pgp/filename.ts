@@ -14,7 +14,7 @@
  * keep their title-based names, where content-derived names would be
  * meaningless hashes of armor).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 
 /** Hard cap on how much text is inspected — the first heading lives in

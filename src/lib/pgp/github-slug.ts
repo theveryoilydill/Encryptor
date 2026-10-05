@@ -3,7 +3,7 @@
  * rendered-message view (heading ids), so "Insert table of contents" links
  * jump to the right heading everywhere the message is rendered.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 
 /** GitHub-style anchor slug for a heading title: lowercase, strip every

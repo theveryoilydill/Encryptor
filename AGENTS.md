@@ -35,7 +35,7 @@ Missing credentials, unclear requirements, a decision you are not sure about? St
 
 ## Report comment at the end
 
-When you finish work on a PR, leave ONE final comment on it: clean, concise, and structured — what changed, how it was verified (checks + browser flows), and any known limitations or follow-ups. The AI disclosure tag goes first (see attribution above).
+When you finish work on a PR, leave ONE final comment on it: clean, concise, and structured — what changed, how it was verified (checks + browser flows), and any known limitations or follow-ups. The AI disclosure tag goes first: `# Mr. AI Acting on the Owner's Behalf` (adapt the `#` to the language's comment syntax). Keep the tag generic — it describes the tool, never a specific person.
 
 ## Theme
 

@@ -12,7 +12,7 @@
  * the fixture remains lookable for UI tests.
  *
  * Usage: node scripts/make-escrow-stale.mjs [baseUrl]
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import * as openpgp from "openpgp";
 

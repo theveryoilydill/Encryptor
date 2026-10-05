@@ -16,7 +16,7 @@
  *  - Tokens are single-use server-side at Cloudflare; the client must
  *    reset the widget after every attempt (see TurnstileWidget).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { RegistryError, getCloudflareEnv } from "./db";
 

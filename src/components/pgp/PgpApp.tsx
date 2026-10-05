@@ -1257,7 +1257,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
 /* ---------------------------------- Footer --------------------------------- */
 
 // Lucide 1.x dropped all brand icons, so the GitHub mark lives here now.
-// # Mr. AI Acting on s183173's Behalf
+// # Mr. AI Acting on the Owner's Behalf
 function GitHubIcon(props: ComponentProps<"svg">) {
 	return (
 		<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>

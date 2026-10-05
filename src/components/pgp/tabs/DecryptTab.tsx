@@ -7,7 +7,7 @@
  * full-size viewer when clicking the file name or thumbnail). The armored
  * input is never echoed back as an output block.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 
@@ -213,7 +213,7 @@ export function DecryptTab({
 							"This message has a quantum-sealed copy, but your configured key has no quantum-seal key. Open it with the key that created it.",
 						);
 					}
-					// # Mr. AI Acting on s183173's Behalf
+					// # Mr. AI Acting on the Owner's Behalf
 					const sealSecret = await unwrapSealSecretAuto(privateKey.pq, passphrase);
 					if (runIdRef.current !== myRunId) return;
 					classicalInput = await unsealWithSecretKey(parseSealedArmor(input), sealSecret);

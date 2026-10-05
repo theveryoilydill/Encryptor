@@ -1,7 +1,7 @@
 /**
  * User preferences (localStorage-backed, JSON).
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  *
  * Settings are small, typed, and always read through loadSettings() so a
  * corrupted or partial stored value falls back to the defaults instead of

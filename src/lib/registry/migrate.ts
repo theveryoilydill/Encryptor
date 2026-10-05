@@ -21,7 +21,7 @@
  *    request retries) and surfaces as a 503 with a clear message instead
  *    of a generic 500.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import type { D1DatabaseLike } from "./db";
 import { REGISTRY_MIGRATIONS } from "./migrations.generated";

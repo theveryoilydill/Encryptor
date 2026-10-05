@@ -662,7 +662,7 @@ export function EncryptTab({
 	// globalComposerChord: while the Sign tab is active, its own composer
 	// takes the chord (see PgpApp).
 	//
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	useEffect(() => {
 		if (!globalComposerChord) return;
 		const onKey = (e: KeyboardEvent) => {
@@ -1453,7 +1453,7 @@ export function EncryptTab({
 	// out of the overlay is therefore a pure re-mount: no state lives in the
 	// subtree.
 	//
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const composerBody = (
 		<>
 			{/* Composer utility row: full-screen toggle and the template
@@ -1510,7 +1510,7 @@ export function EncryptTab({
 	// feedback mockup: "Recipients" bar across the top, editor beneath).
 	// One instance at a time: overlay and inline never render together, so
 	// the picker's search state simply follows the composer around.
-	// # Mr. AI Acting on s183173's Behalf
+	// # Mr. AI Acting on the Owner's Behalf
 	const recipientsField = (
 		<div
 			data-tour="recipients"

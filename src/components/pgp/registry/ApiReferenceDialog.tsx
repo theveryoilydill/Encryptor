@@ -8,7 +8,7 @@
  * "This deployment" strip (shared health probe) showing the Turnstile and
  * write-lock state that change how the API behaves from here.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { useEffect, useState } from "react";
 import { Code2 } from "lucide-react";

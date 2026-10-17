@@ -12,7 +12,7 @@
 		{
 			"binding": "REGISTRY_DB",
 			"database_name": "encryptor-registry",
-			"database_id": "f8a671a6-acdb-436d-bcc0-69d6143d30df",
+			"database_id": "2196b82d-724d-4eed-8b45-a15523a4708a",
 			"migrations_dir": "migrations"
 		}
 	],

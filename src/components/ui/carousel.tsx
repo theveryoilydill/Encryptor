@@ -95,7 +95,7 @@ function Carousel({
 		if (!api) return;
 		// Initial can-scroll sync once embla hands over its API instance; the
 		// setState via onSelect is this effect's purpose, not a stray side effect.
-		// # Mr. AI Acting on s183173's Behalf
+		// # Mr. AI Acting on the Owner's Behalf
 		// eslint-disable-next-line react-hooks/set-state-in-effect
 		onSelect(api);
 		api.on("reInit", onSelect);

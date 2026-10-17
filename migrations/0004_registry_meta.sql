@@ -1,5 +1,5 @@
 -- Encryptor key registry — deployment metadata (0004)
--- # Mr. AI Acting on s183173's Behalf
+-- # Mr. AI Acting on the Owner's Behalf
 --
 -- Tiny key/value store for deployment-level secrets that the database can
 -- own. First consumer: the registry's rate-limit/privacy SALT.

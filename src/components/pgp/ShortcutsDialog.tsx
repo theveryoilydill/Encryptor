@@ -3,7 +3,7 @@
 /**
  * "Keyboard shortcuts" help dialog.
  *
- * Lists the app's global bindings (Ctrl+K palette, Alt+1..4 tabs, the
+ * Lists the app's global bindings (Alt+1..4 tabs, the
  * per-tab Ctrl/Cmd+Enter and Ctrl/Cmd+Shift+E, Ctrl+,) — keep SHORTCUTS in
  * sync with PgpApp.tsx if bindings change. Rendered controlled by PgpApp
  * (the trigger button lives in the Header, next to the theme toggle; same
@@ -20,16 +20,19 @@ import {
 
 /** The global bindings from PgpApp.tsx (tab order: TABS array), plus the
  *  per-tab bindings handled inside the tab components: Ctrl/Cmd+Enter runs
- *  the tab's action; Ctrl/Cmd+Shift+E toggles the Encrypt tab's full-screen
- *  composer. */
+ *  the tab's action; Ctrl/Cmd+Shift+E toggles the ACTIVE tab's full-screen
+ *  composer (Encrypt + Sign both have one — PgpApp routes the chord). */
 const SHORTCUTS: { keys: string; description: string }[] = [
-	{ keys: "Ctrl+K", description: "Open the command palette (switch modes, your key, app actions)" },
 	{ keys: "Alt+1", description: "Encrypt" },
 	{ keys: "Alt+2", description: "Decrypt" },
 	{ keys: "Alt+3", description: "Sign" },
 	{ keys: "Alt+4", description: "Verify" },
-	{ keys: "Ctrl+Enter", description: "Run the tab's action (encrypt / sign / verify)" },
-	{ keys: "Ctrl+Shift+E", description: "Expand / collapse the composer" },
+	{
+		keys: "Ctrl+Enter",
+		description:
+			"Run the tab's action (encrypt / sign / verify); from a full-screen composer it collapses on success",
+	},
+	{ keys: "Ctrl+Shift+E", description: "Expand / collapse the composer (Encrypt · Sign)" },
 	{ keys: "Ctrl+,", description: "Open Settings" },
 ];
 

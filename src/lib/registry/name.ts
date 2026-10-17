@@ -6,7 +6,7 @@
  * Valid normalized name: printable, no angle brackets (they delimit the
  * email part of a User ID), 1-64 chars after normalization.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 export function normalizeDisplayName(raw: string): string | null {
 	const name = raw

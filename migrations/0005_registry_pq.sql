@@ -1,5 +1,5 @@
 -- Encryptor key registry — quantum-seal public keys (0005)
--- # Mr. AI Acting on s183173's Behalf
+-- # Mr. AI Acting on the Owner's Behalf
 --
 -- Adds the OPTIONAL public half of the owner's ML-KEM-768 (FIPS 203)
 -- quantum-seal pair. The secret half never leaves the owner's device; the

@@ -4,7 +4,7 @@ A minimal, browser-only PGP toolkit for encrypting, decrypting, signing, and
 verifying messages — with Keybase integration. All cryptography runs locally
 in your browser; private keys and plaintext never touch the server.
 
-<!-- Mr. AI Acting on s183173's Behalf -->
+<!-- Mr. AI Acting on the Owner's Behalf -->
 
 ## Features
 

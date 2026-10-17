@@ -1,5 +1,5 @@
 -- Encryptor key registry — name index (0006)
--- # Mr. AI Acting on s183173's Behalf
+-- # Mr. AI Acting on the Owner's Behalf
 --
 -- Owner feedback: restore/sign-in must work with "fingerprint, email, or
 -- name". Emails already had a dedicated exact-match index (registry_emails);

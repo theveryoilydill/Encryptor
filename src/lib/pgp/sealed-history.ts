@@ -59,7 +59,7 @@ export interface SealedHistoryEntry {
 
 const HISTORY_KEY = "encryptor.sealed.history.v1";
 /** 8 entries × ≤64 KB ≈ 0.5 MB worst case — comfortably inside the ~5 MB
- *  engine quota even alongside templates, drafts and config backup. */
+ *  engine quota even alongside templates and config backup. */
 export const MAX_SEALED_ENTRIES = 8;
 export const MAX_SEALED_ARMOR_CHARS = 64 * 1024;
 

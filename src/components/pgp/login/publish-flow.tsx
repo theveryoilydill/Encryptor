@@ -13,7 +13,7 @@
  * surfaces everything that matters (fingerprint, escrow state, revocation
  * token shown ONCE) at publish time.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 import { useCallback, useEffect, useState } from "react";
 import { TriangleAlert } from "lucide-react";

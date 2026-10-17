@@ -52,7 +52,7 @@ function writesAllowedHereFor(req: NextRequest): boolean {
  * from health turns that outage into a one-URL diagnosis. The probe writes
  * and immediately deletes a dedicated bucket row (self-cleaning even if
  * the DELETE fails: the opportunistic registry_rate sweep eventually
- * removes it). # Mr. AI Acting on s183173's Behalf
+ * removes it). # Mr. AI Acting on the Owner's Behalf
  */
 export async function GET(req: NextRequest) {
 	try {

@@ -19,22 +19,22 @@ import {
 import {
 	BadgeCheck,
 	Check,
-	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
+	ClipboardPaste,
 	Copy,
+	Download,
 	FileSignature,
 	FileText,
-	GitCompare,
-	History,
 	Lock,
+	Printer,
 	Sparkles,
-	Volume2,
-	X,
 } from "lucide-react";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
+import "katex/dist/katex.min.css";
 import { rehypeSecureHtml } from "@/lib/pgp/safe-html";
 import { githubSlug } from "@/lib/pgp/github-slug";
 import { toast } from "@/hooks/use-toast";
@@ -53,7 +53,6 @@ import {
 import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
-import { fingerprintToPgpWords } from "@/lib/pgp/pgp-words";
 import {
 	base64ToUint8Array,
 	buildZipBundle,
@@ -66,7 +65,7 @@ import type { KeySource, SignatureInfo, VerificationResult } from "@/components/
 const ACCENT_TEXT = "text-[#0055dc] dark:text-[#5e94ff]";
 
 /* ------------------------- Key source + hash labels ------------------------- */
-// # Mr. AI Acting on s183173's Behalf
+// # Mr. AI Acting on the Owner's Behalf
 // Signature cards (Verify tab + Decrypt tab's "Signed by") must say WHERE
 // the signer's public key came from and what the key ID / fingerprint hex
 // strings actually mean — without any format talk or filler captions.
@@ -195,26 +194,35 @@ export function ImageViewer({
 								</button>
 							</>
 						)}
+						{/* No custom close here — DialogContent already renders an
+                                                        accessible close (top-right X); a second one read as a
+                                                        duplicate. The counter takes the right edge. */}
 						<figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
 							<span className="truncate text-xs font-medium">{file.name}</span>
 							<span className="shrink-0 text-[11px] text-muted-foreground">
 								{formatFileSize(file.size)}
 							</span>
+							{/* Save-without-closing: the same guard-passing data URL as the
+                                                                img, as a plain download anchor — no second decode, no new
+                                                                path for the bytes. */}
+							{safeSrc && (
+								<a
+									href={safeSrc}
+									download={file.name}
+									className="ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs transition-colors hover:bg-muted hover:text-foreground"
+									aria-label={`Download ${file.name}`}
+									title="Download this image"
+								>
+									<Download className="size-4" aria-hidden />
+								</a>
+							)}
 							{many && (
-								<span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+								<span
+									className={`shrink-0 text-[11px] tabular-nums text-muted-foreground ${safeSrc ? "" : "ml-auto"}`}
+								>
 									{Math.min(index ?? 0, images.length - 1) + 1} / {images.length}
 								</span>
 							)}
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								onClick={onClose}
-								className="ml-auto size-7 text-muted-foreground"
-								aria-label="Close image viewer"
-							>
-								<X className="size-4" aria-hidden />
-							</Button>
 						</figcaption>
 					</figure>
 				)}
@@ -457,7 +465,148 @@ export function DownloadButton({ text, title }: { text: string; title: string })
  *  When a quantum-sealed copy is provided (sealedCopy) it REPLACES the
  *  (single) output box's content by default — a small in-box switch flips
  *  between the sealed and the recipient armor; Copy/Download act on
- *  whichever view is shown. # Mr. AI Acting on s183173's Behalf */
+ *  whichever view is shown. # Mr. AI Acting on the Owner's Behalf */
+/* ----------------------- Read-view text size + print ----------------------- */
+
+/** localStorage key for the decrypt-side reading-size preference (S/M/L). */
+export const READ_FONT_STORAGE_KEY = "encryptor.readFontSize";
+export type ReadFontSize = "s" | "m" | "l";
+export const READ_FONT_PX: Record<ReadFontSize, number> = { s: 13, m: 14, l: 16 };
+
+export function readStoredFontSize(): ReadFontSize {
+	try {
+		const v = typeof window === "undefined" ? null : localStorage.getItem(READ_FONT_STORAGE_KEY);
+		return v === "s" || v === "l" ? v : "m";
+	} catch {
+		return "m";
+	}
+}
+
+/** Persist the reading-size choice; in-session state still applies when
+ *  storage is denied (private mode). */
+export function applyStoredFontSize(next: ReadFontSize) {
+	try {
+		localStorage.setItem(READ_FONT_STORAGE_KEY, next);
+	} catch {
+		// Private-mode storage denial: the in-session state still applies.
+	}
+}
+
+/** Reading-size segmented control (Notion-pattern Aa control): three steps,
+ *  aria-pressed, same segmented family as OutputBlock's sealed-copy switch.
+ *  Shared by the Decrypt result header and OutputBlock's preview header. */
+export function ReadSizeControl({
+	value,
+	onChange,
+}: {
+	value: ReadFontSize;
+	onChange: (next: ReadFontSize) => void;
+}) {
+	return (
+		<span
+			role="group"
+			aria-label="Preview text size"
+			className="flex shrink-0 items-center overflow-hidden rounded-md border border-border bg-background/60"
+		>
+			{(["s", "m", "l"] as const).map((sz) => (
+				<button
+					key={sz}
+					type="button"
+					aria-pressed={value === sz}
+					onClick={() => onChange(sz)}
+					title={`Preview text: ${sz === "s" ? "small" : sz === "m" ? "default" : "large"}`}
+					className={
+						value === sz
+							? "h-6 bg-foreground px-2 text-[10px] font-medium text-background transition-colors"
+							: "h-6 px-2 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+					}
+				>
+					{sz.toUpperCase()}
+				</button>
+			))}
+		</span>
+	);
+}
+
+/** Print just the rendered message: clone the preview card into a body-level
+ *  #print-mount, drop the dark theme so tokens resolve to paper-friendly
+ *  light values, and lean on the @media print rules in globals.css (only
+ *  #print-mount shows). When `attachments` is provided, an appendix lists
+ *  every file (name + size) and renders image attachments as framed figures
+ *  — so a paper/PDF printout carries the whole message, not just the text.
+ *  Cleanup rides afterprint, with a 60 s safety net for engines that never
+ *  fire it (the Safari cancel path). */
+export function printPreviewCard(
+	node: HTMLElement | null,
+	label: string,
+	opts?: { attachments?: EnvelopeFile[]; verification?: string | null },
+) {
+	const attachments = opts?.attachments;
+	if (typeof window === "undefined" || !node) return;
+	const mount = document.createElement("div");
+	mount.id = "print-mount";
+	const header = document.createElement("div");
+	header.className = "print-header";
+	header.textContent = `${label} · decrypted with Encryptor · ${new Date().toLocaleString()}`;
+	mount.appendChild(header);
+	mount.appendChild(node.cloneNode(true));
+
+	// Attachments appendix (built imperatively — the mount is plain DOM, the
+	// React tree is not involved). Same data-URL guards as the on-screen
+	// viewer: an attachment only prints when it is a provably safe image;
+	// everything else gets a name row so the paper trail stays complete.
+	if (attachments && attachments.length > 0) {
+		const section = document.createElement("div");
+		section.className = "print-attachments";
+		const title = document.createElement("div");
+		title.className = "print-attachments-title";
+		title.textContent = `Attachments (${attachments.length})`;
+		section.appendChild(title);
+		for (const file of attachments) {
+			const figure = document.createElement("figure");
+			figure.className = "print-attachment";
+			const url = file.type.startsWith("image/") ? envelopeFileToDataUrl(file) : null;
+			if (url && SAFE_DATA_IMAGE_RE.test(url) && isSafeImageUrl(url) !== null) {
+				const img = document.createElement("img");
+				img.src = url;
+				img.alt = file.name;
+				figure.appendChild(img);
+			}
+			const caption = document.createElement("figcaption");
+			caption.textContent = `${file.name} · ${formatFileSize(file.size)}`;
+			figure.appendChild(caption);
+			section.appendChild(figure);
+		}
+		mount.appendChild(section);
+	}
+
+	// Verification evidence line: makes a printout a self-contained trust
+	// record — WHO signed, WHICH key, WHEN it was checked. Quiet single
+	// footer line; omitted when the message is unsigned.
+	const verification = opts?.verification;
+	if (verification) {
+		const foot = document.createElement("div");
+		foot.className = "print-verification";
+		foot.textContent = `Signature verified ✓ ${verification}`;
+		mount.appendChild(foot);
+	}
+	const html = document.documentElement;
+	const prevClass = html.className;
+	html.className = `${prevClass.replace(/\bdark\b/g, "").trim()} printing`.trim();
+	let cleaned = false;
+	const cleanup = () => {
+		if (cleaned) return;
+		cleaned = true;
+		html.className = prevClass;
+		window.removeEventListener("afterprint", cleanup);
+		mount.remove();
+	};
+	window.addEventListener("afterprint", cleanup);
+	document.body.appendChild(mount);
+	window.print();
+	setTimeout(cleanup, 60_000);
+}
+
 export function OutputBlock({
 	title,
 	output,
@@ -502,6 +651,17 @@ export function OutputBlock({
 	inputBytes?: number;
 }) {
 	const [showRaw, setShowRaw] = useState(false);
+	// Reading-size preference for the rendered message (S/M/L), persisted so
+	// the comfort choice survives reloads. Applied via DecryptedMessageView's
+	// fontSize prop — an inline style on the view root, so the relative sizes
+	// inside (code at 0.85em) scale along with it.
+	const [readFontSize, setReadFontSize] = useState<ReadFontSize>(readStoredFontSize);
+	// The rendered-preview card node — cloned by the print handler.
+	const previewCardRef = useRef<HTMLDivElement | null>(null);
+	const applyReadFontSize = (next: ReadFontSize) => {
+		setReadFontSize(next);
+		applyStoredFontSize(next);
+	};
 	// Which armor fills the box when a sealed copy exists — the sealed copy
 	// is the default ("if I said I wanted it in settings, I want it").
 	const [showSealed, setShowSealed] = useState(true);
@@ -550,16 +710,16 @@ export function OutputBlock({
 							className="h-3.5 w-[3px] shrink-0 rounded-full bg-[#0055dc] dark:bg-[#5e94ff]"
 						/>
 						{/* Section-label family (R11-b): the tab input cards and the
-		Decrypt-tab result rows both render their Label as
-		text-xs uppercase tracking-wide muted — the OutputBlock title
-		is the same kind of section label, so it joins the family. */}
+                Decrypt-tab result rows both render their Label as
+                text-xs uppercase tracking-wide muted — the OutputBlock title
+                is the same kind of section label, so it joins the family. */}
 						<Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 							{title}
 						</Label>
 						{/* R8: armor stats — quiet mono detail next to the section label.
-		Armor is ASCII so string length ≈ byte length; lines from the
-		raw split. Hidden on the smallest screens to keep the row
-		uncluttered. */}
+                Armor is ASCII so string length ≈ byte length; lines from the
+                raw split. Hidden on the smallest screens to keep the row
+                uncluttered. */}
 						{output && (
 							<span
 								aria-hidden="true"
@@ -584,14 +744,17 @@ export function OutputBlock({
 						)}
 					</span>
 					{preview && (
-						<button
-							type="button"
-							onClick={() => setShowRaw((v) => !v)}
-							className="inline-flex min-h-11 items-center text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:min-h-0"
-							title="Toggle between rendered preview and raw text (advanced)"
-						>
-							{showRaw ? "Show preview" : "Show raw text"}
-						</button>
+						<span className="flex shrink-0 items-center gap-2.5">
+							<ReadSizeControl value={readFontSize} onChange={applyReadFontSize} />
+							<button
+								type="button"
+								onClick={() => setShowRaw((v) => !v)}
+								className="inline-flex min-h-11 items-center text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:min-h-0"
+								title="Toggle between rendered preview and raw text (advanced)"
+							>
+								{showRaw ? "Show preview" : "Show raw text"}
+							</button>
+						</span>
 					)}
 				</div>
 				{preview && !showRaw ? (
@@ -600,8 +763,15 @@ export function OutputBlock({
 					// use the elevated card token like every sibling preview pane
 					// (Decrypt-tab preview, SignerBadges) — light mode is unchanged
 					// (#ffffff == #ffffff).
-					<div className="min-h-[100px] rounded-xl border bg-card px-3.5 py-3 shadow-sm">
-						<DecryptedMessageView text={previewText} files={previewFiles} />
+					<div
+						ref={previewCardRef}
+						className="min-h-[100px] rounded-xl border bg-card px-3.5 py-3 shadow-sm"
+					>
+						<DecryptedMessageView
+							text={previewText}
+							files={previewFiles}
+							fontSize={READ_FONT_PX[readFontSize]}
+						/>
 					</div>
 				) : sealedCopy ? (
 					// ONE output box, two armors: the quantum-sealed copy REPLACES the
@@ -694,6 +864,20 @@ export function OutputBlock({
 					/>
 				)}
 				<div className="mt-2 flex justify-end gap-2">
+					{preview && (
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={() => printPreviewCard(previewCardRef.current, title)}
+							aria-label="Print the rendered message"
+							title="Print the rendered message — or save as PDF from the print dialog"
+							className="press-effect h-8 gap-1.5 rounded-lg px-2.5 text-xs"
+						>
+							<Printer aria-hidden="true" className="size-3.5" />
+							Print
+						</Button>
+					)}
 					{operation && (
 						<ZipDownloadButton
 							files={files ?? []}
@@ -704,8 +888,8 @@ export function OutputBlock({
 						/>
 					)}
 					{/* Copy/Download act on whichever armor the box shows. The
-						label-swap (Copy -> Copied!) changes only the button's own
-						width — the nowrap row keeps every button on one line. */}
+                                                label-swap (Copy -> Copied!) changes only the button's own
+                                                width — the nowrap row keeps every button on one line. */}
 					<DownloadButton text={shownText} title={sealedActive ? "quantum-sealed copy" : title} />
 					<CopyButton text={shownText} />
 				</div>
@@ -724,51 +908,64 @@ export function OutputBlock({
 export function InputSizeCounter({ text }: { text: string }) {
 	const trimmed = text.trim();
 	const words = trimmed ? trimmed.split(/\s+/).length : 0;
+	// Size segment: bytes under 1 KB ("~420 B") — "~0.0 KB" reads like a
+	// broken counter; one decimal in KB from 1 KB up.
+	const bytes = new TextEncoder().encode(text).length;
+	const sizeLabel =
+		bytes === 0
+			? ""
+			: bytes < 1024
+				? ` · ~${bytes.toLocaleString()} B`
+				: ` · ~${(bytes / 1024).toFixed(1)} KB`;
 	return (
 		<div aria-live="off" className="mt-1 text-right text-[10px] tabular-nums text-muted-foreground">
 			{text.length.toLocaleString()} chars
 			{words > 0 && ` · ${words.toLocaleString()} ${words === 1 ? "word" : "words"}`}
-			{text.length > 0 && ` · ~${(text.length / 1024).toFixed(1)} KB`}
+			{sizeLabel}
 		</div>
 	);
 }
 
-/* ------------------------------ DraftRestoredNote --------------------------- */
+/**
+ * Clipboard quick-paste for the Decrypt/Verify empty states. On phones the
+ * clipboard lives behind a long-press menu; an explicit button keeps the
+ * primary path to a one-tap action. Reads ONLY on click — the clipboard is
+ * never touched proactively — and replaces the input wholesale, which is
+ * always empty when the button is visible. Permission denial fails loud. */
+export function PasteFromClipboardButton({ onPaste }: { onPaste: (text: string) => void }) {
+	const [busy, setBusy] = useState(false);
 
-/** One-line "draft restored" note under a composer that rehydrated unsent
- *  text from sessionStorage (see lib/pgp/drafts.ts). Offers an explicit
- *  Discard so restoring never feels like a state change the user can't
- *  undo. Neutral muted family — amber is reserved for expiry warnings, red
- *  for errors; a draft is neither. Attachments-not-kept gets its own quiet
- *  sentence because a restored message can legitimately reference images
- *  the draft budget didn't carry. */
-export function DraftRestoredNote({
-	filesDropped,
-	onDiscard,
-}: {
-	/** True when attachments existed but exceeded the draft budget. */
-	filesDropped?: boolean;
-	/** Throw the draft away: clears storage and the composer text. */
-	onDiscard: () => void;
-}) {
+	const handlePaste = useCallback(async () => {
+		setBusy(true);
+		try {
+			const text = await navigator.clipboard.readText();
+			if (!text.trim()) {
+				toast({ title: "Clipboard is empty" });
+				return;
+			}
+			onPaste(text);
+		} catch {
+			toast({
+				title: "Couldn't read the clipboard",
+				description: "Your browser blocked clipboard access — paste with Ctrl+V instead.",
+			});
+		} finally {
+			setBusy(false);
+		}
+	}, [onPaste]);
+
 	return (
-		<div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
-			<History aria-hidden="true" className="size-3.5 shrink-0" />
-			<span>
-				Draft restored — unsent text kept in this browser from your last visit
-				{filesDropped ? " (attachments exceeded the draft budget — re-attach before sending)" : ""}.
-			</span>
-			<Button
-				type="button"
-				variant="ghost"
-				size="sm"
-				onClick={onDiscard}
-				className="ml-auto h-6 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-			>
-				<X aria-hidden="true" className="size-3" />
-				Discard
-			</Button>
-		</div>
+		<Button
+			type="button"
+			variant="outline"
+			size="sm"
+			disabled={busy}
+			onClick={handlePaste}
+			className="mt-3 gap-1.5"
+		>
+			<ClipboardPaste aria-hidden="true" className="size-3.5" />
+			{busy ? "Pasting…" : "Paste from clipboard"}
+		</Button>
 	);
 }
 
@@ -916,7 +1113,27 @@ const headingAnchors = {
  *  URL that reaches an <img src> passes through isSafeImageUrl (CodeQL
  *  js/xss-through-dom guard) exactly as before.
  */
-export function DecryptedMessageView({ text, files }: { text: string; files: EnvelopeFile[] }) {
+/** react-markdown's default URL transform strips data:/envelope: URLs, which
+ *  would gut the read-side inline-image path entirely (the composer exports
+ *  pasted images as data: figure HTML). This transform lets envelope markers
+ *  and STRICT data:image URLs through to the img guard, which still enforces
+ *  the charset-checked allow-list before anything reaches the DOM. Every
+ *  other scheme falls back to the default transform (link-safe behavior). */
+const readViewUrlTransform = (url: string) =>
+	url.startsWith("envelope://") || SAFE_DATA_IMAGE_RE.test(url) ? url : defaultUrlTransform(url);
+
+export function DecryptedMessageView({
+	text,
+	files,
+	fontSize,
+}: {
+	text: string;
+	files: EnvelopeFile[];
+	/** Root font size in px for the read view (reading-size preference).
+	 *  Relative sizes inside (code at 0.85em) scale along; headings stay
+	 *  at their own scale. */
+	fontSize?: number;
+}) {
 	// Build a filename → data URL map. First match wins (matching the
 	// Encrypt-side behavior where deduplicated names are unique).
 	const fileMap = useMemo(() => {
@@ -929,14 +1146,24 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 		return m;
 	}, [files]);
 
+	// Click-to-zoom lightbox state. The dialog shows the SAME allow-listed
+	// data URL the inline <img> already renders — nothing new reaches the
+	// DOM, it is only re-rendered larger. `name` drives the caption bar and
+	// the download anchor (parity with the attachment ImageViewer).
+	const [zoom, setZoom] = useState<{ src: string; alt: string; name: string } | null>(null);
+
 	return (
-		<div className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6">
+		<div
+			style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
+			className="msg-md-view break-words text-sm leading-relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_a]:underline-offset-2 [&_a:hover]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.85em] [&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:border-b [&_h1]:border-border/60 [&_h1]:pb-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1:first-child]:mt-0 [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:leading-tight [&_h2:first-child]:mt-0 [&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3:first-child]:mt-0 [&_h4]:mt-3 [&_h4]:mb-1.5 [&_h4]:text-sm [&_h4]:font-semibold [&_h4:first-child]:mt-0 [&_h5]:mt-3 [&_h5]:mb-1 [&_h5]:text-sm [&_h5]:font-medium [&_h5:first-child]:mt-0 [&_h6]:mt-3 [&_h6]:mb-1 [&_h6]:text-xs [&_h6]:font-medium [&_h6]:uppercase [&_h6]:tracking-wide [&_h6:first-child]:mt-0 [&_hr]:my-4 [&_hr]:border-border [&_img]:my-1 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-2 [&_table]:my-2 [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6"
+		>
 			<Markdown
-				remarkPlugins={[remarkGfm, remarkBreaks]}
+				remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
 				// Secure raw-HTML support: parse the HTML the sender wrote, then
 				// strip everything the strict schema disallows. Never renders
 				// scripts, styles, event handlers, or unsafe URLs.
 				rehypePlugins={rehypeSecureHtml}
+				urlTransform={readViewUrlTransform}
 				components={{
 					...headingAnchors,
 					a: ({ node: _node, children, ...props }) => (
@@ -986,264 +1213,79 @@ export function DecryptedMessageView({ text, files }: { text: string; files: Env
 						// the <img> — a crafted srcset/sizes attribute would bypass the
 						// src allow-list above. Only alt/src/style/className/title (ours)
 						// reach the DOM. loading=lazy also defers offscreen inline images.
+						const displayName = meta.displayName || "image";
 						return (
-							<img
-								title={title}
-								src={safeSrc}
-								alt={meta.displayName}
-								loading="lazy"
-								decoding="async"
-								style={{
-									width: `${meta.scale}%`,
-									maxWidth: "100%",
-									minHeight: "20px",
-									transform: `translate(${meta.dx}px, ${meta.dy}px)`,
-								}}
-								className="inline-block rounded border border-border align-middle"
-							/>
+							// Click-to-zoom (Notion pattern): the button wraps the SAME
+							// allow-listed data URL — the lightbox adds no new image
+							// source, it only re-renders the one already verified above.
+							<button
+								type="button"
+								onClick={() => setZoom({ src: safeSrc, alt: displayName, name: displayName })}
+								title="Click to view full size"
+								aria-label={`View image full size: ${displayName}`}
+								className="mx-0.5 inline-block cursor-zoom-in rounded align-middle transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc] focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
+							>
+								<img
+									title={title}
+									src={safeSrc}
+									alt={meta.displayName}
+									loading="lazy"
+									decoding="async"
+									style={{
+										width: `${meta.scale}%`,
+										maxWidth: "100%",
+										minHeight: "20px",
+										transform: `translate(${meta.dx}px, ${meta.dy}px)`,
+									}}
+									className="inline-block rounded border border-border align-middle"
+								/>
+							</button>
 						);
 					},
 				}}
 			>
 				{text}
 			</Markdown>
-		</div>
-	);
-}
-
-/* ---------------------------- FingerprintWords ----------------------------- */
-
-/** Compute the 20 PGP words for a fingerprint, or null when the input is not
- *  a valid 40-hex fingerprint (SignatureInfo.fingerprint is optional and
- *  historically unvalidated — never throw from render). */
-export function pgpWordsFor(fingerprint: string): string[] | null {
-	try {
-		return fingerprintToPgpWords(fingerprint);
-	} catch {
-		return null;
-	}
-}
-
-/** The 20 words, alternating shading on odd positions to mirror the even/odd
- *  word lists — comparing position-by-position over a call is the point. */
-export function PgpWordLine({ words, className = "" }: { words: string[]; className?: string }) {
-	return (
-		<p className={`font-mono text-[11px] leading-relaxed break-words ${className}`}>
-			{words.map((w, i) => (
-				<span key={i} className={i % 2 === 1 ? "text-muted-foreground" : "text-foreground"}>
-					{w}
-					{i < words.length - 1 ? " " : ""}
-				</span>
-			))}
-		</p>
-	);
-}
-
-/* ------------------------------- WordCompare ------------------------------- */
-
-/** Normalize one spoken/pasted word for comparison: lowercase, strip
- *  punctuation the caller may have transcribed ("Orlando." / "Orlando," /
- *  '"Orlando"' all compare equal to the canonical form). */
-const normalizeSpokenWord = (w: string) => w.toLowerCase().replace(/[^a-z]/g, "");
-
-const HEXISH_RE = /^[0-9a-f]{2,}$/i;
-
-/** Interactive half of "Verify by voice": your contact reads THEIR screen's
- *  20 words aloud (or pastes them); this diffs them position-by-position
- *  against THIS key's words and renders a per-position verdict.
- *
- *  The comparison is deliberately case- and punctuation-insensitive — a
- *  phone call does not transmit capitalization, and transcription quirks
- *  ("orlando," with a comma) must never mask a real difference. Position is
- *  everything: even a single mismatched slot means a different key. */
-export function WordCompare({ words }: { words: string[] }) {
-	const [open, setOpen] = useState(false);
-	const [input, setInput] = useState("");
-
-	const tokens = useMemo(() => {
-		if (!open) return [] as string[];
-		return input
-			.split(/[\s,;·]+/)
-			.map((t) => t.trim())
-			.filter(Boolean);
-	}, [input, open]);
-
-	const normed = useMemo(() => tokens.map(normalizeSpokenWord), [tokens]);
-	// Hex detection runs on the RAW tokens: normalization strips digits
-	// (letters-only comparison), which would turn "B464" into "b" and
-	// defeat the fingerprint-vs-words hint below.
-	const allHexish = tokens.length > 0 && tokens.every((t) => HEXISH_RE.test(t));
-
-	const slots = words.map((expected, i) => {
-		const got = normed[i];
-		if (got === undefined) return { expected, got: null, status: "missing" as const };
-		if (got === normalizeSpokenWord(expected)) return { expected, got, status: "match" as const };
-		return { expected, got, status: "mismatch" as const };
-	});
-	const matches = slots.filter((s) => s.status === "match").length;
-	const mismatches = slots.filter((s) => s.status === "mismatch");
-	const missing = slots.filter((s) => s.status === "missing").length;
-	const complete = tokens.length >= words.length;
-
-	if (!open) {
-		return (
-			<Button
-				type="button"
-				variant="outline"
-				size="sm"
-				onClick={() => setOpen(true)}
-				className="mt-1.5 h-7 gap-1.5 px-2 text-[11px]"
-				aria-expanded={false}
-			>
-				<GitCompare aria-hidden="true" className="size-3.5" />
-				Compare with your contact
-			</Button>
-		);
-	}
-
-	return (
-		<div className="mt-1.5 rounded-lg border border-border/60 bg-background p-2.5">
-			<div className="flex items-center justify-between gap-2">
-				<Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-					Paste or type the words your contact read to you
-				</Label>
-				<button
-					type="button"
-					onClick={() => {
-						setOpen(false);
-						setInput("");
-					}}
-					className="shrink-0 rounded px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-					aria-label="Close the word comparison"
+			{/* Read-view lightbox. DialogTitle is sr-only (the image itself is
+                            the content); Escape, backdrop, and the close button all restore
+                            the view without losing scroll position — the dialog overlays,
+                            the page stays mounted underneath. The caption bar mirrors the
+                            attachment ImageViewer: file name + a download anchor that
+                            reuses the SAME guard-passing data URL (no second decode). */}
+			<Dialog open={zoom !== null} onOpenChange={(open) => !open && setZoom(null)}>
+				<DialogContent
+					aria-describedby={undefined}
+					className="max-w-[min(92vw,960px)] overflow-hidden rounded-xl border-border/80 bg-card p-0"
 				>
-					<X aria-hidden="true" className="size-3.5" />
-				</button>
-			</div>
-			<Textarea
-				value={input}
-				onChange={(e) => setInput(e.target.value)}
-				placeholder="e.g. kickoff Medusa playhouse Istanbul …"
-				rows={2}
-				spellCheck={false}
-				className="mt-1 text-[11px] leading-relaxed field-sizing-fixed bg-background dark:bg-input/20"
-				aria-label="The 20 words your contact read to you"
-			/>
-			{/* Per-position diff: expected word per slot; emerald = confirmed,
-				red = differs (a different key), muted = not yet provided. */}
-			<div className="mt-2 flex flex-wrap gap-1">
-				{slots.map((s, i) => (
-					<span
-						key={i}
-						title={
-							s.status === "mismatch"
-								? `Position ${i + 1}: expected "${s.expected}", got "${s.got}"`
-								: s.status === "match"
-									? `Position ${i + 1}: confirmed`
-									: `Position ${i + 1}: not provided yet`
-						}
-						className={`inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 font-mono text-[11px] ${
-							s.status === "match"
-								? "border-emerald-300/60 bg-emerald-50 text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
-								: s.status === "mismatch"
-									? "border-red-300/70 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
-									: "border-border bg-muted/40 text-muted-foreground"
-						}`}
-					>
-						<span className="mr-0.5 text-[9px] opacity-60">{i % 2 === 0 ? "E" : "O"}</span>
-						{s.expected}
-						{s.status === "mismatch" && <X aria-hidden="true" className="size-3" />}
-					</span>
-				))}
-			</div>
-			<div role="status" aria-live="polite">
-				{allHexish ? (
-					<p className="mt-2 rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-						That looks like a hex fingerprint — paste the 20 words instead (they are the ones shown
-						above).
-					</p>
-				) : mismatches.length > 0 ? (
-					<p className="mt-2 rounded-md bg-red-100 px-2 py-1 text-[11px] font-medium text-red-800 dark:bg-red-950/50 dark:text-red-300">
-						{mismatches.length === 1
-							? "1 position differs"
-							: `${mismatches.length} positions differ`}
-						{" — "}this is a different key. Do not trust it.{" "}
-						<span className="font-normal">
-							{mismatches
-								.slice(0, 3)
-								.map(
-									(m) =>
-										`#${words.indexOf(m.expected) + 1} expected "${m.expected}", got "${m.got}"`,
-								)
-								.join("; ")}
-							{mismatches.length > 3 ? "; …" : ""}
-						</span>
-					</p>
-				) : complete && missing === 0 ? (
-					<p className="mt-2 rounded-md bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300">
-						All 20 words match — this is the same key. Verified by voice.
-					</p>
-				) : tokens.length > 0 ? (
-					<p className="mt-2 rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-						{matches} of 20 positions confirmed so far — {missing} more word
-						{missing === 1 ? "" : "s"} to go.
-					</p>
-				) : null}
-				{tokens.length > words.length && (
-					<p className="mt-1 text-[10px] text-muted-foreground">
-						{tokens.length - words.length} extra word{tokens.length - words.length === 1 ? "" : "s"}{" "}
-						ignored.
-					</p>
-				)}
-			</div>
+					<DialogTitle className="sr-only">{zoom?.alt ?? "Image preview"}</DialogTitle>
+					{zoom && (
+						<figure className="space-y-0">
+							<div className="flex max-h-[78vh] items-center justify-center overflow-auto bg-muted/40 p-2">
+								<img
+									src={zoom.src}
+									alt={zoom.alt}
+									className="mx-auto max-h-[76vh] w-auto max-w-full rounded-lg object-contain"
+								/>
+							</div>
+							<figcaption className="flex items-center gap-2 border-t border-border bg-background px-3 py-2">
+								<span className="truncate text-xs font-medium">{zoom.name}</span>
+								{/* Save-without-closing: the same verified data URL as
+                                                                    the inline img — one decode path, zero new bytes. */}
+								<a
+									href={zoom.src}
+									download={zoom.name}
+									className="ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground shadow-xs transition-colors hover:bg-muted hover:text-foreground"
+									aria-label={`Download ${zoom.name}`}
+									title="Download this image"
+								>
+									<Download className="size-4" aria-hidden />
+								</a>
+							</figcaption>
+						</figure>
+					)}
+				</DialogContent>
+			</Dialog>
 		</div>
-	);
-}
-
-/** "Verify by voice" — the PGP biometric word list for one fingerprint.
- *
- *  Hex fingerprints are a hostile medium for humans: 40 characters where one
- *  misread byte silently accepts a swapped key. The biometric word list is
- *  the fix — read the words aloud over a call and both sides detect any
- *  difference (transposition, duplication, omission) by ear.
- *
- *  Renders nothing when the fingerprint is absent/invalid. Collapsed by
- *  default so the reveal never pushes layout until asked for. */
-export function FingerprintWords({
-	fingerprint,
-	className = "",
-}: {
-	fingerprint: string;
-	/** Extra spacing classes from the host card (the reveal itself is
-	 *  width-neutral and inherits the host's type scale). */
-	className?: string;
-}) {
-	const words = useMemo(() => pgpWordsFor(fingerprint), [fingerprint]);
-	if (!words) return null;
-	return (
-		<details className={`group/fp ${className}`}>
-			<summary className="inline-flex cursor-pointer select-none items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground">
-				<Volume2 aria-hidden="true" className="size-3.5" />
-				Verify by voice
-				<ChevronDown
-					aria-hidden="true"
-					className="size-3 transition-transform group-open/fp:rotate-180"
-				/>
-			</summary>
-			<div className="mt-1.5 rounded-lg border border-border/60 bg-muted/40 p-2.5">
-				<PgpWordLine words={words} />
-				<p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
-					Read these 20 words to your contact over a call — every word must match on both screens.
-					Shading alternates even/odd positions.
-				</p>
-				<CopyButton
-					text={words.join(" ")}
-					label="Copy words"
-					ariaLabel="Copy the 20 fingerprint verification words"
-					className="mt-1.5 h-7 px-2 text-[11px]"
-				/>
-				<WordCompare words={words} />
-			</div>
-		</details>
 	);
 }
 
@@ -1375,10 +1417,6 @@ export function SignerBadges({ signatures }: { signatures: SignatureInfo[] }) {
 									{s.fingerprint}
 								</div>
 							)}
-							{/* Verify by voice: biometric words for the signer's
-								fingerprint — the out-of-band check against key swaps,
-								anchored to the hex line it spells. */}
-							{s.fingerprint && <FingerprintWords fingerprint={s.fingerprint} className="mt-1" />}
 						</li>
 					);
 				})}

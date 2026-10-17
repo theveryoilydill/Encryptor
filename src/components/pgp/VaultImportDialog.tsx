@@ -9,7 +9,7 @@
  * (the same sanitizers as the localStorage load path) and both actions
  * are the parent's callbacks — this component never mutates the vault.
  *
- * # Mr. AI Acting on s183173's Behalf
+ * # Mr. AI Acting on the Owner's Behalf
  */
 
 import {

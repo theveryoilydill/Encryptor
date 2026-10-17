@@ -160,11 +160,7 @@ export function ConfigureModal({
 		try {
 			const { passphrase } = await requestDecryptedKey();
 			const sealPair = generateSealKeyPair();
-			const pq = await wrapSealSecretAuto(
-				sealPair.publicKey,
-				sealPair.secretKey,
-				passphrase ?? "",
-			);
+			const pq = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, passphrase ?? "");
 			onSave({ ...privateKey, pq });
 			toast({
 				title: "Quantum seal enabled",

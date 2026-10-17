@@ -721,11 +721,7 @@ export default function PgpApp() {
 		try {
 			const { passphrase } = await requestDecryptedKey();
 			const sealPair = generateSealKeyPair();
-			const pq = await wrapSealSecretAuto(
-				sealPair.publicKey,
-				sealPair.secretKey,
-				passphrase ?? "",
-			);
+			const pq = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, passphrase ?? "");
 			handleSetPrivateKey({ ...current, pq });
 			handleSetSettings({ ...settingsRef.current, pqSealedCopy: true });
 			toast({

@@ -45,7 +45,7 @@ import {
 	scrubKeyHistory,
 	type KeyHistory,
 } from "@/lib/pgp/key-history";
-import { generateSealKeyPair, wrapSealSecret } from "@/lib/pgp/pq";
+import { generateSealKeyPair, wrapSealSecretAuto } from "@/lib/pgp/pq";
 import { readKey, unlockPrivateKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import { runCryptoSelfTest, type SelfTestResult } from "@/lib/pgp/self-test";
@@ -712,26 +712,20 @@ export default function PgpApp() {
 
 	// One-click post-quantum setup (banner + Settings inline button). Unlocks
 	// the key once (passphrase prompt / session cache), generates the ML-KEM-768
-	// pair, wraps the secret under the passphrase, and turns on sealed copies.
-	// Keybase configs qualify too — they now carry encrypted armor, so the
-	// passphrase that wraps the secret is available at unlock time.
+	// pair, wraps the secret under the passphrase when present (or a device key
+	// otherwise), and turns on sealed copies.
 	const handleEnableQuantumSeal = useCallback(async (): Promise<boolean> => {
 		const current = privateKeyRef.current;
 		if (!current?.encryptedArmored || !current.info || pqBusy) return false;
 		setPqBusy(true);
 		try {
 			const { passphrase } = await requestDecryptedKey();
-			if (!passphrase) {
-				toast({
-					title: "Passphrase required",
-					description:
-						"The quantum-seal secret is protected by your passphrase — enter it in the prompt and try again.",
-					variant: "destructive",
-				});
-				return false;
-			}
 			const sealPair = generateSealKeyPair();
-			const pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
+			const pq = await wrapSealSecretAuto(
+				sealPair.publicKey,
+				sealPair.secretKey,
+				passphrase ?? "",
+			);
 			handleSetPrivateKey({ ...current, pq });
 			handleSetSettings({ ...settingsRef.current, pqSealedCopy: true });
 			toast({

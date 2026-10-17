@@ -374,6 +374,18 @@ then require a human token), or keep the worker on a non-obvious route. The limi
 already minimizes writes: over-limit requests are rejected from a plain read with
 zero writes, and public reads fail open without blocking when the limiter is down.
 
+### Daily preview DB reset at midnight
+
+Preview deployments can use a dedicated D1 and clear it automatically every day.
+This repository includes `.github/workflows/reset-preview-d1.yml`, scheduled at
+`0 0 * * *` (00:00 UTC), which deletes preview registry rows while keeping the
+schema/migrations intact.
+
+Required repo secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_API_TOKEN` (D1 edit scope on the preview database)
+
 ## Deployment (free tier, ~5 minutes)
 
 ```bash

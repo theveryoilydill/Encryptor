@@ -67,6 +67,8 @@ const HTML_ENTITIES: ReadonlyArray<readonly [RegExp, string]> = [
 	[/&amp;/g, "&"],
 ];
 
+const BASE64_LINE_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 /**
  * Cheap detection pass for the input banner — returns the damage classes
  * found, empty array when the block looks clean (or isn't an armor block
@@ -117,7 +119,7 @@ export function findArmorIssues(text: string): ArmorFix[] {
 			const t = l.trim();
 			if (t === "") return true; // blank line inside the body region
 			if (t.startsWith("=")) return false; // checksum line
-			if (/^[A-Za-z0-9+/=\s]+$/.test(t)) return false; // base64
+			if (BASE64_LINE_RE.test(t)) return false; // base64
 			return true; // prose / quoted junk
 		});
 		if (hasStray) issues.add("stray-lines");
@@ -235,7 +237,7 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 			if (/^=[A-Za-z0-9+/]{4}$/.test(line)) oldChecksum = line;
 			continue; // checksum is recomputed below either way
 		}
-		if (!/^[A-Za-z0-9+/=\s]+$/.test(line)) {
+		if (!BASE64_LINE_RE.test(line)) {
 			fixes.add("stray-lines"); // prose / signature boilerplate inside body
 			continue;
 		}

@@ -35,6 +35,16 @@ export interface Envelope {
 	files: EnvelopeFile[];
 }
 
+function normalizeEnvelopeFile(file: Partial<EnvelopeFile> | null | undefined): EnvelopeFile {
+	const rawName = typeof file?.name === "string" ? file.name.trim() : "";
+	return {
+		name: rawName || "unnamed",
+		type: typeof file?.type === "string" ? file.type : "application/octet-stream",
+		data: typeof file?.data === "string" ? file.data : "",
+		size: Number.isFinite(file?.size) ? (file?.size as number) : 0,
+	};
+}
+
 /**
  * Build the wire-format string that gets passed to openpgp.encrypt.
  *
@@ -67,12 +77,7 @@ export function parseDecryptedPlaintext(
 				kind: "envelope",
 				envelope: {
 					text: parsed.text,
-					files: parsed.files.map((f) => ({
-						name: f?.name ?? "unnamed",
-						type: f?.type ?? "application/octet-stream",
-						data: f?.data ?? "",
-						size: f?.size ?? 0,
-					})),
+					files: parsed.files.map((f) => normalizeEnvelopeFile(f)),
 				},
 			};
 		}

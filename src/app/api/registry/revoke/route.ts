@@ -188,7 +188,7 @@ async function revokeByAdmin(
 
 /**
  * Flip the revoked flag permanently, drop any live challenge nonces, purge
- * the escrowed encrypted private key, and RELEASE the email + subkey
+ * the escrowed encrypted private key, and RELEASE the email + subkey + name
  * indexes. Revocation stays visible by fingerprint lookup; releasing the
  * indexes frees scarce namespaces (email claims, 64-bit key IDs). A revoked
  * record keeps only its public revocation information — escrowed private
@@ -207,6 +207,7 @@ async function markRevoked(
 			.bind(fingerprint, nowSeconds(), reason),
 		db.prepare("DELETE FROM registry_challenges WHERE fingerprint = ?1").bind(fingerprint),
 		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(fingerprint),
+		db.prepare("DELETE FROM registry_names WHERE fingerprint = ?1").bind(fingerprint),
 		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(fingerprint),
 	]);
 }

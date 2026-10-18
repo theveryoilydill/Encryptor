@@ -95,10 +95,13 @@ export function ComposerOverlay({
 	};
 
 	const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-		// Mirror the tab's Ctrl/Cmd+Enter primary action — the portal sits
-		// outside the <section> keydown handler.
+		// Mirror the tab's Ctrl/Cmd+Enter primary action. React synthetic
+		// events bubble through portals along the REACT tree, so without
+		// stopPropagation this keystroke would ALSO reach SignTab's
+		// <section> onKeyDown and run the primary action twice.
 		if (isPrimaryActionChord(e)) {
 			e.preventDefault();
+			e.stopPropagation();
 			onPrimaryAction();
 		}
 		// Ctrl/Cmd+Shift+E collapses the overlay — same dialog-safe guard as

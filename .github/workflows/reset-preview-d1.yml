@@ -23,12 +23,10 @@ jobs:
       - name: Reset preview registry data
         run: |
           cat > /tmp/reset-preview-registry.sql <<'SQL'
-          BEGIN;
           DELETE FROM registry_challenges;
           DELETE FROM registry_rate;
           DELETE FROM registry_audit;
           DELETE FROM registry_keys;
-          COMMIT;
           SQL
           bunx wrangler d1 execute REGISTRY_DB --env preview --remote --file /tmp/reset-preview-registry.sql
         env:

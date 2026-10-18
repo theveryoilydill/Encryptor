@@ -36,10 +36,10 @@ in your browser; private keys and plaintext never touch the server.
   duration of an operation and is discarded afterwards.
 - Only the passphrase-**encrypted** private key and key metadata are
   persisted (browser `localStorage`).
-- No message content is ever uploaded. The only network traffic is public
-  key lookups, proxied through this app's own origin (`/api/keybase/*`) to
-  Keybase, keys.openpgp.org, and the Ubuntu keyserver — because those
-  services don't send CORS headers.
+- No message content is ever uploaded. Network traffic includes proxied public
+  key lookups (`/api/keybase/*`), key-registry publish/revoke/lookup calls,
+  encrypted-key escrow/restore requests, and Keybase login via this app's API
+  routes.
 - An in-browser crypto self-test (footer button) round-trips key generation,
   encrypt, decrypt, sign, and verify to confirm the environment is healthy.
 

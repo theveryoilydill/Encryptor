@@ -12,9 +12,10 @@
  * Safety properties:
  *  - Memoized per isolate: one cheap SELECT per isolate after the first
  *    request; migrations only run when a version is actually missing.
- *  - Idempotent: CREATE TABLE/INDEX IF NOT EXISTS everywhere; the two
- *    ALTER TABLE statements (0003) tolerate "duplicate column" so a
- *    database previously migrated via wrangler is left untouched.
+ *  - Idempotent: CREATE TABLE/INDEX IF NOT EXISTS everywhere; each statement
+ *    individually tolerates "already exists"/"duplicate column" (0003's two
+ *    ALTER TABLE statements) so a database previously migrated via wrangler
+ *    completes only its missing statements.
  *  - Concurrent-isolate safe: two isolates racing the same migration both
  *    produce identical idempotent DDL; SQLite serializes the writes.
  *  - Fail loud: a failed migration clears the memoized promise (the next
@@ -47,10 +48,22 @@ function splitStatements(sql: string): string[] {
  *  scripts whose leading content is a comment ("SQL code did not contain a
  *  statement"), so the deterministic path is: strip comments, split on ";",
  *  run each statement as a prepared statement. Pure DDL today — no ";"
- *  inside literals (see the generated file's header constraint). */
+ *  inside literals (see the generated file's header constraint).
+ *
+ *  "Already exists" errors are tolerated PER STATEMENT, not per script:
+ *  every statement still runs, so a partially-migrated database (e.g. one
+ *  previously set up via wrangler, or a lost race between two isolates)
+ *  completes its remaining statements instead of the whole script being
+ *  abandoned after the first duplicate-object error. Any other error is
+ *  rethrown so the migration is never recorded as applied. */
 async function runMigrationScript(db: D1DatabaseLike, sql: string): Promise<void> {
 	for (const statement of splitStatements(sql)) {
-		await db.prepare(statement).run();
+		try {
+			await db.prepare(statement).run();
+		} catch (e) {
+			const message = (e as Error).message ?? "";
+			if (!ALREADY_APPLIED_RE.test(message)) throw e;
+		}
 	}
 }
 
@@ -73,15 +86,11 @@ async function applyMissingMigrations(db: D1DatabaseLike): Promise<void> {
 	const applied = new Set(await appliedSchemaVersions(db));
 	for (const migration of REGISTRY_MIGRATIONS) {
 		if (applied.has(migration.id)) continue;
-		try {
-			await runMigrationScript(db, migration.sql);
-		} catch (e) {
-			const message = (e as Error).message ?? "";
-			// Tolerate partial application (e.g. the operator already ran
-			// `wrangler d1 migrations apply`): the DDL is idempotent by design,
-			// so "already exists" is success — anything else is fatal.
-			if (!ALREADY_APPLIED_RE.test(message)) throw e;
-		}
+		// Per-statement "already exists" tolerance lives inside
+		// runMigrationScript; anything thrown here is a real failure,
+		// so the ledger row below is only written after every
+		// statement in the script has actually been attempted.
+		await runMigrationScript(db, migration.sql);
 		await db
 			.prepare(
 				`INSERT INTO ${LEDGER_TABLE} (version, applied_at) VALUES (?1, ?2)

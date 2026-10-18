@@ -699,7 +699,9 @@ function RestoreForm({
 		try {
 			const escrow = await registryFetchEscrow(fingerprint);
 			if (!escrow.encryptedPrivate) {
-				setError("The escrow disappeared — publish or restore a key first.");
+				setError(
+					"No encrypted backup is escrowed for this fingerprint. Sign up with an already generated key instead.",
+				);
 				return;
 			}
 			// Decrypt LOCALLY: the passphrase never leaves this browser. The

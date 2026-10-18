@@ -46,6 +46,33 @@ export interface ZipMetadata {
 }
 
 /**
+ * Reduce a sender-controlled attachment name to a safe, unique ZIP entry
+ * basename before it reaches JSZip:
+ *  - strip directory components (a decrypted `../../.bashrc` must never
+ *    become a traversal path inside the archive),
+ *  - drop leading dots (hidden files / relative-hop leftovers),
+ *  - fall back when nothing usable remains,
+ *  - de-duplicate so two entries never silently overwrite one another.
+ */
+function sanitizeZipEntryName(rawName: string, used: Set<string>): string {
+	const base = rawName.replace(/\\/g, "/").split("/").pop() ?? "";
+	const stripped = base.replace(/^\.+/, "").trim();
+	const safe = stripped.length > 0 ? stripped : "attachment";
+	if (!used.has(safe)) {
+		used.add(safe);
+		return safe;
+	}
+	const dot = safe.lastIndexOf(".");
+	const stem = dot > 0 ? safe.slice(0, dot) : safe;
+	const ext = dot > 0 ? safe.slice(dot) : "";
+	let n = 2;
+	while (used.has(`${stem}-${n}${ext}`)) n++;
+	const unique = `${stem}-${n}${ext}`;
+	used.add(unique);
+	return unique;
+}
+
+/**
  * Build a ZIP blob from the given entries + metadata.
  *
  * The ZIP always contains:
@@ -65,11 +92,13 @@ export async function buildZipBundle(
 		zip.file("output.txt", metadata.output);
 	}
 
-	// Add attached/extracted files under files/.
+	// Add attached/extracted files under files/ — names are sanitized
+	// (basename-only, no leading dots) and de-duplicated per bundle.
 	const filesFolder = zip.folder("files");
+	const usedNames = new Set<string>();
 	for (const entry of entries) {
 		if (filesFolder) {
-			filesFolder.file(entry.name, entry.data);
+			filesFolder.file(sanitizeZipEntryName(entry.name, usedNames), entry.data);
 		}
 	}
 

@@ -74,7 +74,6 @@ async function main() {
 	const token = body.revocationToken;
 	log("publish", `ok — fingerprint ${body.fingerprint}, keyId ${body.keyId}`);
 	log("publish", `emails indexed: ${(body.emails ?? []).join(", ") || "(none)"}`);
-	log("publish", `revocation token: ${token}`);
 
 	// 3. Verify public lookup by email works.
 	const lookup = await fetch(

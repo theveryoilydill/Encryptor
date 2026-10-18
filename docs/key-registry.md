@@ -146,7 +146,6 @@ available in-app under **Footer → Public API**.
 # 1) Look up a published key by fingerprint, key ID, or email (CORS *, no auth):
 curl -s "https://<worker>/api/registry/lookup?email=you@example.com" | jq
 curl -s "https://<worker>/api/registry/lookup?fingerprint=<40 hex>" | jq
-#    ...add &words=1 for the PGP-word rendering of the fingerprint.
 
 # 2) Publish a public key (optionally with a passphrase-encrypted escrow):
 curl -s -X POST "https://<worker>/api/registry/publish" \
@@ -182,10 +181,8 @@ the words to the key owner over a voice channel — the two alternating lists
 detect transposed, duplicated, and skipped words, which defeats MitM key
 substitution during out-of-band verification.
 
-REST consumers get the same data opt-in: append **`&words=1`** (or `words=true`)
-to any lookup call and each key gains a `words: string[20]` field.
-Without the parameter the field is omitted entirely, keeping default
-responses small.
+The app renders the same PGP words locally from the returned fingerprint when
+you need read-aloud verification.
 
 ## Quantum-seal public keys (`pqSealPk`, migration 0005)
 

@@ -278,7 +278,7 @@ export function RecipientPicker({
 							expiresAt,
 						},
 					]);
-					rememberRecentRecipient({ label: result.label, fingerprint: fpr });
+					rememberRecentRecipient({ label: result.label, fingerprint: fpr, armored: armoredKey });
 				} else if (result.source === "keybase" && result.username) {
 					// Fetch the full public key from Keybase
 					const r = await lookupKeybaseUsersClient([result.username], PROXIES.keybaseProxy);
@@ -313,9 +313,10 @@ export function RecipientPicker({
 						armored: k.armored,
 					});
 				} else if (result.fingerprint) {
-					// Fetch the key from keys.openpgp.org or Ubuntu keyserver
+					// Fetch the key from keys.openpgp.org
+					const lookupKeyID = (result.keyID ?? result.fingerprint).replace(/^0x/i, "").slice(-16);
 					const fetched = await fetchKeysFromAllSources(
-						[result.fingerprint],
+						[lookupKeyID],
 						PROXIES.fetchkeyProxy,
 						PROXIES.fetchkeyOpgProxy,
 					);

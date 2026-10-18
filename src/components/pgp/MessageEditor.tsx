@@ -22,7 +22,7 @@
  * bridge below is shared by both engines.
  */
 import dynamic from "next/dynamic";
-import { DEFAULT_INLINE_IMAGE_SCALE } from "@/lib/pgp/inline-image";
+import { DEFAULT_INLINE_IMAGE_SCALE, safeDecodeURIComponent } from "@/lib/pgp/inline-image";
 import { envelopeFileToDataUrl, type EnvelopeFile } from "@/lib/pgp/envelope";
 import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 
@@ -52,7 +52,7 @@ export function markersToDataUrls(text: string, files: EnvelopeFile[]): string {
 	if (!text.includes("envelope://")) return text;
 	const byName = new Map(files.map((f) => [f.name, envelopeFileToDataUrl(f)]));
 	return text.replace(/!\[([^\]]*)\]\(envelope:\/\/([^)\s]+)\)/g, (whole, alt, encodedName) => {
-		const name = decodeURIComponent(encodedName);
+		const name = safeDecodeURIComponent(encodedName);
 		const dataUrl = byName.get(name);
 		return dataUrl ? `![${alt}](${dataUrl})` : whole;
 	});
@@ -98,7 +98,7 @@ export function MessageEditor({
 	files,
 	onNewImageDataUrl,
 	editorKind,
-	onFilesDropped: _onFilesDropped,
+	onFilesDropped,
 	placeholder,
 	expanded = false,
 }: {
@@ -117,8 +117,6 @@ export function MessageEditor({
 	 *  the overlay through 100%-height chains. */
 	expanded?: boolean;
 }) {
-	void _onFilesDropped;
-
 	if (editorKind === "vscode") {
 		return (
 			<VSCodeEditor
@@ -126,6 +124,7 @@ export function MessageEditor({
 				onChange={onChange}
 				files={files}
 				onNewImageDataUrl={onNewImageDataUrl}
+				onFilesDropped={onFilesDropped}
 				placeholder={placeholder}
 				expanded={expanded}
 			/>

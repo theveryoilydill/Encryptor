@@ -8,6 +8,7 @@ import {
 	lastSaltSource,
 	nowSeconds,
 	rateLimitSafe,
+	tooManyRequests,
 } from "@/lib/registry/db";
 import { appliedSchemaVersions, pendingSchemaVersions } from "@/lib/registry/migrate";
 import { clientIP, isLocalDevHost, registryErrorResponse } from "@/lib/registry/routes";
@@ -59,7 +60,7 @@ export async function GET(req: NextRequest) {
 		const db = await getRegistryDBReady();
 		// Health checks must not be blocked by rate limiting, but an unbounded
 		// endpoint is still a DoS surface — generous cap, fail-open.
-		await rateLimitSafe(
+		const gate = await rateLimitSafe(
 			db,
 			"health",
 			clientIP(req),
@@ -67,6 +68,11 @@ export async function GET(req: NextRequest) {
 			LIMITS.registryLookupWindowSec,
 			true,
 		);
+		if (!gate.allowed && !gate.limiterDown) {
+			return registryErrorResponse(
+				tooManyRequests("Too many health checks from this IP", gate.retryAfterSeconds),
+			);
+		}
 		const applied = await appliedSchemaVersions(db);
 		// Resolve (or provision) the rate-limit salt — since 0004 the salt is
 		// self-provisioned into registry_meta on first boot, so this can no

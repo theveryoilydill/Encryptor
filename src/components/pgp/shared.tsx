@@ -50,7 +50,7 @@ import {
 	SAFE_DATA_IMAGE_RE,
 	type EnvelopeFile,
 } from "@/lib/pgp/envelope";
-import { parseInlineImageAlt } from "@/lib/pgp/inline-image";
+import { parseInlineImageAlt, safeDecodeURIComponent } from "@/lib/pgp/inline-image";
 import { formatTimestamp } from "@/lib/pgp/signer-info";
 import { getKeyExpiryStatus } from "@/lib/pgp/key-details";
 import {
@@ -1182,7 +1182,9 @@ export function DecryptedMessageView({
 						const raw = typeof src === "string" ? src : null;
 						const candidate =
 							raw !== null && raw.startsWith("envelope://")
-								? (fileMap.get(decodeURIComponent(raw.slice("envelope://".length))) ?? null)
+								? (fileMap.get(
+										safeDecodeURIComponent(raw.slice("envelope://".length)),
+									) ?? null)
 								: raw;
 						// Barrier guard for static analysis: regex-test the exact
 						// tainted string before it reaches <img src>.

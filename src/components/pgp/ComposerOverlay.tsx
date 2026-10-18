@@ -99,6 +99,7 @@ export function ComposerOverlay({
 		// outside the <section> keydown handler.
 		if (isPrimaryActionChord(e)) {
 			e.preventDefault();
+			e.stopPropagation();
 			onPrimaryAction();
 		}
 		// Ctrl/Cmd+Shift+E collapses the overlay — same dialog-safe guard as

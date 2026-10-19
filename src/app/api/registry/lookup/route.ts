@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
  * GET /api/registry/lookup — PUBLIC read endpoint (no auth, CORS *).
  *
  * Exactly one query parameter is required:
- *   ?fingerprint=<40 hex>   — primary key fingerprint
+ *   ?fingerprint=<40|64 hex> — primary key fingerprint (v4/v5 or v6)
  *   ?key_id=<16 hex>        — primary OR subkey long key ID
  *   ?email=<address>        — exact-match email (as published)
  *   ?name=<display name>    — exact-match User ID display name (lowercased;
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
 
 		if (fingerprint) {
 			const fpr = normalizeFingerprint(fingerprint);
-			if (!fpr) throw new RegistryError("fingerprint must be 40 hex characters", 400);
+			if (!fpr) throw new RegistryError("fingerprint must be 40 or 64 hex characters", 400);
 			const result = await db
 				.prepare(`SELECT ${SELECT_COLUMNS} FROM registry_keys WHERE fingerprint = ?1`)
 				.bind(fpr)

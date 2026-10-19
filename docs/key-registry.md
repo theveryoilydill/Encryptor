@@ -145,8 +145,7 @@ available in-app under **Footer → Public API**.
 ```bash
 # 1) Look up a published key by fingerprint, key ID, or email (CORS *, no auth):
 curl -s "https://<worker>/api/registry/lookup?email=you@example.com" | jq
-curl -s "https://<worker>/api/registry/lookup?fingerprint=<40 hex>" | jq
-#    ...add &words=1 for the PGP-word rendering of the fingerprint.
+curl -s "https://<worker>/api/registry/lookup?fingerprint=<40|64 hex>" | jq
 
 # 2) Publish a public key (optionally with a passphrase-encrypted escrow):
 curl -s -X POST "https://<worker>/api/registry/publish" \
@@ -156,12 +155,12 @@ curl -s -X POST "https://<worker>/api/registry/publish" \
 #      it is shown once and is the only key-free way to retract.
 
 # 3) Restore an escrowed backup (returns the passphrase-ENCRYPTED private key):
-curl -s "https://<worker>/api/registry/private-key?fingerprint=<40 hex>" | jq
+curl -s "https://<worker>/api/registry/private-key?fingerprint=<40|64 hex>" | jq
 
 # 4) Revoke with the one-time token (no private key needed):
 curl -s -X POST "https://<worker>/api/registry/revoke" \
   -H "Content-Type: application/json" \
-  -d '{"fingerprint":"<40 hex>","token":"<one-time token>"}'
+  -d '{"fingerprint":"<40|64 hex>","token":"<one-time token>"}'
 
 # 5) Operator health (schema, limiter write probe, Turnstile + write-lock state):
 curl -s "https://<worker>/api/registry/health" | jq
@@ -182,10 +181,8 @@ the words to the key owner over a voice channel — the two alternating lists
 detect transposed, duplicated, and skipped words, which defeats MitM key
 substitution during out-of-band verification.
 
-REST consumers get the same data opt-in: append **`&words=1`** (or `words=true`)
-to any lookup call and each key gains a `words: string[20]` field.
-Without the parameter the field is omitted entirely, keeping default
-responses small.
+The app renders the same PGP words locally from the returned fingerprint when
+you need read-aloud verification.
 
 ## Quantum-seal public keys (`pqSealPk`, migration 0005)
 

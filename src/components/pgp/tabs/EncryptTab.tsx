@@ -92,6 +92,7 @@ import {
 	describeEncryptedMessage,
 	encryptAndSign,
 	encryptMessage,
+	keyIDFromFingerprint,
 	listPrivateKeyIds,
 } from "@/lib/pgp/pgp";
 import {
@@ -1713,7 +1714,7 @@ export function EncryptTab({
 							<span
 								title={
 									outputMeta.signerFp
-										? `Signed by ${outputMeta.signer} at seal time · key id ${formatFingerprint(outputMeta.signerFp.slice(-16))}`
+										? `Signed by ${outputMeta.signer} at seal time · key id ${formatFingerprint(keyIDFromFingerprint(outputMeta.signerFp))}`
 										: `Signed by ${outputMeta.signer} — display label captured at seal time (not verified here).`
 								}
 								className="cursor-help rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-500"

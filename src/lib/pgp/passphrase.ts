@@ -93,13 +93,14 @@ function randomInt(max: number): number {
 
 /**
  * Generate a dash-joined passphrase of `words` random words plus a 2-digit
- * suffix, e.g. "ember-vault" style: "granite-harbor-kernel-quartz-raven-42".
+ * suffix, e.g. "ember-vault" style:
+ * "granite-harbor-kernel-quartz-raven-onyx-cedar-comet-falcon-atlas-42".
  *
  * ENTROPY: the 64-word list gives 6 bits per word (log2(64)); the 2-digit
- * suffix adds log2(100) ≈ 6.64 bits. Default 5 words → 5×6 + 6.64 ≈ 36.6 bits;
- * pass more words for higher entropy (≈ 6·words + 6.64 bits total).
+ * suffix adds log2(100) ≈ 6.64 bits. Default 10 words → 10×6 + 6.64 ≈ 66.6
+ * bits; pass more words for higher entropy (≈ 6·words + 6.64 bits total).
  */
-export function generatePassphrase(words = 5): string {
+export function generatePassphrase(words = 10): string {
 	const count = Math.max(1, Math.floor(words));
 	const picked: string[] = [];
 	for (let i = 0; i < count; i++) {

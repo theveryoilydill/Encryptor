@@ -23,7 +23,7 @@ import {
 } from "./keybase";
 import { registryLookup, type RegistryLookupKey } from "@/lib/registry/client";
 import { normalizeDisplayName } from "@/lib/registry/name";
-import { validateArmoredKey } from "@/lib/pgp/pgp";
+import { keyIDFromFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 
 /**
  * A locally-configured key that can be tried for signature verification
@@ -71,12 +71,19 @@ const EMAIL_SUGGEST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *  Shared by every registry-backed search (owner DRY requirement). */
 async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchResult> {
 	let label = k.fingerprint;
+	// Key ID: openpgp-canonical form — for v6 keys that is the FIRST 64
+	// fingerprint bits, so a bare suffix would be wrong. Prefer the ID from
+	// the parsed key material (the armor is validated below anyway, and it
+	// matches the registry's own key_id index); fall back to the version-
+	// aware fingerprint derivation when parsing fails.
+	let keyID = keyIDFromFingerprint(k.fingerprint);
 	try {
 		const described = await validateArmoredKey(k.armored);
 		const first = described.info?.userIDs?.[0];
 		if (first?.name && first?.email) label = `${first.name} <${first.email}>`;
 		else if (first?.email) label = first.email;
 		else if (first?.name) label = first.name;
+		if (described.info?.keyID) keyID = described.info.keyID;
 	} catch {
 		// label falls back to the fingerprint
 	}
@@ -84,13 +91,13 @@ async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchR
 		source: "encryptor" as const,
 		label,
 		fingerprint: k.fingerprint,
-		keyID: k.fingerprint.slice(-16),
+		keyID,
 		armored: k.armored,
 	};
 }
 
-/** Query the Encryptor Registry for email / name / 40-hex / 16-hex queries
- *  and map live keys to suggestion results (owner feedback: surface
+/** Query the Encryptor Registry for email / name / fingerprint (40-hex v4/v5
+ *  or 64-hex v6) / 16-hex queries and map live keys to suggestion results (owner feedback: surface
  *  Encryptor keys in the recipients box like the other key directories —
  *  INCLUDING by display name, so searching "john smith" finds the key
  *  published as "John Smith"). Revoked keys are never suggested.
@@ -101,7 +108,7 @@ export async function registrySuggestResults(q: string): Promise<KeySearchResult
 	const flat = trimmed.replace(/\s+/g, "");
 	if (EMAIL_SUGGEST_RE.test(trimmed)) {
 		keys = await registryLookup({ email: trimmed.toLowerCase() });
-	} else if (/^[0-9A-Fa-f]{40}$/.test(flat)) {
+	} else if (/^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$/.test(flat)) {
 		keys = await registryLookup({ fingerprint: flat.toUpperCase() });
 	} else if (/^(0x)?[0-9A-Fa-f]{16}$/.test(flat)) {
 		keys = await registryLookup({ keyId: flat.replace(/^0x/i, "").toUpperCase() });

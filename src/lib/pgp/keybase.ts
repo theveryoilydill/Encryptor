@@ -532,7 +532,7 @@ export interface KeySearchResult {
 	email?: string;
 	/** Optional avatar URL (Keybase only). */
 	pictureUrl?: string;
-	/** Key fingerprint (40-hex), if known. */
+	/** Key fingerprint (40-hex v4 / 64-hex v6), if known. */
 	fingerprint?: string;
 	/** Short key ID (16-hex), if known. */
 	keyID?: string;

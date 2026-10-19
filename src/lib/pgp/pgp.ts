@@ -1122,6 +1122,20 @@ export function formatFingerprint(fp: string): string {
 	return fp.replace(/(.{4})/g, "$1 ").trim();
 }
 
+/**
+ * Derive a key ID from a fingerprint the way OpenPGP defines it per key
+ * version: v4/v5 keys take the LOW 64 bits (last 16 hex chars), while v6
+ * keys (64-hex fingerprints) take the HIGH 64 bits (first 16 hex chars) —
+ * matching openpgp's getKeyIDs() and the registry's parsed key_id index.
+ * Use this whenever a bare fingerprint must stand in for a key ID (legacy
+ * persisted entries, seal metadata) so v6 keys resolve to the canonical ID
+ * instead of a meaningless suffix.
+ */
+export function keyIDFromFingerprint(fpr: string): string {
+	const hex = fpr.replace(/^0x/i, "").replace(/\s+/g, "").toUpperCase();
+	return hex.length === 64 ? hex.slice(0, 16) : hex.slice(-16);
+}
+
 /** Format a Date for display, or "never" / "unknown" for falsy values. */
 export function formatKeyDate(d: Date | null | undefined): string {
 	if (!d) return "never";

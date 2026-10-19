@@ -52,23 +52,29 @@ export interface ZipMetadata {
  *    become a traversal path inside the archive),
  *  - drop leading dots (hidden files / relative-hop leftovers),
  *  - fall back when nothing usable remains,
- *  - de-duplicate so two entries never silently overwrite one another.
+ *  - de-duplicate so two entries never silently overwrite one another
+ *    (case-INSENSITIVELY — Windows/macOS extractors default to
+ *    case-preserving-but-insensitive filesystems, where `Report.pdf` and
+ *    `report.pdf` would clobber each other at extraction time even though
+ *    the archive lists them as distinct entries).
  */
 function sanitizeZipEntryName(rawName: string, used: Set<string>): string {
 	const base = rawName.replace(/\\/g, "/").split("/").pop() ?? "";
 	const stripped = base.replace(/^\.+/, "").trim();
 	const safe = stripped.length > 0 ? stripped : "attachment";
-	if (!used.has(safe)) {
-		used.add(safe);
+	// Original case is returned to the archive; only the collision
+	// bookkeeping is case-folded.
+	if (!used.has(safe.toLowerCase())) {
+		used.add(safe.toLowerCase());
 		return safe;
 	}
 	const dot = safe.lastIndexOf(".");
 	const stem = dot > 0 ? safe.slice(0, dot) : safe;
 	const ext = dot > 0 ? safe.slice(dot) : "";
 	let n = 2;
-	while (used.has(`${stem}-${n}${ext}`)) n++;
+	while (used.has(`${stem}-${n}${ext}`.toLowerCase())) n++;
 	const unique = `${stem}-${n}${ext}`;
-	used.add(unique);
+	used.add(unique.toLowerCase());
 	return unique;
 }
 
@@ -93,7 +99,9 @@ export async function buildZipBundle(
 	}
 
 	// Add attached/extracted files under files/ — names are sanitized
-	// (basename-only, no leading dots) and de-duplicated per bundle.
+	// (basename-only, no leading dots) and de-duplicated per bundle
+	// (case-insensitively, so extraction on case-insensitive filesystems
+	// can never overwrite one entry with another).
 	const filesFolder = zip.folder("files");
 	const usedNames = new Set<string>();
 	for (const entry of entries) {

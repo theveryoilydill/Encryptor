@@ -23,7 +23,7 @@ import {
 } from "./keybase";
 import { registryLookup, type RegistryLookupKey } from "@/lib/registry/client";
 import { normalizeDisplayName } from "@/lib/registry/name";
-import { validateArmoredKey } from "@/lib/pgp/pgp";
+import { keyIDFromFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 
 /**
  * A locally-configured key that can be tried for signature verification
@@ -71,12 +71,19 @@ const EMAIL_SUGGEST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *  Shared by every registry-backed search (owner DRY requirement). */
 async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchResult> {
 	let label = k.fingerprint;
+	// Key ID: openpgp-canonical form — for v6 keys that is the FIRST 64
+	// fingerprint bits, so a bare suffix would be wrong. Prefer the ID from
+	// the parsed key material (the armor is validated below anyway, and it
+	// matches the registry's own key_id index); fall back to the version-
+	// aware fingerprint derivation when parsing fails.
+	let keyID = keyIDFromFingerprint(k.fingerprint);
 	try {
 		const described = await validateArmoredKey(k.armored);
 		const first = described.info?.userIDs?.[0];
 		if (first?.name && first?.email) label = `${first.name} <${first.email}>`;
 		else if (first?.email) label = first.email;
 		else if (first?.name) label = first.name;
+		if (described.info?.keyID) keyID = described.info.keyID;
 	} catch {
 		// label falls back to the fingerprint
 	}
@@ -84,7 +91,7 @@ async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchR
 		source: "encryptor" as const,
 		label,
 		fingerprint: k.fingerprint,
-		keyID: k.fingerprint.slice(-16),
+		keyID,
 		armored: k.armored,
 	};
 }

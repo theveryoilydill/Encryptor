@@ -68,6 +68,12 @@ const HTML_ENTITIES: ReadonlyArray<readonly [RegExp, string]> = [
 ];
 
 const BASE64_LINE_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+// Permissive per-LINE check: RFC 4880 §6.3 caps lines at 76 chars but does
+// NOT require 4-char multiples per line (decoders must ignore line-break
+// whitespace entirely), so a valid body can contain a non-multiple-of-four
+// line before the final one. Lines are classified with this; structural
+// validity is judged on the JOINED body with BASE64_LINE_RE.
+const BASE64_FRAGMENT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 /**
  * Cheap detection pass for the input banner — returns the damage classes
@@ -115,13 +121,17 @@ export function findArmorIssues(text: string): ArmorFix[] {
 		)
 			i++;
 		const body = between.slice(i);
-		const hasStray = body.some((l) => {
-			const t = l.trim();
-			if (t === "") return true; // blank line inside the body region
-			if (t.startsWith("=")) return false; // checksum line
-			if (BASE64_LINE_RE.test(t)) return false; // base64
-			return true; // prose / quoted junk
-		});
+		const base64Lines = body
+			.map((l) => l.trim())
+			.filter((t) => t !== "" && !t.startsWith("=") && BASE64_FRAGMENT_RE.test(t));
+		const hasStray =
+			body.some((l) => {
+				const t = l.trim();
+				if (t === "") return true; // blank line inside the body region
+				if (t.startsWith("=")) return false; // checksum line
+				if (BASE64_FRAGMENT_RE.test(t)) return false; // base64 fragment
+				return true; // prose / quoted junk
+			}) || !BASE64_LINE_RE.test(base64Lines.join(""));
 		if (hasStray) issues.add("stray-lines");
 	}
 	return [...issues];
@@ -237,7 +247,7 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 			if (/^=[A-Za-z0-9+/]{4}$/.test(line)) oldChecksum = line;
 			continue; // checksum is recomputed below either way
 		}
-		if (!BASE64_LINE_RE.test(line)) {
+		if (!BASE64_FRAGMENT_RE.test(line)) {
 			fixes.add("stray-lines"); // prose / signature boilerplate inside body
 			continue;
 		}
@@ -245,9 +255,17 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 	}
 	if (bodyLines.length === 0) return null; // nothing left to decrypt
 
-	// Rejoin + re-wrap at 64 chars (RFC 4880 line length) — also normalizes
-	// the 40-char wraps some clients produce.
+	// The per-line fragment check above is deliberately permissive (RFC 4880
+	// line breaks can split the stream at any point) — the JOINED body must
+	// still be structurally valid base64. If it is not, the damage is inside
+	// the encoded data itself: beyond framing repair, so return null rather
+	// than rebuild a block that can never decode (dropping the odd-looking
+	// lines would silently corrupt the ciphertext).
 	const joined = bodyLines.join("");
+	if (!BASE64_LINE_RE.test(joined)) return null;
+
+	// Re-wrap at 64 chars (RFC 4880 line length) — also normalizes the
+	// 40-char wraps some clients produce.
 	const wrapped: string[] = [];
 	for (let i = 0; i < joined.length; i += 64) wrapped.push(joined.slice(i, i + 64));
 

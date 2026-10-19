@@ -161,8 +161,14 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// clear the result themselves — the file is not captured here.)
 	useEffect(() => {
 		verifyAttemptRef.current += 1; // invalidate any in-flight verification
+		// A superseded attempt must not leave any of its transient state
+		// behind: an error it already threw describes inputs that are gone,
+		// and its in-flight "busy" would wedge the button if the current
+		// attempt's finally no longer resets it (attempt-token guards below).
+		setBusy(false);
 		setResult(null);
 		setVerifiedPlaintext(null);
+		setError(null);
 	}, [armored, plaintext, fileMode, verifyFile]);
 
 	const handleVerify = useCallback(async () => {
@@ -218,9 +224,13 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 			setResult(res);
 			if (!fileMode) setVerifiedPlaintext(plaintext);
 		} catch (e) {
+			// Superseded attempt: its inputs are gone — discard the error.
+			if (verifyAttemptRef.current !== myAttempt) return;
 			setError((e as Error).message);
 		} finally {
-			setBusy(false);
+			// Only the CURRENT attempt may end the busy state — a slow old
+			// attempt finishing late must not unlock a newer in-flight one.
+			if (verifyAttemptRef.current === myAttempt) setBusy(false);
 		}
 	}, [armored, plaintext, privateKey, fileMode, verifyFile, detected]);
 
@@ -329,7 +339,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 							</Label>
 						</div>
 						{/* What was signed: pasted text or an original file (round 20).
-						    Segmented toggle keeps both paths one click away. */}
+                                                    Segmented toggle keeps both paths one click away. */}
 						<div
 							role="group"
 							aria-label="What was signed — pasted text or an original file"
@@ -453,7 +463,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					)}
 
 					{/* Hidden file picker — re-armed after every read so picking the
-					    same file twice re-fires onChange. */}
+                                            same file twice re-fires onChange. */}
 					<input
 						ref={verifyFileInputRef}
 						type="file"

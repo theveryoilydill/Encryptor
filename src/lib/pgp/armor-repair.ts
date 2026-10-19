@@ -76,6 +76,20 @@ const BASE64_LINE_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/
 const BASE64_FRAGMENT_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 /**
+ * Non-global probe for a HTML_ENTITIES pattern. The entity patterns carry
+ * the /g flag because repairArmor() replaces ALL occurrences, but
+ * RegExp.prototype.test() on a global regex reads AND WRITES lastIndex —
+ * sharing the same RegExp object between a test() and a later replace()
+ * would start the search mid-string and silently skip entities (webmail
+ * quote prefixes are exactly one "&gt; " near the top of the text). test()
+ * therefore always runs on a flag-stripped copy; the shared /g pattern is
+ * only ever used for .replace().
+ */
+function hasHtmlEntity(re: RegExp, text: string): boolean {
+	return new RegExp(re.source, re.flags.replace("g", "")).test(text);
+}
+
+/**
  * Cheap detection pass for the input banner — returns the damage classes
  * found, empty array when the block looks clean (or isn't an armor block
  * at all — the tabs' existing detectPgpBlock hints cover that case).
@@ -84,7 +98,7 @@ export function findArmorIssues(text: string): ArmorFix[] {
 	const issues = new Set<ArmorFix>();
 	if (!text.trim()) return [];
 
-	if (HTML_ENTITIES.some(([re]) => re.test(text))) issues.add("html-entities");
+	if (HTML_ENTITIES.some(([re]) => hasHtmlEntity(re, text))) issues.add("html-entities");
 	if (/\r/.test(text)) issues.add("line-endings");
 	// Any line whose first non-space char is ">" — armor never starts a line
 	// with ">" (base64 alphabet + "=-" checksum + dash markers only).
@@ -178,7 +192,7 @@ export function repairArmor(input: string): { text: string; fixes: ArmorFix[] } 
 	// 1. HTML entities (whole input — junk before/after gets discarded later,
 	//    but entities INSIDE markers must be undone before they're findable).
 	for (const [re, replacement] of HTML_ENTITIES) {
-		if (re.test(text)) {
+		if (hasHtmlEntity(re, text)) {
 			text = text.replace(re, replacement);
 			fixes.add("html-entities");
 		}

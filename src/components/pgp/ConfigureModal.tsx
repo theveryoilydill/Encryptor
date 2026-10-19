@@ -37,7 +37,6 @@ import {
 	downloadKeyName,
 	getKeyExpiryStatus,
 } from "@/lib/pgp/key-details";
-import { generateSealKeyPair, wrapSealSecretAuto } from "@/lib/pgp/pq";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
@@ -50,7 +49,7 @@ export function ConfigureModal({
 	onForgetKey,
 	onSave,
 	onClear,
-	requestDecryptedKey,
+	onEnableQuantumSeal,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -60,11 +59,17 @@ export function ConfigureModal({
 	keyHistory: PrivateKeyConfig[];
 	onRestoreKey: (cfg: PrivateKeyConfig) => void;
 	onForgetKey: (fingerprint: string) => void;
-	onSave: (cfg: PrivateKeyConfig) => void;
+	/** Called after the delegated enable-quantum-seal flow SUCCEEDED —
+	 *  the shared flow already persisted the key; use this to close. */
+	onSave: () => void;
 	onClear: () => void;
-	/** On-demand key unlock — used ONLY by the "enable quantum seal" flow,
-	 *  which wraps the new ML-KEM secret under the app passphrase. */
-	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
+	/**
+	 * The ONE quantum-seal enable flow (lives in PgpApp): unlock -> generate
+	 * the ML-KEM pair -> wrap the secret -> persist. Delegating here (instead
+	 * of re-implementing) is what keeps pqSealedCopy, the banner dismissal,
+	 * and the toast in sync between the header banner and this modal.
+	 */
+	onEnableQuantumSeal: () => Promise<boolean>;
 }) {
 	// Key-share QR (additive): toggles the inline QR block inside the Key
 	// details disclosure. No state-reset effect on dialog close — the block
@@ -148,24 +153,20 @@ export function ConfigureModal({
 		}
 	};
 
-	// Quantum-seal onboarding for existing (pre-feature) keys: unlock the key
-	// once, generate the ML-KEM pair, wrap the secret half under the
-	// passphrase when present (or a device key otherwise), and save.
-	// Keybase-sourced configs never enter this flow (see the render guard
-	// above).
+	// Quantum-seal onboarding for existing (pre-feature) keys — delegate to
+	// PgpApp.handleEnableQuantumSeal so BOTH entry points share one
+	// implementation (the modal copy used to skip pqSealedCopy, the banner
+	// dismissal, and drift from the header flow). The render guard is
+	// `encryptedArmored && !pq` — it does NOT exclude Keybase-sourced configs
+	// that carry stored armor; wrapSealSecretAuto handles them the same way.
+	// The dialog closes only when the shared flow actually succeeded.
 	const [sealBusy, setSealBusy] = useState(false);
 	const handleEnableQuantumSeal = async () => {
 		if (!privateKey?.encryptedArmored || sealBusy) return;
 		setSealBusy(true);
 		try {
-			const { passphrase } = await requestDecryptedKey();
-			const sealPair = generateSealKeyPair();
-			const pq = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, passphrase ?? "");
-			onSave({ ...privateKey, pq });
-			toast({
-				title: "Quantum seal enabled",
-				description: "ML-KEM-768 key pair attached to this identity.",
-			});
+			const ok = await onEnableQuantumSeal();
+			if (ok) onSave();
 		} catch {
 			// Cancelled prompt or wrap failure — stay unsealed, no error spam.
 		} finally {

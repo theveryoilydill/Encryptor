@@ -455,13 +455,19 @@ export default function PgpApp() {
 			const fingerprintChanged = prev && next && prev.info?.fingerprint !== next.info?.fingerprint;
 			if (!next || fingerprintChanged) forgetPassphrase();
 		}
-		// Switch-ring bookkeeping: the replaced (or cleared) key moves into the
-		// history ring (deduped by fingerprint, newest first, max 4) so the
-		// Your-key dialog can restore it with ONE click — the literal "switch
-		// back" affordance. The newly active key always leaves the ring.
+		// Switch-ring bookkeeping: a REPLACED key moves into the history ring
+		// (deduped by fingerprint, newest first, max 4) so the Your-key dialog
+		// can restore it with ONE click — the literal "switch back"
+		// affordance. The newly active key always leaves the ring. A
+		// clear/log-out (next === null) must NOT stash the key: the user asked
+		// for it to be gone from the device, and the ring lives in
+		// localStorage right next to the config it just came out of
+		// (CWE-459: incomplete removal of sensitive data). pushKeyHistory
+		// additionally refuses passphrase-less keys, whose "encrypted" armor
+		// is plaintext key material.
 		const prevFp = prev?.info?.fingerprint;
 		const nextFp = next?.info?.fingerprint;
-		if (prev && prevFp !== nextFp) pushKeyHistory(prev);
+		if (prev && next && prevFp !== nextFp) pushKeyHistory(prev);
 		setKeyHistory(scrubKeyHistory(nextFp));
 		try {
 			if (next) {
@@ -496,9 +502,11 @@ export default function PgpApp() {
 	}> => {
 		// R9: consult the cache through the freshness gate — a stale entry is
 		// forgotten (inside the gate) and the visible prompt appears instead.
-		// (Keybase configs now carry encrypted armor too, so the session cache
-		// and silent unlock work for them exactly like local keys.)
-		if (privateKey?.encryptedArmored && getCachedPassphrase()) {
+		// Keybase configs are EXCLUDED (session-passphrase contract): the
+		// Keybase password is an account credential and is intentionally never
+		// cached, even though those configs carry encrypted armor — a wrong
+		// password falls back to the visible prompt, never a silent cache hit.
+		if (privateKey?.encryptedArmored && privateKey.source !== "keybase" && getCachedPassphrase()) {
 			const cached = getCachedPassphraseIfFresh(settings.autoLockMinutes);
 			if (cached) {
 				// Silent unlock attempt with the session-cached passphrase. On any
@@ -887,7 +895,6 @@ export default function PgpApp() {
 									<SignTab
 										privateKey={privateKey}
 										requestDecryptedKey={requestDecryptedKey}
-										markdownEditor={settings.markdownEditor}
 										globalComposerChord={tab === "sign"}
 									/>
 								)}
@@ -911,9 +918,10 @@ export default function PgpApp() {
 				keyHistory={keyHistory}
 				onRestoreKey={handleRestoreKeyFromHistory}
 				onForgetKey={handleForgetKeyFromHistory}
-				requestDecryptedKey={requestDecryptedKey}
-				onSave={(next) => {
-					handleSetPrivateKey(next);
+				onEnableQuantumSeal={handleEnableQuantumSeal}
+				onSave={() => {
+					// The delegated seal flow already persisted the updated key —
+					// the modal only needs the dialog to close.
 					setConfigOpen(false);
 				}}
 				onClear={() => {

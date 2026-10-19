@@ -76,6 +76,48 @@ export function ComposerOverlay({
 		exitTimer.current = setTimeout(() => setRendered(false), EXIT_MS);
 	}, [open, rendered]);
 
+	// Modal focus management for the aria-modal surface: while the overlay
+	// is open, Tab cycles INSIDE it (a keyboard user must not land on page
+	// content the full-screen card covers), and closing returns focus to the
+	// element that opened it.
+	const overlayRef = useRef<HTMLDivElement | null>(null);
+	const restoreFocusRef = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		if (!rendered) return;
+		restoreFocusRef.current = document.activeElement as HTMLElement | null;
+		// Focus the overlay shell itself (tabIndex -1 = programmatic only, not
+		// in the Tab order) so the very first Tab moves through the content.
+		overlayRef.current?.focus();
+		return () => {
+			restoreFocusRef.current?.focus?.();
+		};
+	}, [rendered]);
+
+	const handleTabFocusTrap = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+		if (e.key !== "Tab") return;
+		const root = overlayRef.current;
+		if (!root) return;
+		const focusables = Array.from(
+			root.querySelectorAll<HTMLElement>(
+				'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+			),
+		).filter((el) => el.offsetParent !== null || el === document.activeElement);
+		if (focusables.length === 0) {
+			e.preventDefault();
+			return;
+		}
+		const first = focusables[0];
+		const last = focusables[focusables.length - 1];
+		const active = document.activeElement;
+		if (e.shiftKey && (active === first || active === root)) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && active === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	};
+
 	if (!rendered) return null;
 
 	const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -119,13 +161,18 @@ export function ComposerOverlay({
 
 	return createPortal(
 		<div
+			ref={overlayRef}
 			data-composer-overlay={owner}
 			role="dialog"
 			aria-modal="true"
 			aria-label="Composer, full screen"
+			tabIndex={-1}
 			onPointerDown={handlePointerDown}
 			onKeyDownCapture={handleEscapeCapture}
-			onKeyDown={handleKeyDown}
+			onKeyDown={(e) => {
+				handleTabFocusTrap(e);
+				handleKeyDown(e);
+			}}
 			onAnimationEnd={handleAnimationEnd}
 			className={
 				"fixed inset-0 z-50 bg-background p-2 sm:p-3 md:p-4 motion-reduce:transition-none " +

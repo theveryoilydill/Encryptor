@@ -216,12 +216,17 @@ export function estimatePassphraseStrength(passphrase: string): PassphraseStreng
 		penalized = true;
 		hint ??= "Avoid repeating the same character 3+ times.";
 	}
-	if (hasKeyboardWalk(deLeeted)) {
+	// Both checks also run on the RAW lowercased input: deLeet() rewrites the
+	// digits 1/3/4/5/7/8/0 to letters, so a pure digit walk like "1234" (the
+	// hint's own example!) becomes "i2ea" and dodges the walk/sequence
+	// detectors entirely. The raw pass catches digit walks and digit
+	// sequences; the deLeeted pass catches leetspeak letter walks.
+	if (hasKeyboardWalk(lower) || hasKeyboardWalk(deLeeted)) {
 		bits -= 12;
 		penalized = true;
 		hint ??= "Keyboard walks (e.g. “qwer”, “1234”) are easy to guess.";
 	}
-	if (hasSequence(deLeeted)) {
+	if (hasSequence(lower) || hasSequence(deLeeted)) {
 		bits -= 10;
 		penalized = true;
 		hint ??= "Sequences (abcd, 4321) add little strength.";

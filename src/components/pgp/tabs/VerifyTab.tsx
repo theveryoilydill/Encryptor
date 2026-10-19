@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 
 import { FileSearch, FileUp, ShieldCheck, ShieldX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -74,6 +74,17 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	const [plaintext, setPlaintext] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [result, setResult] = useState<VerificationResult | null>(null);
+	// The EXACT plaintext that was verified (snapshot at verify time). The
+	// panel below renders this snapshot, never the live editable field —
+	// otherwise a post-verification edit would display as "verified" content
+	// it was never signed over (CWE-345: insufficient verification of data
+	// authenticity). Null while unverified or in file mode.
+	const [verifiedPlaintext, setVerifiedPlaintext] = useState<string | null>(null);
+	// Monotonic attempt token: inputs stay editable while a verification is
+	// in flight, so handleVerify commits its result ONLY if this token still
+	// matches — a slow attempt that finishes after an edit/file change is
+	// discarded instead of displaying beside text it never verified.
+	const verifyAttemptRef = useRef(0);
 	const [error, setError] = useState<string | null>(null);
 	// Smart-input hint dismissal, keyed to the exact input content: clearing
 	// the textarea (or pasting different content) re-arms the hint without
@@ -89,6 +100,10 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// only at verify time and never persisted anywhere.
 	const [fileMode, setFileMode] = useState(false);
 	const [verifyFile, setVerifyFile] = useState<File | null>(null);
+	// Mirror of SignTab.MAX_FILE_SIGN_BYTES: the drop zone advertises "up to
+	// 100 MB" — enforce it at pick/drop time so a multi-GB file can never
+	// reach handleVerify's arrayBuffer() read and stall the tab.
+	const MAX_FILE_VERIFY_BYTES = 100 * 1024 * 1024;
 	const [fileDragDepth, setFileDragDepth] = useState(0);
 	const verifyFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -114,6 +129,22 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 		requirePgpArmor: false,
 	});
 
+	// One gate for every way a file enters verification (button pick, input
+	// change, drag & drop) — same message shape as the Sign tab's limit.
+	const acceptVerifyFile = (file: File | undefined | null) => {
+		if (!file) return;
+		setError(null);
+		setResult(null);
+		setVerifiedPlaintext(null);
+		if (file.size > MAX_FILE_VERIFY_BYTES) {
+			setError(
+				`"${file.name}" is ${formatFileSize(file.size)} — the limit for file verification is 100 MB.`,
+			);
+			return;
+		}
+		setVerifyFile(file);
+	};
+
 	// Detected format is derived state, recomputed from the armor on every
 	// change — nothing to reset when the input is cleared.
 	// # Mr. AI Acting on the Owner's Behalf
@@ -124,9 +155,21 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 		return detectArmoredFormat(armored);
 	}, [armored]);
 
+	// Any edit to either input invalidates the previous verification: the
+	// result banner, report, and rendered plaintext describe bytes that no
+	// longer match what is on screen. (The file-mode pick/drop handlers
+	// clear the result themselves — the file is not captured here.)
+	useEffect(() => {
+		verifyAttemptRef.current += 1; // invalidate any in-flight verification
+		setResult(null);
+		setVerifiedPlaintext(null);
+	}, [armored, plaintext, fileMode, verifyFile]);
+
 	const handleVerify = useCallback(async () => {
+		const myAttempt = ++verifyAttemptRef.current;
 		setError(null);
 		setResult(null);
+		setVerifiedPlaintext(null);
 		if (!armored.trim()) {
 			setError("Paste a signature or cleartext-signed message to verify.");
 			return;
@@ -171,7 +214,9 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					),
 				fileBytes,
 			);
+			if (verifyAttemptRef.current !== myAttempt) return; // inputs changed mid-verify
 			setResult(res);
+			if (!fileMode) setVerifiedPlaintext(plaintext);
 		} catch (e) {
 			setError((e as Error).message);
 		} finally {
@@ -358,10 +403,8 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 								e.preventDefault();
 								e.stopPropagation();
 								setFileDragDepth(0);
-								setResult(null);
-								setError(null);
 								const f = e.dataTransfer.files?.[0];
-								if (f) setVerifyFile(f);
+								acceptVerifyFile(f);
 							}}
 							className={`animate-fade-up flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-5 text-center transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0055dc]/40 dark:focus-visible:ring-[#5e94ff]/40 ${
 								fileDragDepth > 0
@@ -418,19 +461,14 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 						tabIndex={-1}
 						aria-hidden="true"
 						onChange={(e) => {
-							const f = e.target.files?.[0];
-							if (f) {
-								setVerifyFile(f);
-								setResult(null);
-								setError(null);
-							}
+							acceptVerifyFile(e.target.files?.[0]);
 							e.target.value = "";
 						}}
 					/>
 				</div>
 			)}
 
-			{showPlaintextField && plaintext.trim() && result?.verified === "valid" && (
+			{showPlaintextField && verifiedPlaintext && result?.verified === "valid" && (
 				// "Verify renders it": a successfully verified detached-signature
 				// message renders its plaintext as markdown (same renderer the
 				// Decrypt tab uses), so what was signed reads the way it was
@@ -445,7 +483,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 							Verified message, rendered
 						</Label>
 					</div>
-					<DecryptedMessageView text={plaintext} files={[]} />
+					<DecryptedMessageView text={verifiedPlaintext} files={[]} />
 				</div>
 			)}
 

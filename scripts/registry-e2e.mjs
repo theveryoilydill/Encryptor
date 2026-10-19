@@ -461,16 +461,25 @@ console.log("== admin override (dave) ==");
 	);
 	check("bad admin token -> 403", badAdmin.status === 403, `got ${badAdmin.status}`);
 
-	const ok = await jsonPost(
-		"/api/registry/revoke",
-		{ fingerprint: daveFpr, adminToken: "local-admin-token-4f8a2b", reason: "abuse" },
-		IP(21),
-	);
-	check(
-		"admin revoke -> ok via admin",
-		ok.status === 200 && ok.body?.via === "admin",
-		JSON.stringify(ok.body),
-	);
+	// The admin token is deployment config (.dev.vars ADMIN_REVOKE_TOKEN) —
+	// read it from the environment instead of hardcoding one value. The
+	// positive-path check is skipped when no token is configured; the
+	// negative check above (garbage token -> 403) still always runs.
+	const adminToken = process.env.ADMIN_REVOKE_TOKEN;
+	if (adminToken) {
+		const ok = await jsonPost(
+			"/api/registry/revoke",
+			{ fingerprint: daveFpr, adminToken, reason: "abuse" },
+			IP(21),
+		);
+		check(
+			"admin revoke -> ok via admin",
+			ok.status === 200 && ok.body?.via === "admin",
+			JSON.stringify(ok.body),
+		);
+	} else {
+		console.log("  SKIP  admin revoke -> ok via admin (set ADMIN_REVOKE_TOKEN to enable)");
+	}
 }
 
 console.log("== payload guards ==");

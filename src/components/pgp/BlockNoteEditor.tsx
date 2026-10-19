@@ -682,13 +682,20 @@ async function insertLocalImage(
 	register: OnNewImageDataUrl,
 ): Promise<void> {
 	const dataUrl = await fileToDataUrl(file);
-	const stored = register(dataUrl, file.name);
+	// Registration may legitimately fail — SignTab's pipeline throws by
+	// design ("signing has no attachment pipeline"). The image must still
+	// be inserted: the markdown bridge (dataUrlsToMarkers) keeps a raw
+	// data URL verbatim when onNewImage throws, so an inline image is a
+	// valid fallback. Dropping the paste silently (the old behavior, via
+	// the callers' catch) loses the user's image with no message.
+	let caption = file.name;
+	try {
+		caption = register(dataUrl, file.name).name;
+	} catch {
+		// No attachment pipeline — inline data URL it is.
+	}
 	const cursor = editor.getTextCursorPosition().block;
-	editor.insertBlocks(
-		[{ type: "image", props: { url: dataUrl, caption: stored.name } }],
-		cursor,
-		"after",
-	);
+	editor.insertBlocks([{ type: "image", props: { url: dataUrl, caption } }], cursor, "after");
 }
 
 /** Device-upload "Insert image" — replaces the default Image item whose

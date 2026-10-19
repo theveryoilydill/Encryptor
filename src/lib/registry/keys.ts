@@ -67,6 +67,56 @@ export function parsePqSealPk(raw: string): string | null {
 	}
 }
 
+/**
+ * True when the subkey's verify() failure is explained by its own lifecycle
+ * state — expired, or revoked via a revocation signature — rather than by an
+ * invalid/missing binding signature. Expiration is read from the subkey's
+ * own metadata; revocation is probed against every revocation signature the
+ * subkey carries. Best effort: an unexpected error in the lifecycle probes
+ * returns false, which keeps the strict binding verdict.
+ */
+async function subkeyExpiredOrRevoked(subkey: openpgp.Subkey): Promise<boolean> {
+	try {
+		const exp = await subkey.getExpirationTime();
+		if (exp instanceof Date && exp.getTime() <= Date.now()) return true;
+	} catch {
+		// fall through to the lifecycle probes below
+	}
+	// Narrower lifecycle gap: the key-expiration subpacket is past but the
+	// BINDING SIGNATURE ITSELF also expired, so getExpirationTime() (which
+	// validates against current-date signatures) reports null. Probe each
+	// binding signature at its own creation date — if it verified when made,
+	// the subkey WAS cryptographically bound to this primary key and is
+	// merely expired (publish); a signature that never verified anywhere
+	// falls through to the strict binding rejection.
+	for (const sig of subkey.bindingSignatures ?? []) {
+		if (sig.created instanceof Date) {
+			try {
+				await subkey.verify(sig.created);
+				return true;
+			} catch {
+				// try the next binding signature
+			}
+		}
+	}
+	// Revocation probe: signature=null asks isDataRevoked for ANY valid
+	// revocation (hard ones regardless of date, soft ones as of now), and
+	// key=undefined defaults the verifier to the PRIMARY key packet —
+	// subkey revocations are made by the primary key, not the subkey itself.
+	try {
+		if (
+			await subkey.isRevoked(
+				undefined as unknown as openpgp.SignaturePacket,
+				undefined as unknown as openpgp.PublicKeyPacket,
+			)
+		)
+			return true;
+	} catch {
+		// a malformed revocation signature must not crash the probe
+	}
+	return false;
+}
+
 /** A public key fully derived server-side from the armored input. */
 export interface ParsedPublicKey {
 	fingerprint: string;
@@ -150,6 +200,15 @@ export async function parsePublicArmored(
 			// primary key fails here.
 			await subkey.verify();
 		} catch {
+			// openpgp v6 verify() also throws when the subkey is expired or
+			// revoked AT THE CURRENT DATE — that is not a binding failure. The
+			// subkey-squatting defense only needs proof that the subkey is
+			// cryptographically BOUND to this primary key (proven inside
+			// verify() at binding-signature validity), so a long-lived key with
+			// one rotated-out (expired/revoked) encryption subkey — the normal
+			// state after GnuPG subkey rotation — must still publish. Any other
+			// failure is a genuine binding problem: reject.
+			if (await subkeyExpiredOrRevoked(subkey)) continue;
 			throw new RegistryError("Key contains a subkey with an invalid binding signature", 400);
 		}
 	}

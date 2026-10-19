@@ -27,15 +27,19 @@ export interface SignerInfo {
 }
 
 /**
- * Parse a raw PGP user ID string like "Alice Smith <alice@example.com> (work)"
- * into its component parts. Tolerant of missing fields.
+ * Parse a raw PGP user ID string into its component parts. Tolerant of
+ * missing fields. Handles BOTH layouts seen in the wild:
+ *   "Name (Comment) <email>"   (the RFC 4880 / GnuPG-canonical order)
+ *   "Name <email> (comment)"   (openpgp.js's display order)
+ * The name always ends at the EARLIEST marker — for the canonical order that
+ * is the comment parenthesis, so "Alice Smith (work) <alice@example.com>"
+ * yields name "Alice Smith", not "Alice Smith (work)".
  */
 export function parseUserID(raw: string): {
 	name?: string;
 	email?: string;
 	comment?: string;
 } {
-	// "Name <email> (comment)" — standard RFC 4880 UserID format.
 	const result: { name?: string; email?: string; comment?: string } = {};
 	if (!raw) return result;
 
@@ -51,12 +55,16 @@ export function parseUserID(raw: string): {
 		result.email = emailMatch[1].trim();
 	}
 
-	// Name is everything before the email (or comment if no email).
+	// Name is everything before the EARLIEST structural marker — the comment
+	// parenthesis in the RFC-canonical "Name (Comment) <email>" order, the
+	// email angle bracket otherwise. Ending only at the email would fold the
+	// comment into the displayed signer name for GnuPG-style user IDs.
 	let nameEnd = raw.length;
-	if (emailMatch && emailMatch.index !== undefined) {
-		nameEnd = emailMatch.index;
-	} else if (commentMatch && commentMatch.index !== undefined) {
+	if (commentMatch && commentMatch.index !== undefined) {
 		nameEnd = commentMatch.index;
+	}
+	if (emailMatch && emailMatch.index !== undefined && emailMatch.index < nameEnd) {
+		nameEnd = emailMatch.index;
 	}
 	const name = raw.slice(0, nameEnd).trim();
 	if (name) {

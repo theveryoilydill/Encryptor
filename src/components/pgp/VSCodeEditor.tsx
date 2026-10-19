@@ -187,7 +187,17 @@ export default function VSCodeEditor({
 					void (async () => {
 						const markers: string[] = [];
 						for (const f of imageFiles) {
-							const dataUrl = await readAsDataUrl(f);
+							// The FileReader read gets its own try: a rejected read must
+							// skip only THAT image, not reject the whole unhandled async
+							// task (which also lost every image that read fine before
+							// it). Registration keeps its separate catch — no pipeline
+							// (Sign tab) degrades to an inline data URL, per the doc.
+							let dataUrl: string;
+							try {
+								dataUrl = await readAsDataUrl(f);
+							} catch {
+								continue;
+							}
 							try {
 								const stored = onNewImageDataUrl(dataUrl);
 								markers.push(

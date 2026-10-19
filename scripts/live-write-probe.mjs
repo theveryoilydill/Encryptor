@@ -7,9 +7,15 @@
  */
 import * as openpgp from "openpgp";
 
-const BASE =
-	process.env.PROBE_BASE ??
-	"https://ai-key-registry-private-keys-encryptor.theveryoilydill.workers.dev";
+// A write probe PUBLISHES and REVOKES a key on whatever it points at — it
+// must never default to a specific remote deployment. Point it at a local
+// dev server (or an explicit PROBE_BASE) on purpose.
+const BASE = process.env.PROBE_BASE ?? "http://localhost:3000";
+if (!process.env.PROBE_BASE) {
+	console.warn(
+		"PROBE_BASE not set — defaulting to http://localhost:3000 (start `bun run dev` first).",
+	);
+}
 // NOTE: never send cf-* headers to a Cloudflare edge — reserved headers make
 // the edge reject the request with 403 before it reaches the worker.
 

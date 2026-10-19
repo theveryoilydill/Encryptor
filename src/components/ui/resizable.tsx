@@ -35,6 +35,13 @@ function ResizableHandle({
 			data-slot="resizable-handle"
 			className={cn(
 				"bg-border focus-visible:ring-ring relative flex w-px items-center justify-center after:absolute after:inset-y-0 after:left-1/2 after:w-1 after:-translate-x-1/2 focus-visible:ring-1 focus-visible:ring-offset-1 focus-visible:outline-hidden",
+				// Vertical groups: the library flips the separator's aria-orientation
+				// to "horizontal" (it reports the RESIZE axis, perpendicular to the
+				// bar), so the bar must become a 1px-tall full-width line with the
+				// after hit-area stacked vertically. Without these classes a
+				// grip-less vertical handle collapses to zero height and becomes
+				// undiscoverable/undraggable.
+				"aria-[orientation=horizontal]:h-px aria-[orientation=horizontal]:w-full aria-[orientation=horizontal]:flex-col aria-[orientation=horizontal]:after:inset-x-0 aria-[orientation=horizontal]:after:left-0 aria-[orientation=horizontal]:after:top-1/2 aria-[orientation=horizontal]:after:h-1 aria-[orientation=horizontal]:after:w-full aria-[orientation=horizontal]:after:-translate-x-0 aria-[orientation=horizontal]:after:-translate-y-1/2",
 				className,
 			)}
 			{...props}

@@ -51,30 +51,41 @@ export interface ZipMetadata {
  *  - strip directory components (a decrypted `../../.bashrc` must never
  *    become a traversal path inside the archive),
  *  - drop leading dots (hidden files / relative-hop leftovers),
+ *  - strip TRAILING dot/space runs (Windows extractors delete them when
+ *    creating the on-disk file, so `report` and `report.` would extract to
+ *    the same path and clobber each other — this also keeps the WRITTEN
+ *    entry name Windows-clean),
  *  - fall back when nothing usable remains,
  *  - de-duplicate so two entries never silently overwrite one another
  *    (case-INSENSITIVELY — Windows/macOS extractors default to
  *    case-preserving-but-insensitive filesystems, where `Report.pdf` and
  *    `report.pdf` would clobber each other at extraction time even though
- *    the archive lists them as distinct entries).
+ *    the archive lists them as distinct entries — and NFC-normalized, so
+ *    two names that only differ in Unicode normalization form (e.g.
+ *    "café.pdf" NFC vs NFD) are also treated as the same file, which
+ *    macOS's normalization-insensitive APFS would otherwise overwrite).
  */
 function sanitizeZipEntryName(rawName: string, used: Set<string>): string {
 	const base = rawName.replace(/\\/g, "/").split("/").pop() ?? "";
-	const stripped = base.replace(/^\.+/, "").trim();
+	const stripped = base
+		.replace(/^\.+/, "")
+		.trim()
+		.replace(/[. ]+$/, "");
 	const safe = stripped.length > 0 ? stripped : "attachment";
-	// Original case is returned to the archive; only the collision
-	// bookkeeping is case-folded.
-	if (!used.has(safe.toLowerCase())) {
-		used.add(safe.toLowerCase());
+	// Original case (and the sender's own normalization form) is returned to
+	// the archive; only the collision bookkeeping is folded.
+	const collisionKey = (s: string) => s.normalize("NFC").toLowerCase();
+	if (!used.has(collisionKey(safe))) {
+		used.add(collisionKey(safe));
 		return safe;
 	}
 	const dot = safe.lastIndexOf(".");
 	const stem = dot > 0 ? safe.slice(0, dot) : safe;
 	const ext = dot > 0 ? safe.slice(dot) : "";
 	let n = 2;
-	while (used.has(`${stem}-${n}${ext}`.toLowerCase())) n++;
+	while (used.has(collisionKey(`${stem}-${n}${ext}`))) n++;
 	const unique = `${stem}-${n}${ext}`;
-	used.add(unique.toLowerCase());
+	used.add(collisionKey(unique));
 	return unique;
 }
 

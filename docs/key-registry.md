@@ -145,7 +145,7 @@ available in-app under **Footer → Public API**.
 ```bash
 # 1) Look up a published key by fingerprint, key ID, or email (CORS *, no auth):
 curl -s "https://<worker>/api/registry/lookup?email=you@example.com" | jq
-curl -s "https://<worker>/api/registry/lookup?fingerprint=<40 hex>" | jq
+curl -s "https://<worker>/api/registry/lookup?fingerprint=<40|64 hex>" | jq
 
 # 2) Publish a public key (optionally with a passphrase-encrypted escrow):
 curl -s -X POST "https://<worker>/api/registry/publish" \
@@ -155,12 +155,12 @@ curl -s -X POST "https://<worker>/api/registry/publish" \
 #      it is shown once and is the only key-free way to retract.
 
 # 3) Restore an escrowed backup (returns the passphrase-ENCRYPTED private key):
-curl -s "https://<worker>/api/registry/private-key?fingerprint=<40 hex>" | jq
+curl -s "https://<worker>/api/registry/private-key?fingerprint=<40|64 hex>" | jq
 
 # 4) Revoke with the one-time token (no private key needed):
 curl -s -X POST "https://<worker>/api/registry/revoke" \
   -H "Content-Type: application/json" \
-  -d '{"fingerprint":"<40 hex>","token":"<one-time token>"}'
+  -d '{"fingerprint":"<40|64 hex>","token":"<one-time token>"}'
 
 # 5) Operator health (schema, limiter write probe, Turnstile + write-lock state):
 curl -s "https://<worker>/api/registry/health" | jq

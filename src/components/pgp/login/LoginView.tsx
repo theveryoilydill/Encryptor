@@ -297,8 +297,8 @@ export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) =
 				</div>
 
 				{/* The generate-key screen, front and center (owner feedback): a new
-						user's first action is creating a key, so the form lives directly
-						on the gate instead of behind a source card + dialog hop. */}
+                                                user's first action is creating a key, so the form lives directly
+                                                on the gate instead of behind a source card + dialog hop. */}
 				<section
 					aria-label="Generate a new key"
 					className="rounded-2xl border bg-card/40 p-4 shadow-xs sm:p-5"
@@ -361,8 +361,8 @@ export function LoginView({ onUseKey }: { onUseKey: (config: PrivateKeyConfig) =
 			</div>
 
 			{/* Sign-in dialogs — one per source, mounted on demand. From this gate
-					the registry opens on Login (restore) and local keys on Paste,
-					matching the "already have a key" intent that reaches them. */}
+                                        the registry opens on Login (restore) and local keys on Paste,
+                                        matching the "already have a key" intent that reaches them. */}
 			<RegistryDialog
 				open={open === "registry"}
 				initialMode="restore"
@@ -606,7 +606,10 @@ function RestoreForm({
 	};
 
 	const normalizeFpr = (raw: string) => raw.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
-	const isFpr = (raw: string) => /^[0-9A-F]{40}$/.test(normalizeFpr(raw));
+	// v6 keys carry 64-hex fingerprints (RFC 9580) — accept both lengths so
+	// owners can restore/revoke v6 keys by fingerprint, matching the
+	// registry's FINGERPRINT_RE contract.
+	const isFpr = (raw: string) => /^(?:[0-9A-F]{40}|[0-9A-F]{64})$/.test(normalizeFpr(raw));
 
 	/** Shared match acceptance for email/name lookups (DRY): filter live
 	 *  keys, pre-parse identity lines so the picker appears fully formed,
@@ -676,7 +679,7 @@ function RestoreForm({
 					"name",
 				);
 			} else {
-				setError("Enter a 40-character fingerprint, an email, or a name.");
+				setError("Enter a valid fingerprint (40 or 64 hex characters), an email, or a name.");
 				return;
 			}
 		} catch (e) {
@@ -756,7 +759,7 @@ function RestoreForm({
 							setFingerprint(null);
 							setError(null);
 						}}
-						placeholder="40-hex fingerprint, you@example.com, or your name"
+						placeholder="40/64-hex fingerprint, you@example.com, or your name"
 						autoComplete="off"
 						spellCheck={false}
 						onKeyDown={(e) => {
@@ -1222,7 +1225,7 @@ function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDo
 	const [error, setError] = useState<string | null>(null);
 
 	const normalizeFpr = (raw: string) => raw.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
-	const validFpr = /^[0-9A-F]{40}$/.test(normalizeFpr(fpr));
+	const validFpr = /^(?:[0-9A-F]{40}|[0-9A-F]{64})$/.test(normalizeFpr(fpr));
 
 	const setQuery = (v: string) => {
 		// Any edit invalidates the preview — the confirm button must never
@@ -1234,7 +1237,7 @@ function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDo
 
 	const check = useCallback(async () => {
 		const f = normalizeFpr(fpr);
-		if (!/^[0-9A-F]{40}$/.test(f)) return;
+		if (!/^(?:[0-9A-F]{40}|[0-9A-F]{64})$/.test(f)) return;
 		setChecking(true);
 		setError(null);
 		try {

@@ -96,8 +96,8 @@ async function registryKeyToSuggestion(k: RegistryLookupKey): Promise<KeySearchR
 	};
 }
 
-/** Query the Encryptor Registry for email / name / 40-hex / 16-hex queries
- *  and map live keys to suggestion results (owner feedback: surface
+/** Query the Encryptor Registry for email / name / fingerprint (40-hex v4/v5
+ *  or 64-hex v6) / 16-hex queries and map live keys to suggestion results (owner feedback: surface
  *  Encryptor keys in the recipients box like the other key directories —
  *  INCLUDING by display name, so searching "john smith" finds the key
  *  published as "John Smith"). Revoked keys are never suggested.
@@ -108,7 +108,7 @@ export async function registrySuggestResults(q: string): Promise<KeySearchResult
 	const flat = trimmed.replace(/\s+/g, "");
 	if (EMAIL_SUGGEST_RE.test(trimmed)) {
 		keys = await registryLookup({ email: trimmed.toLowerCase() });
-	} else if (/^[0-9A-Fa-f]{40}$/.test(flat)) {
+	} else if (/^(?:[0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$/.test(flat)) {
 		keys = await registryLookup({ fingerprint: flat.toUpperCase() });
 	} else if (/^(0x)?[0-9A-Fa-f]{16}$/.test(flat)) {
 		keys = await registryLookup({ keyId: flat.replace(/^0x/i, "").toUpperCase() });

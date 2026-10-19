@@ -13,8 +13,15 @@ import { normalizeDisplayName } from "./name";
 /** Email grammar for registry indexing (strict, lowercase-normalized). */
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 
-/** Fingerprint: 40 hex chars, normalized to uppercase without 0x. */
-export const FINGERPRINT_RE = /^[0-9A-F]{40}$/;
+/**
+ * Fingerprint: 40 hex chars (v4/v5 keys) or 64 hex chars (v6 keys, RFC
+ * 9580), normalized to uppercase without 0x. MUST accept both lengths:
+ * parsePublicArmored stores whatever length openpgp reports, so v6 keys
+ * are already publishable — rejecting 64-hex here would make lookups (and
+ * with them the client's cached-key revocation freshness check) silently
+ * fail for exactly those keys (CWE-754).
+ */
+export const FINGERPRINT_RE = /^(?:[0-9A-F]{40}|[0-9A-F]{64})$/;
 
 /** Long key ID: 16 hex chars, normalized to uppercase without 0x. */
 export const KEY_ID_RE = /^[0-9A-F]{16}$/;

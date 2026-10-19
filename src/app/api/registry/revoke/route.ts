@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
 		const rawFpr = stringField(body, "fingerprint", 64);
 		if (!rawFpr) throw new RegistryError("The 'fingerprint' field is required", 400);
 		const fingerprint = normalizeFingerprint(rawFpr);
-		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
+		if (!fingerprint) throw new RegistryError("fingerprint must be 40 or 64 hex characters", 400);
 		const reason = sanitizeReason(stringField(body, "reason", LIMITS.registryMaxReasonChars));
 
 		const key = await db

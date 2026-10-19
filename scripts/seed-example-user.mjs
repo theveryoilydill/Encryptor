@@ -17,7 +17,7 @@
  * # Mr. AI Acting on the Owner's Behalf
  */
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import * as openpgp from "openpgp";
 
 const BASE = process.env.REGISTRY_TEST_BASE ?? "http://localhost:3000";

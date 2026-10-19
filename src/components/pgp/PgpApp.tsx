@@ -635,13 +635,19 @@ export default function PgpApp() {
 			saveSettings(next);
 			// R9: keep an armed auto-lock deadline in sync when the preference
 			// changes mid-session (re-arm from now; turning it off disarms).
+			// Read the LIVE cache state from the session-passphrase module —
+			// NOT the `passphraseCached` React closure: this callback can run
+			// (e.g. via the quantum-seal flow) after PassphrasePrompt cached
+			// the passphrase, while a captured `false` would wrongly disarm
+			// the deadline and leave the secret in memory with no auto-lock.
 			setPassphraseCachedUntil(
-				passphraseCached && next.autoLockMinutes > 0
+				getCachedPassphrase() && next.autoLockMinutes > 0
 					? Date.now() + next.autoLockMinutes * 60_000
 					: null,
 			);
 		},
-		[passphraseCached],
+		// Module reads are live values — no reactive deps needed.
+		[],
 	);
 
 	// Alt+1..4 switches tabs (TABS.length — see contracts.ts); Ctrl/Cmd+,

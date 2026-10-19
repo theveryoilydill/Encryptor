@@ -1312,7 +1312,7 @@ function RevokeTokenForm({ writesLocked, onDone }: { writesLocked: boolean; onDo
 							void check();
 						}
 					}}
-					placeholder="40-character fingerprint (spaces and 0x are fine)"
+					placeholder="40- or 64-character fingerprint (spaces and 0x are fine)"
 					className="font-mono text-xs"
 					autoComplete="off"
 					spellCheck={false}

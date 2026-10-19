@@ -112,7 +112,10 @@ async function main() {
 		publicArmored,
 		privateArmored,
 	};
-	writeFileSync(".example-user.json", JSON.stringify(record, null, 2));
+	// Owner-only permissions: the file holds the passphrase, private key,
+	// and revocation token (CWE-732 — default 0644 would be group/world
+	// readable on POSIX systems).
+	writeFileSync(".example-user.json", JSON.stringify(record, null, 2), { mode: 0o600 });
 	log("saved", "credentials written to .example-user.json (gitignored — treat as secret)");
 
 	const tokenHash = createHash("sha256").update(token).digest("hex").slice(0, 12);

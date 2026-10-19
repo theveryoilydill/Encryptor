@@ -11,7 +11,6 @@ import { MessageEditor } from "@/components/pgp/MessageEditor";
 import { ComposerOverlay } from "@/components/pgp/ComposerOverlay";
 import { formatFileSize } from "@/lib/pgp/envelope";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
-import type { MarkdownEditorKind } from "@/lib/pgp/settings";
 import type { PrivateKeyConfig } from "@/components/pgp/contracts";
 import {
 	composerOverlayOwner,
@@ -25,13 +24,10 @@ import { toast } from "@/hooks/use-toast";
 export function SignTab({
 	privateKey,
 	requestDecryptedKey,
-	markdownEditor,
 	globalComposerChord = false,
 }: {
 	privateKey: PrivateKeyConfig | null;
 	requestDecryptedKey: () => Promise<{ key: OpenPGP.PrivateKey; passphrase: string | null }>;
-	/** Which composer engine to use (same setting as the Encrypt tab). */
-	markdownEditor: MarkdownEditorKind;
 	/** True while the Sign tab is active — PgpApp routes the global
 	 *  Ctrl/Cmd+Shift+E expand chord to whichever tab owns the composer
 	 *  (see EncryptTab.globalComposerChord for the other side of the
@@ -250,11 +246,16 @@ export function SignTab({
 					<p className="mt-3 text-sm font-medium">Enter the text to sign below</p>
 				</div>
 			)}
-			{/* Markdown editor for signing ("markdown for signing too") — same
-                                    two engines as the Encrypt composer. Signing has no attachment
-                                    pipeline, so image registration intentionally fails closed:
-                                    pasted images stay inline as data URLs inside the signed text.
-                                    flex-1 min-h-0 in the overlay lets the engine fill the viewport. */}
+			{/* Markdown editor for signing — ALWAYS the CodeMirror source
+                                engine, regardless of the markdown-editor setting. Signing is a
+                                byte-exact operation: the BlockNote ("notion") engine round-trips
+                                text through blocksToMarkdownLossy(), which can reflow/normalize
+                                what the user typed, so the detached signature would not verify
+                                against the recipient's original text. A source editor signs the
+                                exact bytes in the textarea. Signing has no attachment pipeline,
+                                so image registration intentionally fails closed: pasted images
+                                stay inline as data URLs inside the signed text. flex-1 min-h-0 in
+                                the overlay lets the engine fill the viewport. */}
 			<div className={composerExpanded ? "min-h-0 flex-1" : undefined}>
 				<MessageEditor
 					value={plaintext}
@@ -263,7 +264,7 @@ export function SignTab({
 					onNewImageDataUrl={() => {
 						throw new Error("Signing has no attachment pipeline.");
 					}}
-					editorKind={markdownEditor}
+					editorKind="vscode"
 					placeholder="Paste or write the text you want to sign."
 					expanded={composerExpanded}
 				/>

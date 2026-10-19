@@ -73,6 +73,7 @@ import {
 	registryRevokeByToken,
 	type RegistryLookupKey,
 } from "@/lib/registry/client";
+import { normalizeDisplayName } from "@/lib/registry/name";
 import { toast } from "@/hooks/use-toast";
 
 type SourceId = "registry" | "keybase" | "openpgp" | "ubuntu" | "local";
@@ -674,10 +675,16 @@ function RestoreForm({
 				// Name search (owner feedback: restore with fingerprint, email,
 				// or name). Exact match server-side; names are not unique, so
 				// multiple matches land in the same picker as email lookups.
-				await acceptMatches(
-					await registryLookup({ name: raw.replace(/\s+/g, " ").toLowerCase() }),
-					"name",
-				);
+				// Normalized with the SHARED registry helper (same one
+				// registrySuggestResults uses) so a name that matches in the
+				// recipients picker also matches here — whitespace collapse +
+				// lowercase alone drift from the index's normalization rules.
+				const name = normalizeDisplayName(raw);
+				if (!name) {
+					setError("Enter a valid fingerprint (40 or 64 hex characters), an email, or a name.");
+					return;
+				}
+				await acceptMatches(await registryLookup({ name }), "name");
 			} else {
 				setError("Enter a valid fingerprint (40 or 64 hex characters), an email, or a name.");
 				return;

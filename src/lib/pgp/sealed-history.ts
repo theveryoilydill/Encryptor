@@ -164,7 +164,12 @@ export function sanitizeHistoryRow(raw: unknown): SealedHistoryEntry | null {
 			: null;
 	return {
 		id: typeof e.id === "string" ? e.id : makeId(),
-		at: typeof e.at === "number" ? e.at : 0,
+		// Reject out-of-range epoch-ms values: a hostile manifest with
+		// "at": 1e20 would throw RangeError inside new Date(at).toISOString()
+		// during React render (VaultImportDialog) and crash the Encrypt tab.
+		// JS Date's hard range is ±8.64e15 ms; anything outside (or
+		// non-finite) falls back to 0 (epoch), which is always renderable.
+		at: typeof e.at === "number" && Number.isFinite(e.at) && Math.abs(e.at) <= 8.64e15 ? e.at : 0,
 		keys: typeof e.keys === "number" ? e.keys : 0,
 		signed: e.signed === true,
 		pqSealed: e.pqSealed === true,
@@ -246,7 +251,15 @@ export function appendSealedOutput(input: {
 		signed: input.signed,
 		pqSealed: input.pqSealed,
 		armor: input.armor,
-		sealedArmor: input.sealedArmor ?? null,
+		// Same verdict the load path applies (sanitizeHistoryRow): an
+		// oversized PQ copy is dropped NOW instead of surviving in memory
+		// until the next reload silently nulls it — the stored data always
+		// matches what a later load keeps, and the ~0.5 MB storage budget
+		// holds.
+		sealedArmor:
+			typeof input.sealedArmor === "string" && input.sealedArmor.length <= MAX_SEALED_ARMOR_CHARS
+				? input.sealedArmor
+				: null,
 		labels: sanitizeLabels(input.labels),
 		signer: sanitizeSigner(input.signer),
 		files: sanitizeFiles(input.files),

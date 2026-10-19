@@ -187,6 +187,13 @@ export function RecipientPicker({
 	useEffect(() => {
 		if (debounceRef.current) clearTimeout(debounceRef.current);
 		const q = input.trim();
+		// Cancellation flag: the debounce cancel below cannot stop a fetch
+		// that already started (the multi-source lookup can take up to the
+		// proxy timeout). Without the flag, a slow response for an OLD query
+		// would land AFTER a newer one and replace its results — Enter then
+		// adds the wrong recipient. Cleanup marks this query's run as
+		// superseded and hands the busy flag back to the next run.
+		let cancelled = false;
 		debounceRef.current = setTimeout(async () => {
 			if (q.length < 1) {
 				setSuggestions([]);
@@ -201,6 +208,7 @@ export function RecipientPicker({
 					registrySuggest(q).catch(() => [] as KeySearchResult[]),
 					searchAllKeyserversClient(q, PROXIES.searchAllProxy).catch(() => [] as KeySearchResult[]),
 				]);
+				if (cancelled) return;
 				// Dedupe by fingerprint (registry entries win ties).
 				const seen = new Set<string>();
 				const merged: KeySearchResult[] = [];
@@ -213,13 +221,15 @@ export function RecipientPicker({
 				setSuggestions(merged);
 				setShowSuggestions(true);
 			} catch {
-				setSuggestions([]);
+				if (!cancelled) setSuggestions([]);
 			} finally {
-				setBusy(false);
+				if (!cancelled) setBusy(false);
 			}
 		}, 250);
 		return () => {
+			cancelled = true;
 			if (debounceRef.current) clearTimeout(debounceRef.current);
+			setBusy(false);
 		};
 	}, [input]);
 
@@ -757,7 +767,7 @@ export function RecipientPicker({
 				)}
 
 			<p className="mt-1.5 text-[11px] text-muted-foreground">
-				Searches Keybase, Ubuntu keyserver, and keys.openpgp.org.
+				Searches the Encryptor Registry first, then Keybase, Ubuntu keyserver, and keys.openpgp.org.
 			</p>
 
 			<ManualRecipientAdd onAdd={handleManualAdd} />

@@ -50,7 +50,8 @@ export interface ZipMetadata {
  * basename before it reaches JSZip:
  *  - strip directory components (a decrypted `../../.bashrc` must never
  *    become a traversal path inside the archive),
- *  - drop leading dots (hidden files / relative-hop leftovers),
+ *  - drop leading dots AFTER trimming whitespace (hidden files /
+ *    relative-hop leftovers — " .bashrc" is a hidden file too),
  *  - strip TRAILING dot/space runs (Windows extractors delete them when
  *    creating the on-disk file, so `report` and `report.` would extract to
  *    the same path and clobber each other — this also keeps the WRITTEN
@@ -67,9 +68,12 @@ export interface ZipMetadata {
  */
 function sanitizeZipEntryName(rawName: string, used: Set<string>): string {
 	const base = rawName.replace(/\\/g, "/").split("/").pop() ?? "";
+	// Trim FIRST: the leading-dot strip must see the real first character —
+	// for " .bashrc" a dot-strip before trim would miss the dot and the name
+	// would still resolve to a hidden file after trimming.
 	const stripped = base
-		.replace(/^\.+/, "")
 		.trim()
+		.replace(/^\.+/, "")
 		.replace(/[. ]+$/, "");
 	const safe = stripped.length > 0 ? stripped : "attachment";
 	// Original case (and the sender's own normalization form) is returned to

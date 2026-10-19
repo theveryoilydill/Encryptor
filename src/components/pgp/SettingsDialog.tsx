@@ -117,8 +117,16 @@ interface PendingImport {
 	label: string | null;
 	/** Key ID from the backup's key config, when present. */
 	keyId: string | null;
-	/** Whether the backup carries passphrase-encrypted private key material. */
+	/** Whether the backup carries private key material. */
 	hasPrivateKey: boolean;
+	/**
+	 * Protection state of that private key, read from the backup's stored
+	 * key info: "unencrypted" (isDecrypted — the armor IS usable secret key
+	 * material), "encrypted", or "unknown" when the backup predates the
+	 * metadata or the shape is unrecognized (never claim a protection level
+	 * we cannot see).
+	 */
+	keyProtection: "encrypted" | "unencrypted" | "unknown";
 }
 
 function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | null }) {
@@ -176,8 +184,23 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 			const config = parsed.data[STORAGE_KEYS.config];
 			const cfg =
 				typeof config === "object" && config !== null
-					? (config as { label?: unknown; encryptedArmored?: unknown; info?: { keyID?: unknown } })
+					? (config as {
+							label?: unknown;
+							encryptedArmored?: unknown;
+							info?: { keyID?: unknown; isPrivate?: unknown; isDecrypted?: unknown };
+						})
 					: null;
+			// Protection state comes from the key's own metadata; anything else
+			// stays "unknown" rather than claiming "passphrase-encrypted".
+			const info = cfg?.info;
+			const keyProtection: PendingImport["keyProtection"] =
+				typeof info?.isPrivate === "boolean" &&
+				info.isPrivate &&
+				typeof info?.isDecrypted === "boolean"
+					? info.isDecrypted
+						? "unencrypted"
+						: "encrypted"
+					: "unknown";
 			// The persisted config stores the key ID as its hex string; any
 			// other shape is treated as absent rather than stringified.
 			const rawKeyId = cfg?.info?.keyID;
@@ -189,6 +212,7 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 				label: typeof cfg?.label === "string" ? cfg.label : null,
 				keyId: typeof rawKeyId === "string" && rawKeyId.length > 0 ? rawKeyId : null,
 				hasPrivateKey: typeof cfg?.encryptedArmored === "string" && cfg.encryptedArmored.length > 0,
+				keyProtection,
 			});
 		} catch (e) {
 			toast({
@@ -263,12 +287,23 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 						file. Importing replaces the current settings.
 					</p>
 				</div>
-				{privateKey?.encryptedArmored && (
-					<p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-						<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-						Backups include your passphrase-encrypted private key.
-					</p>
-				)}
+				{privateKey?.encryptedArmored &&
+					(() => {
+						// Base the warning on the key's actual protection state instead
+						// of assuming every stored key is passphrase-encrypted: an
+						// empty optional passphrase leaves the armor DECRYPTED, which
+						// makes the backup strictly more sensitive (CWE-312).
+						const info = privateKey.info;
+						const unprotected = "isPrivate" in info && info.isPrivate && info.isDecrypted;
+						return (
+							<p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+								<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+								{unprotected
+									? "Backups include your private key UNENCRYPTED — anyone with the file can use the key."
+									: "Backups include your passphrase-encrypted private key."}
+							</p>
+						);
+					})()}
 				<div className="flex flex-wrap gap-2">
 					<Button
 						type="button"
@@ -390,8 +425,11 @@ function BackupRestoreSection({ privateKey }: { privateKey: PrivateKeyConfig | n
 							{pendingImport.hasPrivateKey && (
 								<p className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
 									<TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-									This backup contains the private key (passphrase-encrypted). Importing swaps out
-									the key on this device.
+									{pendingImport.keyProtection === "unencrypted"
+										? "This backup contains the private key UNENCRYPTED. Importing swaps out the key on this device."
+										: pendingImport.keyProtection === "encrypted"
+											? "This backup contains the private key (passphrase-encrypted). Importing swaps out the key on this device."
+											: "This backup contains a private key. Importing swaps out the key on this device."}
 								</p>
 							)}
 							<p className="text-xs leading-relaxed text-muted-foreground">

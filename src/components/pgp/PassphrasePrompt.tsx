@@ -124,9 +124,12 @@ export function PassphrasePrompt({
 					return;
 				}
 				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
-				// Caching an empty passphrase is pointless and would light up the
-				// header "remembered" state misleadingly — skip it.
-				if (autoCache && passphrase) {
+				// Caching is skipped for (a) empty passphrases — pointless, and it
+				// would light up the header "remembered" state misleadingly — and
+				// (b) Keybase passwords: an ACCOUNT credential is intentionally
+				// never session-cached (session-passphrase contract), which is why
+				// the "Remembered for this session" hint below is !isKeybase-only.
+				if (autoCache && passphrase && !isKeybase) {
 					cachePassphrase(passphrase);
 					onPassphraseCached?.();
 				}
@@ -166,7 +169,9 @@ export function PassphrasePrompt({
 					throw new Error("Stored key is not a private key.");
 				}
 				const decrypted = await unlockPrivateKey(key as OpenPGP.PrivateKey, passphrase);
-				if (autoCache) {
+				// Same cache rules as the local-unlock branch: never cache an
+				// empty passphrase (pointless + misleading header state).
+				if (autoCache && passphrase) {
 					cachePassphrase(passphrase);
 					onPassphraseCached?.();
 				}
@@ -212,7 +217,7 @@ export function PassphrasePrompt({
 					<DialogDescription className="mb-3 text-xs">
 						{isKeybase
 							? canUnlockLocally
-								? "Your password unlocks your stored Keybase key right here — it is never stored. (Network re-fetch only if the password no longer matches.)"
+								? "Your password unlocks your stored Keybase key right here — it is never stored. If the password no longer matches (e.g. you changed it on Keybase), remove and re-add the key via Keybase sign-in to refresh the stored copy."
 								: "Your password is used to re-fetch and decrypt your private key from Keybase. It is never stored — only kept in RAM for this operation."
 							: "Your passphrase decrypts the private key in memory. It is never stored and is cleared immediately after the operation."}
 					</DialogDescription>

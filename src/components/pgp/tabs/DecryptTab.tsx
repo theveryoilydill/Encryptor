@@ -105,6 +105,15 @@ export function DecryptTab({
 	// Staleness counter for auto-decrypt runs: only the run launched for the
 	// CURRENT input may apply its result.
 	const runIdRef = useRef(0);
+	// Latest unlock-callback holder: requestDecryptedKey's identity changes
+	// whenever privateKey OR settings.autoLockMinutes changes in PgpApp. The
+	// auto-decrypt effect below keys off runDecrypt, so WITHOUT this ref,
+	// touching the auto-lock setting would retrigger a full decrypt (clearing
+	// the output and raising a second passphrase request mid-session). The
+	// ref keeps the newest callback callable without using its identity as an
+	// effect trigger.
+	const requestKeyRef = useRef(requestDecryptedKey);
+	requestKeyRef.current = requestDecryptedKey;
 	// Armor-repair banner state: what the last repair fixed (transient
 	// notice, cleared as soon as the input changes again) + a dismissal
 	// keyed to the input, mirroring the hint-dismissal pattern above.
@@ -197,7 +206,7 @@ export function DecryptTab({
 				// Request the decrypted key — shows the passphrase prompt. The key
 				// exists only in this local variable and is cleared after. The
 				// passphrase rides along for the quantum-seal unseal path.
-				const { key: decryptedKey, passphrase } = await requestDecryptedKey();
+				const { key: decryptedKey, passphrase } = await requestKeyRef.current();
 				if (runIdRef.current !== myRunId) return; // superseded mid-prompt
 
 				// Quantum-sealed input: strip the ML-KEM-768 outer layer first.
@@ -260,7 +269,10 @@ export function DecryptTab({
 				if (runIdRef.current === myRunId) setBusy(false);
 			}
 		},
-		[privateKey, requestDecryptedKey],
+		// requestDecryptedKey is intentionally absent: read through the ref
+		// above so auto-lock/settings churn never becomes a decrypt trigger.
+		// privateKey stays — a different configured key SHOULD re-decrypt.
+		[privateKey],
 	);
 
 	// Auto-decrypt: when the text settles (debounce) and parses as an

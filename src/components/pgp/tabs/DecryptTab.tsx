@@ -113,7 +113,12 @@ export function DecryptTab({
 	// ref keeps the newest callback callable without using its identity as an
 	// effect trigger.
 	const requestKeyRef = useRef(requestDecryptedKey);
-	requestKeyRef.current = requestDecryptedKey;
+	useEffect(() => {
+		// Assignment happens AFTER commit (never during render): a discarded
+		// render can't leave a pending auto-decrypt run holding a callback
+		// from key/settings state that was never shown to the user.
+		requestKeyRef.current = requestDecryptedKey;
+	}, [requestDecryptedKey]);
 	// Armor-repair banner state: what the last repair fixed (transient
 	// notice, cleared as soon as the input changes again) + a dismissal
 	// keyed to the input, mirroring the hint-dismissal pattern above.

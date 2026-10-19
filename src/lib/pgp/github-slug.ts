@@ -16,10 +16,15 @@
  *   - underscores are KEPT ("my_var" stays #my_var).
  * Matching GitHub exactly is the point: TOC links built by the composer keep
  * working when the message is pasted into a GitHub issue, README or comment.
+ * Non-space whitespace (tabs, newlines) is removed, not hyphenated.
  */
 export function githubSlug(title: string): string {
-	return title
-		.toLowerCase()
-		.replace(/[^\p{L}\p{N}\s_-]/gu, "")
-		.replace(/ /g, "-");
+	return (
+		title
+			.toLowerCase()
+			// Only U+0020 survives as a space: other whitespace (tabs, newlines)
+			// is not in the allowed set and is dropped outright, matching GitHub.
+			.replace(/[^\p{L}\p{N} _-]/gu, "")
+			.replace(/ /g, "-")
+	);
 }

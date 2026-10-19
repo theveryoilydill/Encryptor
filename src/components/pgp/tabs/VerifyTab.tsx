@@ -80,6 +80,11 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// it was never signed over (CWE-345: insufficient verification of data
 	// authenticity). Null while unverified or in file mode.
 	const [verifiedPlaintext, setVerifiedPlaintext] = useState<string | null>(null);
+	// Monotonic attempt token: inputs stay editable while a verification is
+	// in flight, so handleVerify commits its result ONLY if this token still
+	// matches — a slow attempt that finishes after an edit/file change is
+	// discarded instead of displaying beside text it never verified.
+	const verifyAttemptRef = useRef(0);
 	const [error, setError] = useState<string | null>(null);
 	// Smart-input hint dismissal, keyed to the exact input content: clearing
 	// the textarea (or pasting different content) re-arms the hint without
@@ -155,11 +160,13 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 	// longer match what is on screen. (The file-mode pick/drop handlers
 	// clear the result themselves — the file is not captured here.)
 	useEffect(() => {
+		verifyAttemptRef.current += 1; // invalidate any in-flight verification
 		setResult(null);
 		setVerifiedPlaintext(null);
-	}, [armored, plaintext]);
+	}, [armored, plaintext, fileMode, verifyFile]);
 
 	const handleVerify = useCallback(async () => {
+		const myAttempt = ++verifyAttemptRef.current;
 		setError(null);
 		setResult(null);
 		setVerifiedPlaintext(null);
@@ -207,6 +214,7 @@ export function VerifyTab({ privateKey }: { privateKey: PrivateKeyConfig | null 
 					),
 				fileBytes,
 			);
+			if (verifyAttemptRef.current !== myAttempt) return; // inputs changed mid-verify
 			setResult(res);
 			if (!fileMode) setVerifiedPlaintext(plaintext);
 		} catch (e) {

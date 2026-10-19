@@ -60,10 +60,10 @@ jobs:
         # If you are analyzing a compiled language, you can modify the `build-mode` above to 'manual' to build the code.
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Read-only analysis job — the checkout does not need push
-          # credentials (least privilege; matches the other workflows' v6).
+          # credentials (least privilege; current major).
           persist-credentials: false
 
       # Add any setup steps before running the `github/codeql-action/init` action.

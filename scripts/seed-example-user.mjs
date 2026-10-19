@@ -17,7 +17,7 @@
  * # Mr. AI Acting on the Owner's Behalf
  */
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, existsSync } from "node:fs";
 import * as openpgp from "openpgp";
 
 const BASE = process.env.REGISTRY_TEST_BASE ?? "http://localhost:3000";
@@ -114,7 +114,11 @@ async function main() {
 	};
 	// Owner-only permissions: the file holds the passphrase, private key,
 	// and revocation token (CWE-732 — default 0644 would be group/world
-	// readable on POSIX systems).
+	// readable on POSIX systems). writeFileSync's mode only applies to NEW
+	// files, so an existing permissive file is tightened explicitly first.
+	if (existsSync(".example-user.json")) {
+		chmodSync(".example-user.json", 0o600);
+	}
 	writeFileSync(".example-user.json", JSON.stringify(record, null, 2), { mode: 0o600 });
 	log("saved", "credentials written to .example-user.json (gitignored — treat as secret)");
 

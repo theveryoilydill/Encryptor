@@ -80,14 +80,39 @@ async function subkeyExpiredOrRevoked(subkey: openpgp.Subkey): Promise<boolean> 
 		const exp = await subkey.getExpirationTime();
 		if (exp instanceof Date && exp.getTime() <= Date.now()) return true;
 	} catch {
-		// fall through to the revocation probe
+		// fall through to the lifecycle probes below
 	}
-	for (const sig of subkey.revocationSignatures ?? []) {
-		try {
-			if (await subkey.isRevoked(sig, subkey.keyPacket)) return true;
-		} catch {
-			// a single malformed revocation signature must not crash the probe
+	// Narrower lifecycle gap: the key-expiration subpacket is past but the
+	// BINDING SIGNATURE ITSELF also expired, so getExpirationTime() (which
+	// validates against current-date signatures) reports null. Probe each
+	// binding signature at its own creation date — if it verified when made,
+	// the subkey WAS cryptographically bound to this primary key and is
+	// merely expired (publish); a signature that never verified anywhere
+	// falls through to the strict binding rejection.
+	for (const sig of subkey.bindingSignatures ?? []) {
+		if (sig.created instanceof Date) {
+			try {
+				await subkey.verify(sig.created);
+				return true;
+			} catch {
+				// try the next binding signature
+			}
 		}
+	}
+	// Revocation probe: signature=null asks isDataRevoked for ANY valid
+	// revocation (hard ones regardless of date, soft ones as of now), and
+	// key=undefined defaults the verifier to the PRIMARY key packet —
+	// subkey revocations are made by the primary key, not the subkey itself.
+	try {
+		if (
+			await subkey.isRevoked(
+				undefined as unknown as openpgp.SignaturePacket,
+				undefined as unknown as openpgp.PublicKeyPacket,
+			)
+		)
+			return true;
+	} catch {
+		// a malformed revocation signature must not crash the probe
 	}
 	return false;
 }

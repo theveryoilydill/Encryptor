@@ -20,9 +20,9 @@ import {
 } from "@/lib/pgp/keybase";
 import { fetchKeysFromAllSources, registrySuggestResults } from "@/lib/pgp/key-lookup";
 import { registryLookup } from "@/lib/registry/client";
-import { formatFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
+import { formatFingerprint, keyIDFromFingerprint, validateArmoredKey } from "@/lib/pgp/pgp";
 import { getKeyExpiryStatus, humanizeRawAlgorithm } from "@/lib/pgp/key-details";
-import { PROXIES, type Recipient } from "@/components/pgp/contracts";
+import { PROXIES, type KeySource, type Recipient } from "@/components/pgp/contracts";
 import { describeFixes, findArmorIssues, repairArmor, type ArmorFix } from "@/lib/pgp/armor-repair";
 import { useToast } from "@/hooks/use-toast";
 import { STORAGE_KEYS } from "@/lib/constants";
@@ -63,6 +63,11 @@ interface RecentRecipient {
 	 *  re-added OFFLINE instead of dead-ending on a fetch that can never
 	 *  succeed (the key was never uploaded anywhere). */
 	armored?: string;
+	/** Where the entry came from, when it matters for reuse semantics.
+	 *  "encryptor" entries get a registry revocation-freshness check before
+	 *  their cached armor is trusted for a re-add (when online); everything
+	 *  else reuses the cached key as-is. Absent on legacy persisted entries. */
+	source?: KeySource;
 }
 
 /** Size cap for a stored recent-recipient armor (same bound as the
@@ -85,6 +90,9 @@ function loadRecentRecipients(): RecentRecipient[] {
 			const entry: RecentRecipient = { label: r.label };
 			if (typeof r.fingerprint === "string" && r.fingerprint) entry.fingerprint = r.fingerprint;
 			if (typeof r.username === "string" && r.username) entry.username = r.username;
+			// Whitelisted source marker (today only registry provenance matters
+			// for reuse semantics — anything else reloads as unmarked).
+			if (r.source === "encryptor") entry.source = r.source;
 			if (typeof r.armored === "string" && r.armored.length <= MAX_RECENT_ARMOR_CHARS) {
 				entry.armored = r.armored;
 			}
@@ -154,6 +162,7 @@ export function RecipientPicker({
 			const stored: RecentRecipient = { label: entry.label };
 			if (entry.fingerprint) stored.fingerprint = entry.fingerprint;
 			if (entry.username) stored.username = entry.username;
+			if (entry.source) stored.source = entry.source;
 			if (entry.armored && entry.armored.length <= MAX_RECENT_ARMOR_CHARS) {
 				stored.armored = entry.armored;
 			}
@@ -273,12 +282,20 @@ export function RecipientPicker({
 							label: result.label,
 							armored: armoredKey,
 							fingerprint: fpr,
-							keyID: result.keyID ?? fpr.slice(-16),
+							keyID: result.keyID ?? keyIDFromFingerprint(fpr),
 							algorithm,
 							expiresAt,
 						},
 					]);
-					rememberRecentRecipient({ label: result.label, fingerprint: fpr });
+					// Source marker: the cached armor gets a revocation-freshness
+					// check before a future online re-add trusts it (see
+					// addRecentRecipient).
+					rememberRecentRecipient({
+						label: result.label,
+						fingerprint: fpr,
+						armored: armoredKey,
+						source: "encryptor",
+					});
 				} else if (result.source === "keybase" && result.username) {
 					// Fetch the full public key from Keybase
 					const r = await lookupKeybaseUsersClient([result.username], PROXIES.keybaseProxy);
@@ -313,17 +330,31 @@ export function RecipientPicker({
 						armored: k.armored,
 					});
 				} else if (result.fingerprint) {
-					// Fetch the key from keys.openpgp.org or Ubuntu keyserver
+					// Fetch the key from keys.openpgp.org. Legacy recent entries can
+					// arrive without a keyID — derive it from the fingerprint per key
+					// version (v6 keys take the FIRST 64 fingerprint bits, unlike the
+					// v4 low-bits suffix) so the lookup targets the canonical ID.
+					const resultFpr = result.fingerprint.toUpperCase();
+					const lookupKeyID = result.keyID
+						? result.keyID.replace(/^0x/i, "").toUpperCase()
+						: keyIDFromFingerprint(resultFpr);
 					const fetched = await fetchKeysFromAllSources(
-						[result.fingerprint],
+						[lookupKeyID],
 						PROXIES.fetchkeyProxy,
 						PROXIES.fetchkeyOpgProxy,
 					);
 					if (fetched.length === 0) {
-						setError(`Could not fetch key ${result.keyID || result.fingerprint}.`);
+						setError(`Could not fetch key ${result.keyID || resultFpr}.`);
 						return;
 					}
-					const k = fetched[0];
+					// Identity check: the fetched key must be the key that was
+					// selected. A directory answering the ID with a DIFFERENT key
+					// must never be added under the original result's label.
+					const k = fetched.find((c) => c.fingerprint.toUpperCase() === resultFpr);
+					if (!k) {
+						setError(`Fetched key does not match ${result.keyID || resultFpr}.`);
+						return;
+					}
 					if (recipients.some((p) => p.fingerprint === k.fingerprint)) {
 						setInput("");
 						setSuggestions([]);
@@ -402,6 +433,27 @@ export function RecipientPicker({
 			// fetch key …". Falls back to the fetch path for armor-less legacy
 			// entries or a failed validation.
 			if (r.armored) {
+				// Registry-provenance entries (source "encryptor") get a
+				// revocation freshness check whenever the registry is reachable:
+				// a key revoked AFTER it was cached must not be silently re-added
+				// from local storage. An unreachable registry (offline) falls back
+				// to the cached armor — offline re-adding is the whole point of
+				// keeping the public key locally.
+				const cachedFpr = r.fingerprint;
+				if (r.source === "encryptor" && cachedFpr) {
+					try {
+						const fresh = await registryLookup({ fingerprint: cachedFpr });
+						const stillLive = fresh.some(
+							(k) => !k.revoked && k.fingerprint.toUpperCase() === cachedFpr.toUpperCase(),
+						);
+						if (!stillLive) {
+							setError("That key was revoked or removed from the Encryptor Registry.");
+							return;
+						}
+					} catch {
+						// Registry unreachable (offline) — cached armor stays usable.
+					}
+				}
 				try {
 					const v = await validateArmoredKey(r.armored);
 					const info = v.info;
@@ -431,9 +483,14 @@ export function RecipientPicker({
 					// fall through to the network path
 				}
 			}
+			// Registry-provenance entries that lost their armor route back
+			// through the registry (exact fingerprint lookup — the key was never
+			// published to a public keyserver), everything else as before.
 			const result: KeySearchResult = r.username
 				? { source: "keybase", label: r.label, username: r.username, fingerprint: r.fingerprint }
-				: { source: "openpgp.org", label: r.label, fingerprint: r.fingerprint };
+				: r.source === "encryptor" && r.fingerprint
+					? { source: "encryptor", label: r.label, fingerprint: r.fingerprint }
+					: { source: "openpgp.org", label: r.label, fingerprint: r.fingerprint };
 			void addRecipient(result);
 		},
 		[addRecipient, recipients, setRecipients],

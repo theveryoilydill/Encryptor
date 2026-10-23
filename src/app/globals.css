@@ -555,6 +555,37 @@
 .bn-editor .bn-block-content[data-content-type="codeBlock"] pre {
 	padding-top: 2.2rem;
 }
+/* Editor typeface: BlockNote's default styles ship Inter, but the app sets
+   Geist as its sans (via next/font's --font-geist-sans variable on <body>).
+   Match the app so the composer reads as one surface, not an embedded
+   third-party widget. */
+.bn-editor.bn-default-styles {
+	font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+/* Code block surface: BlockNote's core stylesheet hardcodes the slab to
+   near-black (#161616, white text) in BOTH color schemes, so light mode
+   gets a jarring dark rectangle. Notion renders code blocks theme-aware —
+   light warm gray in light mode, near-black in dark mode. Override with
+   the app's tokens; the dark slab stays as-is for dark mode. */
+.bn-editor .bn-block-content[data-content-type="codeBlock"] {
+	background-color: var(--muted);
+	color: var(--foreground);
+	border: 1px solid var(--border);
+}
+.dark .bn-editor .bn-block-content[data-content-type="codeBlock"] {
+	background-color: #161616;
+	color: #f5f5f5;
+	border-color: transparent;
+}
+/* Inline code: BlockNote only sets monospace, leaving bare text. Notion
+   renders inline code as a quiet pill — subtle gray chip, slightly smaller.
+   Scoped away from `pre` so code blocks keep their own surface. */
+.bn-editor .bn-inline-content code:not(pre code) {
+	background-color: color-mix(in srgb, var(--muted-foreground) 14%, transparent);
+	border-radius: 4px;
+	padding: 0.15em 0.4em;
+	font-size: 0.88em;
+}
 
 /* Mobile formatting toolbar (BlockNote's experimental controller): the
    controller already fixes it to the bottom of the viewport, but its bare

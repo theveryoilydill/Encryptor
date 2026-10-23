@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
 		const rawFpr = stringField(body, "fingerprint", 64);
 		if (!rawFpr) throw new RegistryError("The 'fingerprint' field is required", 400);
 		const fingerprint = normalizeFingerprint(rawFpr);
-		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
+		if (!fingerprint) throw new RegistryError("fingerprint must be 40 or 64 hex characters", 400);
 		const nonce = stringField(body, "nonce", 128);
 		const signature = stringField(body, "signature", 16 * 1024);
 		if (!nonce || !signature) {
@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * GET /api/registry/private-key?fingerprint=<40 hex>
+ * GET /api/registry/private-key?fingerprint=<40|64 hex>
  *
  * Returns the ESCROWED encrypted private key for offline restoration. The
  * blob is ciphertext end-to-end: it is only decryptable with the owner's
@@ -157,7 +157,7 @@ export async function GET(req: NextRequest) {
 		const raw = url.searchParams.get("fingerprint");
 		if (!raw) throw new RegistryError("Missing 'fingerprint' query parameter", 400);
 		const fingerprint = normalizeFingerprint(raw);
-		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
+		if (!fingerprint) throw new RegistryError("fingerprint must be 40 or 64 hex characters", 400);
 
 		const db = await getRegistryDBReady();
 		await enforceRateLimit(

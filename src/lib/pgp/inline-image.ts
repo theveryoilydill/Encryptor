@@ -42,6 +42,15 @@ export const SCALE_STEP_NORMAL = 5;
 /** Shift+alt+arrow micro scale step (percentage points). */
 export const SCALE_STEP_MICRO = 1;
 
+/** Decode a URI component without throwing on malformed escapes. */
+export function safeDecodeURIComponent(value: string): string {
+	try {
+		return decodeURIComponent(value);
+	} catch {
+		return value;
+	}
+}
+
 /** Parse an inline image alt string into `{ displayName, scale, dx, dy }`.
  *
  *  Accepted alt formats (all optional after the display name):
@@ -113,7 +122,7 @@ export function findInlineImageMarkers(text: string): InlineImageMarker[] {
 	let m: RegExpExecArray | null;
 	while ((m = INLINE_IMAGE_RE.exec(text)) !== null) {
 		const alt = m[1];
-		const filename = decodeURIComponent(m[2]);
+		const filename = safeDecodeURIComponent(m[2]);
 		const { displayName, scale, dx, dy } = parseInlineImageAlt(alt);
 		out.push({
 			startIndex: m.index,

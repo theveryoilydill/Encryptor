@@ -17,15 +17,32 @@
 import * as openpgp from "openpgp";
 
 const BASE = process.argv[2] ?? process.env.REGISTRY_TEST_BASE ?? "http://localhost:3000";
+// Synthetic edge headers are only for loopback targets. Parse BASE and
+// compare the HOSTNAME exactly — a prefix regex would classify
+// "http://localhost.example.com" as local and leak the fake header to a
+// remote server. Unparseable URLs are treated as remote.
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const BASE_HOSTNAME = (() => {
+	try {
+		return new URL(BASE).hostname.toLowerCase();
+	} catch {
+		return null;
+	}
+})();
+const IS_REMOTE = BASE_HOSTNAME === null || !LOOPBACK_HOSTNAMES.has(BASE_HOSTNAME);
 const RUN_OCTET = (Math.floor(Date.now() / 1000) % 250) + 1;
-const IP = (n) => ({ "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
+const IP = (n) => (IS_REMOTE ? {} : { "cf-connecting-ip": `10.7.${RUN_OCTET}.${n % 250}` });
 const PASS = `stale-fixture-${Date.now().toString(36)}`;
 
 async function api(path, opts = {}) {
 	const { headers: extra, ...rest } = opts;
+	const headers = { ...extra };
+	if (!IS_REMOTE && headers["cf-connecting-ip"] == null) {
+		headers["cf-connecting-ip"] = `10.7.${RUN_OCTET}.99`;
+	}
 	const res = await fetch(`${BASE}${path}`, {
 		...rest,
-		headers: { "cf-connecting-ip": `10.7.${RUN_OCTET}.99`, ...extra },
+		headers,
 	});
 	let body = null;
 	try {

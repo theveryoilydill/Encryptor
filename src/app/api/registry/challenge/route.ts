@@ -16,7 +16,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/registry/challenge?fingerprint=<40 hex>
+ * GET /api/registry/challenge?fingerprint=<40|64 hex>
  *
  * Issues a one-time nonce (10 minute TTL) that must be cleartext-signed
  * with the CURRENTLY stored private key and posted to /api/registry/revoke
@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
 		const raw = url.searchParams.get("fingerprint");
 		if (!raw) throw new RegistryError("Missing 'fingerprint' query parameter", 400);
 		const fingerprint = normalizeFingerprint(raw);
-		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
+		if (!fingerprint) throw new RegistryError("fingerprint must be 40 or 64 hex characters", 400);
 
 		const key = await db
 			.prepare("SELECT revoked FROM registry_keys WHERE fingerprint = ?1")

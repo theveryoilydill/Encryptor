@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
 		const rawFpr = stringField(body, "fingerprint", 64);
 		if (!rawFpr) throw new RegistryError("The 'fingerprint' field is required", 400);
 		const fingerprint = normalizeFingerprint(rawFpr);
-		if (!fingerprint) throw new RegistryError("fingerprint must be 40 hex characters", 400);
+		if (!fingerprint) throw new RegistryError("fingerprint must be 40 or 64 hex characters", 400);
 		const reason = sanitizeReason(stringField(body, "reason", LIMITS.registryMaxReasonChars));
 
 		const key = await db
@@ -188,7 +188,7 @@ async function revokeByAdmin(
 
 /**
  * Flip the revoked flag permanently, drop any live challenge nonces, purge
- * the escrowed encrypted private key, and RELEASE the email + subkey
+ * the escrowed encrypted private key, and RELEASE the email + subkey + name
  * indexes. Revocation stays visible by fingerprint lookup; releasing the
  * indexes frees scarce namespaces (email claims, 64-bit key IDs). A revoked
  * record keeps only its public revocation information — escrowed private
@@ -207,6 +207,7 @@ async function markRevoked(
 			.bind(fingerprint, nowSeconds(), reason),
 		db.prepare("DELETE FROM registry_challenges WHERE fingerprint = ?1").bind(fingerprint),
 		db.prepare("DELETE FROM registry_emails WHERE fingerprint = ?1").bind(fingerprint),
+		db.prepare("DELETE FROM registry_names WHERE fingerprint = ?1").bind(fingerprint),
 		db.prepare("DELETE FROM registry_subkeys WHERE fingerprint = ?1").bind(fingerprint),
 	]);
 }

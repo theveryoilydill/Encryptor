@@ -264,7 +264,7 @@ export default function VSCodeEditor({
 	};
 
 	const preview = (
-		<div className="min-h-0 min-w-0 flex-1 animate-in fade-in-0 slide-in-from-right-2 overflow-y-auto p-4 duration-200">
+		<div className="min-h-0 min-w-0 flex-1 animate-in fade-in-0 slide-in-from-right-2 overflow-y-auto p-4 duration-200 select-text">
 			{previewText.trim() ? (
 				<DecryptedMessageView text={previewText} files={files} />
 			) : /* Empty preview renders nothing — the editor's "Type the

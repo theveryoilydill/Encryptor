@@ -37,7 +37,7 @@ import {
 	downloadKeyName,
 	getKeyExpiryStatus,
 } from "@/lib/pgp/key-details";
-import { generateSealKeyPair, wrapSealSecret } from "@/lib/pgp/pq";
+import { generateSealKeyPair, wrapSealSecretAuto } from "@/lib/pgp/pq";
 import { downloadBlob } from "@/lib/pgp/zip-bundle";
 import { toast } from "@/hooks/use-toast";
 
@@ -149,26 +149,18 @@ export function ConfigureModal({
 	};
 
 	// Quantum-seal onboarding for existing (pre-feature) keys: unlock the key
-	// once — the prompt returns the passphrase — generate the ML-KEM pair,
-	// wrap the secret half under that passphrase, and save. Keybase-sourced
-	// configs never enter this flow (see the render guard above).
+	// once, generate the ML-KEM pair, wrap the secret half under the
+	// passphrase when present (or a device key otherwise), and save.
+	// Keybase-sourced configs never enter this flow (see the render guard
+	// above).
 	const [sealBusy, setSealBusy] = useState(false);
 	const handleEnableQuantumSeal = async () => {
 		if (!privateKey?.encryptedArmored || sealBusy) return;
 		setSealBusy(true);
 		try {
 			const { passphrase } = await requestDecryptedKey();
-			if (!passphrase) {
-				toast({
-					title: "Passphrase required",
-					description:
-						"The quantum-seal secret is protected by your passphrase — enter it in the prompt and try again.",
-					variant: "destructive",
-				});
-				return;
-			}
 			const sealPair = generateSealKeyPair();
-			const pq = await wrapSealSecret(sealPair.publicKey, sealPair.secretKey, passphrase);
+			const pq = await wrapSealSecretAuto(sealPair.publicKey, sealPair.secretKey, passphrase ?? "");
 			onSave({ ...privateKey, pq });
 			toast({
 				title: "Quantum seal enabled",
